@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Python dependencies (backend/requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+
+  # Docker base image (backend/Dockerfile)
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
+    # Only allow patch updates (e.g. 3.14.3 → 3.14.4).
+    # Minor bumps (3.14 → 3.15) are blocked here because Dependabot has no
+    # pre-release awareness for Docker tags and will happily propose alpha images.
+    # Bump Python minor versions manually after verifying stable release.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

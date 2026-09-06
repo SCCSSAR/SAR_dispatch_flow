@@ -1,0 +1,19 @@
+% Symbol fallback for the dispatcher docs PDF build.
+%
+% Helvetica Neue does not contain U+26A0, U+25B6, U+2713 or U+2192. Without a
+% fallback xelatex emits a missing-glyph box, and the glyph is unmapped in the
+% output — the 2026-07-19 build of dispatcher-guide.pdf has exactly that defect
+% (the warning signs in its section headings extract as an unmapped glyph, not
+% as text). Declaring the fallback explicitly is what makes them render.
+%
+% Apple Symbols covers the first three. It does NOT contain U+2713, so the
+% check mark is served by Menlo, which also becomes the monospace face: the
+% pre-flight checklist renders inside a code block, and Latin Modern Mono has
+% no check mark either.
+\usepackage{newunicodechar}
+\newfontfamily\symbolfallback{Apple Symbols}
+\newfontfamily\checkfallback{Menlo}
+\newunicodechar{⚠}{{\symbolfallback ⚠}}
+\newunicodechar{▶}{{\symbolfallback ▶}}
+\newunicodechar{→}{{\symbolfallback →}}
+\newunicodechar{✓}{{\checkfallback ✓}}

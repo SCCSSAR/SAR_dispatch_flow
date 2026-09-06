@@ -1,0 +1,57 @@
+# terraform.tfvars — Dev/Test Environment TEMPLATE
+#
+# COPY THIS FILE to terraform.tfvars in the same directory, then replace every
+# placeholder below with real values. terraform.tfvars is GITIGNORED — never
+# commit it. Real dispatcher emails + OAuth client IDs MUST NOT land in this
+# template file; keep placeholder values only.
+#
+# Real values live in:
+#   - Secret Manager (`dispatch-authorized-emails` for the email allowlist)
+#   - GCP Console → APIs & Services → Credentials (for the OAuth client ID)
+#   - The gitignored terraform.tfvars next to this file
+
+# Comma-separated list of authorized dispatcher Google accounts (placeholder).
+# Replace with the real list in your local terraform.tfvars.
+authorized_dispatcher_emails = "dispatcher1@example.org,dispatcher2@example.org"
+
+# OAuth2 Client ID from GCP Console → APIs & Services → Credentials → OAuth 2.0 Client IDs.
+# Create a "Web application" client; add the Cloud Run URL as an authorized JS origin.
+# Replace with the real client ID in your local terraform.tfvars.
+google_client_id = "YOUR_OAUTH2_CLIENT_ID.apps.googleusercontent.com"
+
+# Optional overrides (defaults from variables.tf are fine for dev)
+# log_level                  = "DEBUG"
+# ocr_rate_limit_per_minute  = 5
+# ocr_daily_global_cap       = 200
+# gemini_model               = "gemini-1.5-flash"
+
+# Org-wide voice caller ID Everbridge puts on outbound voice calls. Your
+# organization's number, from the Everbridge org settings. Digits only, no
+# separators (e.g. "5555550142"). Required for any live dispatch; leaving it
+# unset makes backend/everbridge.py raise before the notification is sent.
+everbridge_caller_id = "YOUR_ORG_VOICE_CALLER_ID"
+
+# ---------------------------------------------------------------------------
+# Everbridge organisation record IDs.
+#
+# These are IDs Everbridge assigned to YOUR org's records — they are of no use
+# to another Everbridge customer, and publishing them describes your delivery
+# estate, so they are configuration rather than source. Find them via the
+# Everbridge API or org admin console.
+# ---------------------------------------------------------------------------
+
+# Category IDs for your in-county and mutual-aid call-out categories.
+# Your Everbridge organization ID (appears in EB API paths and URLs).
+everbridge_org_id             = "YOUR_EVERBRIDGE_ORG_ID"
+
+everbridge_category_incounty  = "YOUR_INCOUNTY_CATEGORY_ID"
+everbridge_category_mutualaid = "YOUR_MUTUALAID_CATEGORY_ID"
+
+# Delivery-path records, as a JSON array. EVERY entry needs BOTH `id` (the
+# record ID) and `pathId` (the path type) — without `id` Everbridge returns
+# HTTP 400 "No DeliveryPath for notification". `prompt` is a human label.
+everbridge_deliver_paths = "[{\"id\":1,\"pathId\":2,\"prompt\":\"SMS-Work Cell\"}]"
+
+# Comma-separated group IDs that must NEVER be paged — typically an admin or
+# records group. Leave empty if you have none; empty means suppress nothing.
+everbridge_suppressed_group_ids = ""

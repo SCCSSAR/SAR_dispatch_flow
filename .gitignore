@@ -1,0 +1,161 @@
+# SAR Dispatch Flow (Dispatch Turbo) - Git Ignore File
+
+# =============================================================================
+# SENSITIVE FILES - NEVER COMMIT THESE
+# =============================================================================
+.env
+*.key
+*.pem
+credentials.json
+secrets/
+config/credentials/
+private/
+
+# Deployment settings (project IDs, OAuth client IDs, service URLs)
+deploy.env
+# Note: deploy.env.template is intentionally committed (placeholders only)
+
+# Terraform sensitive files
+terraform.tfvars
+terraform.tfvars.backup
+# Note: terraform.tfvars.template is intentionally committed (no secrets)
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform/
+# Note: .terraform.lock.hcl should be committed — it ensures reproducible provider versions.
+# To commit it after ignoring: git add -f terraform/environments/dev/.terraform.lock.hcl
+
+# =============================================================================
+# NODE / FRONTEND
+# =============================================================================
+node_modules/
+dist/
+build/
+.next/
+.nuxt/
+.vite/
+*.local
+
+# =============================================================================
+# PYTHON
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+archive/
+
+# Virtual environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# =============================================================================
+# IDE AND EDITOR FILES
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code local session data (worktrees, conversation state, local settings).
+# Exception: .claude/skills/ IS tracked — project skills are versioned team
+# workflows that belong with the code they operate on, not local session state.
+# Must be the `.claude/*` glob, not the `.claude/` directory: git cannot
+# re-include a path inside an excluded DIRECTORY, so `!.claude/skills/` only
+# takes effect when the parent is excluded by glob.
+.claude/*
+!.claude/skills/
+
+# =============================================================================
+# OS GENERATED FILES
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =============================================================================
+# LOGS AND TEMPORARY FILES
+# =============================================================================
+*.log
+logs/
+pip-log.txt
+*.tmp
+*.temp
+temp/
+.cache/
+
+# =============================================================================
+# TESTING
+# =============================================================================
+.coverage
+.pytest_cache/
+.tox/
+htmlcov/
+
+# =============================================================================
+# CLOUD AND DEPLOYMENT
+# =============================================================================
+.gcloudignore
+
+# Function deployment artifacts
+*_function.zip
+poller_function.zip
+processor_function.zip
+admin_function.zip
+
+# =============================================================================
+# PROJECT SPECIFIC
+# =============================================================================
+# D4H / integration experiment scripts — not production code, never deployed
+experiments/
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Research/reference docs — may contain PII patterns or real incident data
+research/
+
+# Design decisions doc contains OAuth client IDs and integration credentials
+# Gitignored until repo is sanitized for public release — see GitHub issue #332
+docs/design-decisions.md
+
+# Mission-specific data (keep out of repository)
+mission-data/
+telemetry-backups/
+*.gpx
+*.bak
+
+# Local testing files
+test_output/
+debug_logs/
+
+# Service account key files
+service-account*.json
+*-key.json
