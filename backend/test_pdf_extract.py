@@ -15,6 +15,8 @@ Coverage:
 """
 
 import re
+import datetime
+from pathlib import Path
 import sys
 import os
 
@@ -23,6 +25,7 @@ import pytest
 # Allow running from repo root: backend/ is not a package, so add it to sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
+import pdf_extract
 from pdf_extract import (
     is_pdf,
     _q_answer,
@@ -766,3 +769,154 @@ class TestNormalizeDatetime:
     def test_date_only(self):
         """Date with no time component returns ISO date."""
         assert _normalize_datetime("2/20/26") == "2026-02-20"
+
+
+# ---------------------------------------------------------------------------
+# #765 — the canonical age-from-DOB helper, and the duplication that caused it
+# ---------------------------------------------------------------------------
+
+class TestComputeAgeFromDobCanonical:
+    """Exercises the REAL helper in pdf_extract, not a mirror.
+
+    Live on sccssar-dev 2026-08-18 (FILLABLE-14, a dementia subject), this
+    module emitted `DOB: 12/20/54 (-29 years old)`. It did its own year
+    arithmetic with neither a century correction nor a negativity check, while
+    main.py had both. Python's %y cutover is 1969-2068, so 2-digit years 27-68
+    land in 2027-2068 and go negative -- i.e. subjects born 1927-1968, roughly
+    ages 58-99, the Koester Dementia and Despondent-elderly brackets.
+    """
+
+    TODAY = datetime.date(2026, 9, 6)
+
+    @pytest.mark.parametrize("dob,expected", [
+        ("12/20/54", 71),   # was -29 live
+        ("12/20/64", 61),   # was -39
+        ("1/1/30", 96),     # was -4
+        ("12/20/27", 98),   # low edge of the broken 27-68 band
+        ("12/20/68", 57),   # high edge of the broken band
+        ("12/20/69", 56),   # first year %y already put in the past
+        ("7/30/2000", 26),  # 4-digit control
+        ("11/25/2009", 16),
+    ])
+    def test_two_digit_year_never_goes_negative(self, dob, expected):
+        assert pdf_extract.compute_age_from_dob(dob, self.TODAY) == expected
+
+    @pytest.mark.parametrize("dob", [
+        "09/18/2099",   # 4-digit future = data entry error, not ambiguity
+        "not a date", "", None, "Unknown",
+    ])
+    def test_unparseable_or_future_returns_none(self, dob):
+        assert pdf_extract.compute_age_from_dob(dob, self.TODAY) is None
+
+    def test_same_year_future_date_returns_none_KNOWN_GAP(self):
+        """`12/20/26` -> None, not 99. Documented, not endorsed.
+
+        The century correction fires only on `parsed.year > today.year`, so a
+        2-digit year EQUAL to the current year but a later month/day falls
+        through to the `parsed > today` guard instead of being read as 1926.
+        Pre-existing behaviour of the helper, unchanged by #765 — recorded here
+        so the next reader finds a decision rather than a surprise. None is
+        safe (no hint beats a wrong hint); it is merely incomplete.
+        """
+        assert pdf_extract.compute_age_from_dob("12/20/26", self.TODAY) is None
+        # the same 2-digit year EARLIER in the year is handled normally
+        assert pdf_extract.compute_age_from_dob("1/20/26", self.TODAY) == 0
+
+    def test_no_input_can_produce_a_negative_age(self):
+        """The property, not an example: sweep every 2-digit year."""
+        for yy in range(100):
+            got = pdf_extract.compute_age_from_dob(f"6/15/{yy:02d}", self.TODAY)
+            assert got is None or got >= 0, f"6/15/{yy:02d} -> {got}"
+
+    def test_strips_an_existing_hint_before_parsing(self):
+        assert pdf_extract.compute_age_from_dob(
+            "12/20/54 (-29 years old)", self.TODAY) == 71
+
+
+class TestSyntheticSummaryAgeHint:
+    """End-to-end through build_synthetic_summary -- the surface that shipped."""
+
+    def _dob_line(self, raw):
+        out = pdf_extract.build_synthetic_summary(
+            {"mp_dob": raw, "mp_full_name": "PROBE, SUBJECT"},
+            "Burns", "2026-09-06 09:00")
+        return next((l for l in out.splitlines() if l.startswith("DOB:")), None)
+
+    def test_the_live_regression_case(self):
+        line = self._dob_line("12/20/54")
+        assert "(-29" not in line
+        assert "years old)" in line
+        # the raw value the officer wrote is preserved
+        assert "12/20/54" in line
+
+    def test_unparseable_dob_gets_no_hint_rather_than_a_wrong_one(self):
+        """A missing hint is visibly missing; an impossible one reads as an answer."""
+        line = self._dob_line("Unknown")
+        assert "years old" not in line
+
+    def test_parseable_date_with_no_computable_age_gets_no_hint(self):
+        """The branch "Unknown" never reaches.
+
+        `_to_iso_date` succeeds on 09/18/2099 (it is a well-formed US date), so
+        this takes the date branch, not the #774 bare-age branch — and then
+        `compute_age_from_dob` declines it as a 4-digit future year. Mutation
+        testing caught that the "Unknown" case above exercises a DIFFERENT
+        branch, so it could not see a bogus hint emitted here.
+        """
+        line = self._dob_line("09/18/2099")
+        assert "old)" not in line, f"a hint was emitted for an uncomputable age: {line}"
+        assert "09/18/2099" in line
+
+    def test_age_one_is_singular(self):
+        line = self._dob_line("6/15/2025")
+        assert "(1 year old)" in line and "years" not in line
+
+
+class TestOneAgeImplementation:
+    """#765's root cause was duplication, so pin that it is gone.
+
+    Four copies existed: main.py (correct), apply_helpers.py, the
+    test_main_regression mirror, and pdf_extract's raw arithmetic (broken).
+    These read production source -- behavioural tests against a mirror cannot
+    see a re-divergence.
+    """
+
+    @staticmethod
+    def _src(rel):
+        return (Path(__file__).parent / rel).read_text(encoding="utf-8")
+
+    def test_pdf_extract_defines_it(self):
+        assert re.search(r"^def compute_age_from_dob\(", self._src("pdf_extract.py"), re.M)
+
+    def test_main_imports_rather_than_defines_it(self):
+        src = self._src("main.py")
+        assert "compute_age_from_dob as _compute_age_from_dob" in src, \
+            "main.py must import the canonical helper from pdf_extract"
+        assert not re.search(r"^def _compute_age_from_dob\(", src, re.M), \
+            "main.py re-defines the age helper — the duplication #765 removed is back"
+
+    def test_apply_helpers_imports_rather_than_mirrors_it(self):
+        src = self._src("migration_validation/apply_helpers.py")
+        assert "from pdf_extract import compute_age_from_dob" in src
+        assert not re.search(r"^def _compute_age_from_dob\(", src, re.M), \
+            "apply_helpers mirrors the age helper again — corpus runs would " \
+            "validate logic that does not ship"
+
+    def test_pdf_extract_does_not_reimplement_the_arithmetic(self):
+        """The specific shape that shipped -29: raw year subtraction."""
+        body = [l.split("#")[0] for l in self._src("pdf_extract.py").splitlines()]
+        fn = "\n".join(body)
+        # exactly one place may do year arithmetic: the canonical helper
+        assert fn.count("today.year - parsed.year") == 1
+        assert "_today.year - _dob_dt.year" not in fn, \
+            "the raw arithmetic that produced (-29 years old) is back"
+
+    def test_pdf_extract_uses_pacific_not_naive_today(self):
+        """Naive datetime.today() is UTC on Cloud Run; the recompute is Pacific."""
+        src = self._src("pdf_extract.py")
+        code = "\n".join(l.split("#")[0] for l in src.splitlines())
+        assert "America/Los_Angeles" in code
+        # Comments are stripped first: the explanation of this very rule names
+        # the literal being asserted absent, and would satisfy the check.
+        assert "datetime.today()" not in code, \
+            "naive server-local date reintroduced — off-by-one age near midnight"

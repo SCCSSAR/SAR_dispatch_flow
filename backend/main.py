@@ -79,6 +79,9 @@ from secret_health import get_all_token_health
 from gemini import extract_incident_summary, extract_staging_and_koester
 from pdf_extract import (
     is_pdf,
+    # #765 — the ONE age-from-DOB implementation. Aliased to the historical
+    # private name so every call site and pin here is unchanged by the move.
+    compute_age_from_dob as _compute_age_from_dob,
     extract_acroform_fields,
     build_synthetic_summary,
     _normalize_datetime,
@@ -501,7 +504,7 @@ _AGENCY_DISPLAY: dict[str, str] = {
 # `_rewrite_dob_age_hint()` so the dispatcher textarea is consistent
 # regardless of upstream path or Gemini non-determinism.
 _DOB_AGE_HINT_RE = re.compile(
-    r"\((\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
+    r"\((-?\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
     re.IGNORECASE,
 )
 _DOB_LINE_RE = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
@@ -509,66 +512,8 @@ _DOB_LINE_RE = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
 # strptime tolerates unpadded numerics with %m/%d (so "10/20/2005" matches
 # %m/%d/%Y). %B and %b are locale-sensitive; Cloud Run defaults to C locale
 # where they parse English month names — fine for SCCSSAR's English-only forms.
-_DOB_FORMATS = (
-    "%m/%d/%Y",   # 10/20/2005 (the SJSU regression case; also matches "10/20/2005")
-    "%m/%d/%y",   # 09/18/05  (2-digit year)
-    "%m-%d-%Y",   # 6-26-2010 (hyphen separator — common in handwritten forms)
-    "%m-%d-%y",   # 6-26-10   (hyphen + 2-digit year — surfaced via corpus apply_helpers)
-    "%Y-%m-%d",   # ISO 2005-10-20
-    "%B %d, %Y",  # October 20, 2005
-    "%b %d, %Y",  # Oct 20, 2005
-)
 
 
-def _compute_age_from_dob(dob_text: str, today: datetime.date) -> int | None:
-    """Parse a DOB date string; return age in completed years relative to `today`.
-
-    Returns None if `dob_text` is unparseable or yields a date that is still
-    in the future after the 2-digit-year past-correction. Strips a trailing
-    "(...)" hint from `dob_text` first, so callers may pass either
-    "10/20/2005" or the full "10/20/2005 (21 years old)" form.
-
-    2-digit-year disambiguation: %y defaults to the 1969-2068 cutover. For
-    DOBs we always prefer the past — if the parsed year ends up in the future
-    relative to `today`, subtract 100 (so "01/01/30" on a 2026 today becomes
-    1930 → age 96, not 2030 → negative age).
-    """
-    if not dob_text:
-        return None
-    candidate = dob_text.split("(", 1)[0].strip()
-    if not candidate:
-        return None
-    parsed = None
-    used_2digit_year = False
-    # Try-cascade: try each format in turn. ValueError per-format is expected
-    # — most formats won't match any given input. If none match, parsed stays
-    # None and we return None below (explicit handling, not silent swallow).
-    for fmt in _DOB_FORMATS:
-        try:
-            parsed = datetime.datetime.strptime(candidate, fmt).date()
-            used_2digit_year = fmt in ("%m/%d/%y", "%m-%d-%y")
-            break
-        except ValueError:
-            continue
-    if parsed is None:
-        return None
-    # Only apply the year-minus-100 past-correction when the parser actually
-    # used %y (2-digit year). A 4-digit year that's already in the future
-    # ("09/18/2099") is a data entry error, not a 19xx/20xx ambiguity →
-    # return None rather than fabricating a sensible-looking 1999.
-    if parsed.year > today.year:
-        if not used_2digit_year:
-            return None
-        try:
-            parsed = parsed.replace(year=parsed.year - 100)
-        except ValueError:
-            return None
-    if parsed > today:
-        return None
-    age = today.year - parsed.year
-    if (today.month, today.day) < (parsed.month, parsed.day):
-        age -= 1
-    return age if age >= 0 else None
 
 
 def _rewrite_dob_age_hint(

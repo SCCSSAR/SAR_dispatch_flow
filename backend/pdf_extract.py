@@ -20,7 +20,8 @@ Field schema (47 fields confirmed from forms/SAR Callout Form v2 (generic, filla
 
 import logging
 import re
-from datetime import datetime
+import zoneinfo
+from datetime import date as _date, datetime
 from typing import Optional
 
 import fitz  # pymupdf
@@ -402,6 +403,81 @@ def _build_at_risk_list(q_answers: dict[int, str], fields: dict[str, str]) -> li
 
 
 # ---------------------------------------------------------------------------
+# Canonical age-from-DOB computation (#765)
+# ---------------------------------------------------------------------------
+# SINGLE SOURCE OF TRUTH. main.py imports this as `_compute_age_from_dob` and
+# migration_validation/apply_helpers.py imports it too. It lives HERE, in the
+# lower layer, because main.py already imports from pdf_extract and the reverse
+# would be circular.
+#
+# It was moved out of main.py by #765. Before that, this module did its own raw
+# year arithmetic with neither the century correction nor the negativity check,
+# and emitted "(-29 years old)" on a live 2026-08-18 dementia callout: Python's
+# %y cutover is 1969-2068, so 2-digit years 27-68 land in the FUTURE and go
+# negative. Two implementations, one correct. The duplication WAS the bug, so
+# the fix is one implementation, not two correct ones.
+_DOB_FORMATS = (
+    "%m/%d/%Y",   # 10/20/2005 (the SJSU regression case; also matches "10/20/2005")
+    "%m/%d/%y",   # 09/18/05  (2-digit year)
+    "%m-%d-%Y",   # 6-26-2010 (hyphen separator — common in handwritten forms)
+    "%m-%d-%y",   # 6-26-10   (hyphen + 2-digit year — surfaced via corpus apply_helpers)
+    "%Y-%m-%d",   # ISO 2005-10-20
+    "%B %d, %Y",  # October 20, 2005
+    "%b %d, %Y",  # Oct 20, 2005
+)
+
+def compute_age_from_dob(dob_text: Optional[str], today: _date) -> Optional[int]:
+    """Parse a DOB date string; return age in completed years relative to `today`.
+
+    Returns None if `dob_text` is unparseable or yields a date that is still
+    in the future after the 2-digit-year past-correction. Strips a trailing
+    "(...)" hint from `dob_text` first, so callers may pass either
+    "10/20/2005" or the full "10/20/2005 (21 years old)" form.
+
+    2-digit-year disambiguation: %y defaults to the 1969-2068 cutover. For
+    DOBs we always prefer the past — if the parsed year ends up in the future
+    relative to `today`, subtract 100 (so "01/01/30" on a 2026 today becomes
+    1930 → age 96, not 2030 → negative age).
+    """
+    if not dob_text:
+        return None
+    candidate = dob_text.split("(", 1)[0].strip()
+    if not candidate:
+        return None
+    parsed = None
+    used_2digit_year = False
+    # Try-cascade: try each format in turn. ValueError per-format is expected
+    # — most formats won't match any given input. If none match, parsed stays
+    # None and we return None below (explicit handling, not silent swallow).
+    for fmt in _DOB_FORMATS:
+        try:
+            parsed = datetime.strptime(candidate, fmt).date()
+            used_2digit_year = fmt in ("%m/%d/%y", "%m-%d-%y")
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        return None
+    # Only apply the year-minus-100 past-correction when the parser actually
+    # used %y (2-digit year). A 4-digit year that's already in the future
+    # ("09/18/2099") is a data entry error, not a 19xx/20xx ambiguity →
+    # return None rather than fabricating a sensible-looking 1999.
+    if parsed.year > today.year:
+        if not used_2digit_year:
+            return None
+        try:
+            parsed = parsed.replace(year=parsed.year - 100)
+        except ValueError:
+            return None
+    if parsed > today:
+        return None
+    age = today.year - parsed.year
+    if (today.month, today.day) < (parsed.month, parsed.day):
+        age -= 1
+    return age if age >= 0 else None
+
+
+# ---------------------------------------------------------------------------
 # Synthetic summary builder
 # ---------------------------------------------------------------------------
 
@@ -471,16 +547,23 @@ def build_synthetic_summary(
     # Only appended when DOB parses as a US date; raw string unchanged otherwise.
     _dob_iso = _to_iso_date(mp_dob_raw)
     if _dob_iso and mp_dob_raw:
-        try:
-            _dob_dt   = datetime.strptime(_dob_iso, "%Y-%m-%d")
-            _today    = datetime.today()
-            _age      = (
-                _today.year - _dob_dt.year
-                - ((_today.month, _today.day) < (_dob_dt.month, _dob_dt.day))
-            )
-            mp_dob = f"{mp_dob_raw} ({_age} years old)"
-        except Exception:
+        # #765: delegate to the canonical helper above. This block used to do
+        # its own year arithmetic with neither a century correction nor a
+        # negativity check, and shipped "(-29 years old)" on a live dementia
+        # callout. It also used a naive datetime.today() -- UTC on Cloud Run --
+        # against a recompute that works in Pacific, so a birthday inside that
+        # 7-hour window produced an off-by-one age.
+        #
+        # A None here means the DOB did not parse or is in the future. Emit the
+        # raw value with NO hint rather than a wrong one: a missing hint is
+        # visibly missing, an impossible one reads as an answer.
+        _today = datetime.now(zoneinfo.ZoneInfo("America/Los_Angeles")).date()
+        _age = compute_age_from_dob(mp_dob_raw, _today)
+        if _age is None:
             mp_dob = mp_dob_raw
+        else:
+            _unit = "year" if _age == 1 else "years"
+            mp_dob = f"{mp_dob_raw} ({_age} {_unit} old)"
     else:
         # #774: no parseable date. If the dispatcher typed a bare AGE, append
         # the canonical hint so the four downstream parsers can read it, and
