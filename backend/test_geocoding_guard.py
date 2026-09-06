@@ -44,6 +44,30 @@ from pathlib import Path
 import pytest
 
 
+def _top_level_block(src: str, start_marker: str) -> str:
+    """Slice `src` from `start_marker` to the next TOP-LEVEL statement.
+
+    The boundary is a blank line followed by a column-0 character, which is
+    what actually ends a top-level definition. Two weaker markers have been
+    used here before and both have failed:
+
+      - `start + N` characters: a later insertion pushes the target out of
+        the window (false FAIL) and a deletion pulls junk in (false PASS).
+      - the NEXT FUNCTION'S NAME: stable only while nothing is ever inserted
+        between the two. #830 added a constant and a helper between
+        _tracking_number_for_d4h and _strip_eb_prefix, and every slice bounded
+        that way silently swallowed both — one turned red, the rest just
+        started scanning code they do not name.
+
+    A neighbour's identity is not a structural boundary. This is.
+    """
+    start = src.find(start_marker)
+    assert start != -1, f"{start_marker!r} not found — renamed? moved?"
+    m = re.search(r"\n\n\S", src[start:])
+    assert m, f"could not bound {start_marker!r}"
+    return src[start:start + m.start() + 1]
+
+
 # ---------------------------------------------------------------------------
 # Inline mirror of _house_number_consistent() from main.py.
 # Update this whenever the production function changes.
@@ -1643,11 +1667,7 @@ class TestGoogleDeliberatelyNotCountryBound:
     @staticmethod
     def _google_fn_source() -> str:
         src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
-        start = src.find("async def _geocode_google_maps(")
-        assert start != -1, "_geocode_google_maps not found in main.py"
-        end = src.find("\ndef _street_correction_note(", start)
-        assert end != -1 and end > start, "could not bound _geocode_google_maps"
-        return src[start:end]
+        return _top_level_block(src, "async def _geocode_google_maps(")
 
     def test_no_components_country_filter(self):
         body = self._google_fn_source()

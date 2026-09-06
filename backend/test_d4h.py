@@ -620,6 +620,30 @@ class TestStripEbPrefix:
 D4H_TRACKING_NUMBER_MAX = 50
 
 
+def _top_level_block(src: str, start_marker: str) -> str:
+    """Slice `src` from `start_marker` to the next TOP-LEVEL statement.
+
+    The boundary is a blank line followed by a column-0 character, which is
+    what actually ends a top-level definition. Two weaker markers have been
+    used here before and both have failed:
+
+      - `start + N` characters: a later insertion pushes the target out of
+        the window (false FAIL) and a deletion pulls junk in (false PASS).
+      - the NEXT FUNCTION'S NAME: stable only while nothing is ever inserted
+        between the two. #830 added a constant and a helper between
+        _tracking_number_for_d4h and _strip_eb_prefix, and every slice bounded
+        that way silently swallowed both — one turned red, the rest just
+        started scanning code they do not name.
+
+    A neighbour's identity is not a structural boundary. This is.
+    """
+    start = src.find(start_marker)
+    assert start != -1, f"{start_marker!r} not found — renamed? moved?"
+    m = re.search(r"\n\n\S", src[start:])
+    assert m, f"could not bound {start_marker!r}"
+    return src[start:start + m.start() + 1]
+
+
 def _tracking_number_for_d4h(event_number: str) -> str:
     """Mirror of backend/d4h.py::_tracking_number_for_d4h."""
     value = (event_number or "").strip()
@@ -1876,14 +1900,17 @@ class TestTrackingNumberMirrorParity:
     def test_production_payload_no_longer_assigns_the_event_name(self):
         """The actual regression guard. `"trackingNumber": event_name` is the
         line that cost the 2026-07-31 dispatch its D4H record."""
-        src = self._d4h_source()
-        start = src.find("def _build_create_incident_payload(")
-        assert start != -1, "_build_create_incident_payload not found in d4h.py"
-        # Bound on the next top-level def, not a char count.
-        end = src.find("\ndef _build_involved_person_payload(", start)
-        assert end != -1 and end > start, "could not bound the payload builder"
-        body = src[start:end]
-        assert '"trackingNumber":       event_name' not in body, (
+        body = _top_level_block(
+            self._d4h_source(), "def _build_create_incident_payload("
+        )
+        # Match EITHER assignment shape. The original literal pinned a
+        # dict-entry form with exact whitespace alignment
+        # (`"trackingNumber":       event_name`) that production stopped using
+        # when the field became a conditional subscript assignment — so it
+        # asserted the absence of a string that could no longer occur, and
+        # reassigning the event name passed it. Caught by mutation testing
+        # during the #830 pin sweep, not by review.
+        assert not re.search(r'trackingNumber"?\]?\s*[:=]\s*event_name', body), (
             "trackingNumber is assigned the event name again — that is D4H's "
             "AGENCY-REFERENCE field, and the event name blows its max(50) on "
             "any long out-of-county agency (issue #676)"
@@ -2010,12 +2037,9 @@ class TestAgeForD4HMirrorParity:
         A helper that exists but is not called is the same as no helper, and
         the inline `int(age_val)` coercion it replaced is what let 0 through.
         """
-        src = self._d4h_source()
-        start = src.find("def _build_involved_person_payload(")
-        assert start != -1, "_build_involved_person_payload not found in d4h.py"
-        end = src.find("\ndef _auth_header(", start)
-        assert end != -1 and end > start, "could not bound the involved-person builder"
-        body = src[start:end]
+        body = _top_level_block(
+            self._d4h_source(), "def _build_involved_person_payload("
+        )
         assert '_age_for_d4h(ocr_data.get("mp_age"))' in body, (
             "the involved-person builder no longer routes age through "
             "_age_for_d4h — a subject under one year old will 400 the POST "
@@ -2074,7 +2098,7 @@ class TestZodIssuesMirrorParity:
     def test_extractor_matches_production(self):
         src = (Path(__file__).parent / "d4h.py").read_text(encoding="utf-8")
         m = re.search(
-            r"^def _zod_issues_for_log\(.*?(?=\n\ndef exception_summary_no_body)",
+            r"^def _zod_issues_for_log\(.*?(?=\n\n\S)",
             src, re.DOTALL | re.MULTILINE,
         )
         assert m, "_zod_issues_for_log not found in d4h.py (renamed? moved?)"
@@ -2119,13 +2143,7 @@ class TestZodIssuesWiredIntoErrorPath:
     @staticmethod
     def _handler_source() -> str:
         src = (Path(__file__).parent / "d4h.py").read_text(encoding="utf-8")
-        start = src.find("def _log_and_raise_for_status(")
-        assert start != -1, "_log_and_raise_for_status not found in d4h.py"
-        # Bound on the next top-level def, not a char count — a window that
-        # ends early stops describing the thing it names.
-        end = src.find("\ndef _safe_http_call(", start)
-        assert end != -1 and end > start, "could not bound _log_and_raise_for_status"
-        return src[start:end]
+        return _top_level_block(src, "def _log_and_raise_for_status(")
 
     def test_extractor_is_called_on_the_4xx_path(self):
         body = self._handler_source()
