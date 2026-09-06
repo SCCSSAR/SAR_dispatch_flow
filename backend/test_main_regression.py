@@ -4358,7 +4358,7 @@ class TestPartitionArrivalsForShadow:
 # ---------------------------------------------------------------------------
 
 _DOB_AGE_HINT_RE_MIRROR = re.compile(
-    r"\((\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
+    r"\((-?\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
     re.IGNORECASE,
 )
 _DOB_LINE_RE_MIRROR = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
@@ -4748,6 +4748,69 @@ class TestDobAgeHintBareNumber:
                 summary, datetime.date(2026, 9, 6)
             )
             assert correction == (57, 56), f"{hint} stopped matching"
+
+
+class TestNegativeAgeHintIsRepaired:
+    """#765 defect 2 — the guard was blind exactly where the value was worst.
+
+    `_DOB_AGE_HINT_RE` used `\\d{1,3}`, which does not match `-29`. So on the
+    2026-08-18 dementia callout `_rewrite_dob_age_hint` found no hint, returned
+    `(summary, None)`, and stayed SILENT — correctly, per the "corrections and
+    failures only" event-log policy. A plausible-but-wrong age (71 -> 72) it
+    caught and logged; an impossible one it waved through without a word.
+    """
+
+    NEG = (
+        "Event Name: 2026-09-06 XXSO MAIN\n"
+        "DOB: 12/20/54 (-29 years old)\n"
+        "Missing Person: Jane Doe; at-risk: Dementia\n"
+    )
+
+    def test_negative_hint_is_seen_and_repaired(self):
+        new_summary, correction = _rewrite_dob_age_hint_mirror(
+            self.NEG, datetime.date(2026, 9, 6)
+        )
+        assert correction == (-29, 71)
+        assert "(71 years old)" in new_summary
+        assert "-29" not in new_summary
+
+    def test_the_repair_is_reported_not_silent(self):
+        """An impossible age must be a LOUD correction, not a silent pass."""
+        _, correction = _rewrite_dob_age_hint_mirror(
+            self.NEG, datetime.date(2026, 9, 6)
+        )
+        assert correction is not None, (
+            "a negative age was corrected without reporting it — the event log "
+            "would show nothing, and silence reads as success"
+        )
+
+    @pytest.mark.parametrize("hint,expected_old", [
+        ("(-29 years old)", -29), ("(-4 years old)", -4), ("(-39 yo)", -39),
+        ("(-19)", -19),  # bare negative, via #814's optional unit
+    ])
+    def test_negative_shapes_all_match(self, hint, expected_old):
+        summary = self.NEG.replace("(-29 years old)", hint)
+        _, correction = _rewrite_dob_age_hint_mirror(
+            summary, datetime.date(2026, 9, 6)
+        )
+        assert correction is not None and correction[0] == expected_old
+
+    def test_widening_did_not_break_positive_hints(self):
+        ok = self.NEG.replace("(-29 years old)", "(71 years old)")
+        _, correction = _rewrite_dob_age_hint_mirror(ok, datetime.date(2026, 9, 6))
+        assert correction is None
+
+    def test_production_regex_matches_a_negative_hint(self):
+        """Reads main.py itself — the mirror cannot prove production changed."""
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        pat = re.search(
+            r'_DOB_AGE_HINT_RE = re\.compile\(\s*\n\s*r"(.*?)",\s*\n\s*re\.IGNORECASE',
+            src,
+        )
+        assert pat, "_DOB_AGE_HINT_RE not found in main.py"
+        rx = re.compile(pat.group(1), re.IGNORECASE)
+        m = rx.search("DOB: 12/20/54 (-29 years old)")
+        assert m and m.group(1) == "-29", "production still cannot see a negative hint"
 
 
 class TestDobAgeHintRegexParity:

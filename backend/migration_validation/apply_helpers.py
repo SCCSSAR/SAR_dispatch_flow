@@ -43,6 +43,14 @@ import re
 import sys
 from pathlib import Path
 
+# #765: import the ONE age implementation rather than mirroring it. This file
+# avoids importing main.py because of its heavyweight GCP deps -- pdf_extract
+# has none (stdlib + pymupdf), so the reason for a mirror does not apply here.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pdf_extract import compute_age_from_dob as _compute_age_from_dob  # noqa: E402
+import sys
+from pathlib import Path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS_ROOT = REPO_ROOT / "experiments"
 
@@ -55,49 +63,12 @@ DEFAULT_CORPUS_ROOT = REPO_ROOT / "experiments"
 # Verbatim mirror of main.py::_DOB_AGE_HINT_RE — see the Locked Decision on the
 # defensive age-from-DOB recompute. Pinned by TestDobAgeHintRegexParity.
 _DOB_AGE_HINT_RE = re.compile(
-    r"\((\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
+    r"\((-?\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
     re.IGNORECASE,
 )
 _DOB_LINE_RE = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
-_DOB_FORMATS = (
-    "%m/%d/%Y", "%m/%d/%y",
-    "%m-%d-%Y", "%m-%d-%y",  # hyphen separator — common in handwritten forms (corpus)
-    "%Y-%m-%d", "%B %d, %Y", "%b %d, %Y",
-)
 
 
-def _compute_age_from_dob(dob_text, today):
-    if not dob_text:
-        return None
-    candidate = dob_text.split("(", 1)[0].strip()
-    if not candidate:
-        return None
-    parsed = None
-    used_2digit_year = False
-    # Try-cascade: ValueError per-format is expected (most formats won't match
-    # any given input). All-formats-failed is handled explicitly via parsed=None.
-    for fmt in _DOB_FORMATS:
-        try:
-            parsed = datetime.datetime.strptime(candidate, fmt).date()
-            used_2digit_year = fmt in ("%m/%d/%y", "%m-%d-%y")
-            break
-        except ValueError:
-            continue
-    if parsed is None:
-        return None
-    if parsed.year > today.year:
-        if not used_2digit_year:
-            return None
-        try:
-            parsed = parsed.replace(year=parsed.year - 100)
-        except ValueError:
-            return None
-    if parsed > today:
-        return None
-    age = today.year - parsed.year
-    if (today.month, today.day) < (parsed.month, parsed.day):
-        age -= 1
-    return age if age >= 0 else None
 
 
 def _rewrite_dob_age_hint(summary, today):
