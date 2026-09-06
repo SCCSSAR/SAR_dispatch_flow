@@ -7050,6 +7050,144 @@ class TestStagingProximityFilter:
             )
 
 
+class TestStagingParkTelemetry:
+    """Pin the park counters in _rank_dedupe_cap_staging (issue #807).
+
+    Parks are tier 1 and are frequently the best staging SAR gets, but the
+    caller log lines count only schools and churches. A park that the provider
+    never returned and a park that was returned and then EVICTED therefore
+    looked identical in the logs — opposite diagnoses with the same evidence.
+    On the 2026-09-05 sccssar-dev regression test civic_raw=55 reduced to
+    count=12 with no park in the seven ranked entries, and the log record could
+    not say which had happened.
+
+    Source pins only: main.py is not importable under local pytest, so there is
+    no way to capture the emitted record. That makes mutation testing the only
+    evidence these assertions are real — each one below was verified by
+    reintroducing the defect it names.
+    """
+
+    @staticmethod
+    def _src():
+        return (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+
+    @classmethod
+    def _fn(cls, src=None):
+        """Bounded at BOTH ends on real markers — never start + N characters."""
+        m = re.search(
+            r"^def _rank_dedupe_cap_staging\(.*?(?=\n\n(?:def |async def |# -{10,}))",
+            src if src is not None else cls._src(), re.DOTALL | re.MULTILINE,
+        )
+        assert m, "_rank_dedupe_cap_staging not found in main.py"
+        return m.group(0)
+
+    @staticmethod
+    def _code_only(text):
+        """Strip the docstring and every comment.
+
+        Load-bearing here for the same reason as in TestStagingProximityFilter:
+        the rationale block names every counter this class asserts, so a pin
+        over raw source finds the explanation and passes with the telemetry
+        deleted.
+        """
+        body = re.sub(r'"""(?:.|\n)*?"""', "", text)
+        return "\n".join(l.split("#")[0] for l in body.splitlines())
+
+    def test_telemetry_is_emitted_from_the_shared_helper(self):
+        """The CALL, inside the function — not the identifier anywhere."""
+        code = self._code_only(self._fn())
+        assert "logger.info(" in code, (
+            "The park telemetry log call is gone from "
+            "_rank_dedupe_cap_staging — an absent park and an evicted park "
+            "are again indistinguishable in the logs."
+        )
+        assert "parks_in=%d" in code and "parks_dropped_proximity=%d" in code, (
+            "The park telemetry no longer reports the provider count and the "
+            "proximity evictions, which are the two causes #807 exists to "
+            "separate."
+        )
+        assert "parks_precap=%d" in code and "parks_capped=%d" in code, (
+            "The park telemetry no longer spans the :12 cap, so a park cut by "
+            "the cap cannot be told from one cut by the filters."
+        )
+
+    def test_precap_count_reads_deduped_not_the_capped_list(self):
+        """Same rule as the school/church counts directly above it.
+
+        Counting from the capped list would report 0 at exactly the dense
+        anchors where the question is asked — 12+ tier-1 candidates fill the
+        cap, which is the shape the 2026-09-05 test produced.
+        """
+        code = self._code_only(self._fn())
+        assert '_parks_precap = sum(1 for c in deduped if c.get("amenity") == "park")' in code, (
+            "The pre-cap park count is no longer derived from `deduped`. "
+            "Counting from the capped list makes it 0 in dense areas."
+        )
+
+    def test_counts_are_taken_after_the_dedup_loop(self):
+        """Structure, not keyword presence.
+
+        Hoisted above the loop, `deduped` is empty and every count is 0 — which
+        still contains every string the pins above look for.
+        """
+        code = self._code_only(self._fn())
+        assert code.index("deduped.append(c)") < code.index("_parks_precap"), (
+            "Park counting moved ahead of the dedup loop, so it counts an "
+            "empty list."
+        )
+
+    def test_proximity_evictions_are_recorded_inside_the_filter(self):
+        """Recorded at the drop, and before any candidate is accepted.
+
+        Appended after the loop, or outside the rejecting branch, the counter
+        would report 0 evictions forever while still being present.
+        """
+        code = self._code_only(self._fn())
+        assert 'prox_dropped_amenities.append(c["amenity"])' in code, (
+            "The proximity filter no longer records what it drops, so a park "
+            "evicted by #674 is silent again."
+        )
+        assert code.index('prox_dropped_amenities.append(c["amenity"])') \
+            < code.index("deduped.append(c)"), (
+                "The eviction is recorded after the candidate is accepted, so "
+                "it can never fire."
+            )
+        assert 'prox_dropped_amenities.count("park")' in code, (
+            "The recorded evictions are never counted, so "
+            "parks_dropped_proximity is not derived from them."
+        )
+
+    def test_the_recorder_does_not_make_the_filter_amenity_aware(self):
+        """The #674 row's PARKS ARE NOT EXEMPT rule outranks this telemetry.
+
+        TestStagingProximityFilter.test_parks_are_not_exempt_in_production
+        already forbids the token `park` inside the filter branch. This pin
+        states the reason from the telemetry side: the recorder is generic on
+        purpose, and turning it into a condition would exempt parks from the
+        filter while looking like observability.
+        """
+        code = self._code_only(self._fn())
+        prox = code[code.index("c_lat, c_lng = c.get"):code.index("seen_names.add")]
+        assert "park" not in prox, (
+            "The proximity filter now special-cases parks. Telemetry must be "
+            "read after the loop, never used as a drop condition."
+        )
+
+    def test_telemetry_logs_counts_only(self):
+        """Core privacy guarantee #3 — no PII in logs.
+
+        Every conversion in the record must be %d. A single %s would let a
+        place name or a coordinate string reach Cloud Run logs.
+        """
+        code = self._code_only(self._fn())
+        start = code.index('"Staging park telemetry')
+        record = code[start:code.index(")", code.index("parks_capped=%d"))]
+        assert "%s" not in record and "%r" not in record, (
+            "The park telemetry interpolates a string — counts only, no place "
+            "names and no coordinates."
+        )
+
+
 # main.py — override endpoint constants. Pinned because they affect operational
 # behavior (Overpass quota, response payload size, validation thresholds).
 _PR_D_OVERRIDE_OVERPASS_RADIUS_M  = 300
