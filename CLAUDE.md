@@ -14,6 +14,39 @@
    curl -s https://<service-url>/ | grep -c stale_locality   # 0 = the build is lying
    ```
    Do this before debugging ANY "the code is deployed but not working" symptom. See Rule #16 for the other half.
+
+   **Better than a marker: hash the whole served asset.** A marker taken from a diff's `+`
+   lines is not necessarily new — on the 1.11.64 roll `git diff` showed `600 Tradan Dr.` as
+   added, but `Tradan` occurs 3x in *both* versions, so `grep -c Tradan` would have returned
+   3 and read as a **PASS on a build that never happened**. A whole-file hash needs no marker
+   and cannot be fooled that way. **It requires exactly TWO normalizations**, because
+   `backend/Dockerfile` rewrites two attributes at build time — `data-client_id` (line 44,
+   #808) and `data-env-label` (line 54):
+
+   ```bash
+   URL=https://<service-url>
+   curl -sS "$URL/" \
+     | sed -e 's|data-client_id="[^"]*"|data-client_id="YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com"|' \
+           -e 's|data-env-label="[^"]*"|data-env-label=""|' \
+     | shasum -a 256
+   git show HEAD:frontend/index.html | shasum -a 256      # must match
+   ```
+
+   **Normalizing only `data-client_id` FAILS on a correct personal-dev deploy** — that was
+   the recipe merged in #817 and it was wrong. The two build scripts are asymmetric:
+   `build-dev.sh:108` passes `--build-arg ENV_LABEL` (the SANDBOX banner) while
+   `build-sccssar-dev.sh` does not, so on sccssar-dev the line-54 `sed` rewrites `""` to `""`
+   and is a no-op — which is why the one-normalization version looked correct when written.
+   Measured live 2026-09-05 against `1.11.65 / 3983ff6`, both envs served, `HEAD` =
+   `bef5b827…`: personal-dev one-norm `844e5d64…` **FAIL** / two-norm `bef5b827…` PASS;
+   sccssar-dev passed either way. **A verification step that fails on a correct deploy is
+   worse than none** — it trains you to ignore the check, which is the state this Rule exists
+   to prevent. Adding a third build-time `sed` to the Dockerfile means adding a third `-e`
+   here; there is no test pinning this, so the Dockerfile is the source of truth — read it.
+
+   **`curl -s` hides a failed request and `shasum` of an empty body is a fixed value**
+   (`e3b0c442…`). Use `curl -sS`, and refuse to hash a body under ~1 KB — otherwise every
+   variant "matches" and the check silently passes against nothing.
 9. **Everbridge/Slack work builds to `bash build-dev.sh` (personal dev) only.** Never `build-sccssar-dev.sh` for EB/Slack — that environment has real dispatchers who can be paged.
 10. **Empirically verify third-party API assumptions before writing integration code.** Use Swagger or a spike script to confirm endpoint path, HTTP verb, body shape, and auth BEFORE coding. Prior sessions lost hours to wrong assumptions (DELETE-that-doesn't-exist, `groupId` vs `groupIds`, outer envelope vs inner body). Applies to: Everbridge, Slack, CalTopo, D4H, Google Maps. Skip only if the exact endpoint shape is already confirmed in shipped code.
 11. **End every session with (a) a copy-pasteable next-session continuation prompt, (b) a MEMORY.md update, AND (c) a `docs/release-notes.md` update if a new version deployed.** The continuation prompt names the immediate next action, open backlog items, and any active gotcha. The MEMORY.md update adds one "Recent sessions" row (date + one-line summary + links to any new feedback/topic files created this session); bump the "Current state" header date + bullets if material state changed (new PRs merged, mode flag flipped, integration went live, etc.). **Release notes (c):** if one or more new VERSION numbers were DEPLOYED this session (a `bash build-*.sh` ran and the live footer version changed — not merely a merged VERSION bump), add a newest-first, dispatcher-facing `docs/release-notes.md` entry for the deployed version(s), matching the file's house style (`## YYYY-MM-DD — <headline>` + `**Version:** \`<version> · EB: <mode> · Slack: <mode>\`` + plain-language "what changed for you"). Internal-only changes (no dispatcher-visible effect) get a one-line mention under the current version rather than their own entry. **(d) Draft the dispatcher announcement email** whenever (c) fires AND the release carries dispatcher-facing new features or a significant bug fix. Draft it WITHOUT being asked — Bill decides whether to send, and the bar for drafting is lower than the bar for sending. **Whether it SENDS is decided by the call to action, not by severity (Bill, 2026-08-25):** ask *does this give the dispatcher something NEW to do?* 1.11.63 fixed a bug that had destroyed the only correct location on a real callout and was still not sent, because the dispatcher's takeaway reduced to "do not typo the LKP", which has been true since 1.0.0. When the CTA collapses to standing advice, say so on handover instead of presenting the draft as ready. Style rules (subject carries the features, or the fix on a fix-only release; change-type label per item; features before fixes; credit the origin; one rule per item; one light joke; no reassurance closer) live in the `feedback-dispatcher-release-emails` memory. Also assess whether CLAUDE.md needs an update — most sessions don't; only trigger when a Locked Decision or Session Rule was discovered or refined (e.g., a new failure mode + guardrail was added, an empirical truth was validated, a Rule needs clarification). Skip only if Bill explicitly says no need.
@@ -195,7 +228,7 @@ $GCLOUD secrets versions access latest \
   --secret dispatch-authorized-emails --project sar-dispatch-sccssar-dev
 ```
 
-Authorized dispatchers live in Secret Manager `dispatch-authorized-emails`. To add a dispatcher or set up OAuth Test Users, see [docs/deployment-guide.md](docs/deployment-guide.md).
+Authorized dispatchers live in Secret Manager `dispatch-authorized-emails`. To add a dispatcher or set up OAuth Test Users, see `docs/deployment-guide.md` (maintainer-only, not published).
 
 ---
 
@@ -470,14 +503,9 @@ Issues tracked at **https://github.com/billburns250/SAR_dispatch_flow/issues** �
 
 **Before any build:** `git pull --ff-only origin main` FIRST, confirm `cat VERSION`, then verify a CODE MARKER rather than the footer (Rules #8 + #16). For a backend-only change there is no served asset to grep — either read `main.py` out of the image by digest, or re-upload a fixture whose output only the new code can produce, which is cheaper and is what was done here.
 
-**A code marker taken from a diff's `+` lines is NOT necessarily new — validate it against BOTH versions and take a pre-build negative control.** On the 1.11.64 roll, `git diff` showed `600 Tradan Dr.` as an added line, but `Tradan` occurs 3x in *both* 1.11.63 and HEAD (the change was the house number, and surrounding context had moved). A post-build `grep -c Tradan` would have returned 3 and read as a **PASS on a build that had not happened**. What works: diff the two versions' files directly, pick a string that is provably `0` in the old and `>0` in the new, curl the live service BEFORE the build to confirm it reads `0`, and prefer a **full-file sha256 of the served asset against `git show HEAD:<path>`** — that is a single check needing no marker at all, and it is what actually confirmed this deploy.
+**A code marker taken from a diff's `+` lines is NOT necessarily new — validate it against BOTH versions and take a pre-build negative control.** On the 1.11.64 roll, `git diff` showed `600 Tradan Dr.` as an added line, but `Tradan` occurs 3x in *both* 1.11.63 and HEAD (the change was the house number, and surrounding context had moved). A post-build `grep -c Tradan` would have returned 3 and read as a **PASS on a build that had not happened**. What works: diff the two versions' files directly, pick a string that is provably `0` in the old and `>0` in the new, curl the live service BEFORE the build to confirm it reads `0`, and prefer the **full-file sha256 check in Session Rule #8**, which needs no marker at all and is what actually confirmed this deploy.
 
-**⚠️ That sha256 check needs one normalization as of #808 (2026-09-06), or it fails on a CORRECT deploy.** `frontend/index.html` now ships a `YOUR_OAUTH_CLIENT_ID` placeholder and `backend/Dockerfile:44` `sed`s the real client ID over it at build time, so the served file legitimately differs from `HEAD` by exactly that line. Normalize the substitution back out and the single whole-file check still works:
-```bash
-curl -s "$URL/" | sed 's|data-client_id="[^"]*"|data-client_id="YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com"|' | shasum -a 256
-git show HEAD:frontend/index.html | shasum -a 256
-```
-Both halves were validated on 2026-09-06 before trusting it: the then-served 1.11.64 file hashed byte-identical to `3db01a2:frontend/index.html` (so the method is sound and the live build really was that sha), and applying the Docker `sed` to `HEAD` then normalizing it back reproduced `HEAD`'s hash exactly (so the normalization is lossless). **A verification step that fails on a correct deploy is worse than none** — it trains you to ignore the check, which is the state Rule #8 exists to prevent.
+**The whole-file sha256 check and its TWO required normalizations now live in Session Rule #8**, so they survive the next handover rewrite of this section. Do not restate them here.
 
 **Retired from this list (2026-07-28), do not re-add:**
 - ~~Multi-user D4H cohort test (Kris + Melanie)~~ — written 2026-05-19 to confirm per-YES fan-out under concurrent arrivals. Superseded by real callouts: the July Alexis callout ran **11 EB responders** under genuine concurrency and surfaced a finding a 2-person scheduled test would likely have missed (2/11 dropped from D4H on email misalignment). The question it was written to answer has been answered better.
