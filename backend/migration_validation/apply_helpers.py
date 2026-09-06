@@ -52,7 +52,12 @@ DEFAULT_CORPUS_ROOT = REPO_ROOT / "experiments"
 # (Same mirror pattern as backend/test_main_regression.py.)
 # ---------------------------------------------------------------------------
 
-_DOB_AGE_HINT_RE = re.compile(r"\((\d{1,3})\s+years?\s+old\)", re.IGNORECASE)
+# Verbatim mirror of main.py::_DOB_AGE_HINT_RE — see the Locked Decision on the
+# defensive age-from-DOB recompute. Pinned by TestDobAgeHintRegexParity.
+_DOB_AGE_HINT_RE = re.compile(
+    r"\((\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
+    re.IGNORECASE,
+)
 _DOB_LINE_RE = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
 _DOB_FORMATS = (
     "%m/%d/%Y", "%m/%d/%y",
