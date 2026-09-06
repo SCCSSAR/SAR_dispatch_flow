@@ -1,4 +1,4 @@
-FROM python:3.14.3-slim
+FROM python:3.14.7-slim
 
 # Git SHA injected at build time by build.sh via --build-arg GIT_SHA=$(git rev-parse --short HEAD)
 # Baked into version.txt at image build so the running container always knows its own revision.
