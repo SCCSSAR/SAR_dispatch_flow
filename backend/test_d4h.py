@@ -626,6 +626,24 @@ def _tracking_number_for_d4h(event_number: str) -> str:
     return value[:D4H_TRACKING_NUMBER_MAX]
 
 
+# Mirror of backend/d4h.py::D4H_AGE_MIN_EXCLUSIVE. D4H's Zod schema for
+# POST /incident-involved-persons rejects age with `inclusive: false`, so the
+# constraint is age > 0 and ZERO IS REJECTED. Pinned against production by
+# TestAgeForD4HMirrorParity.
+D4H_AGE_MIN_EXCLUSIVE = 0
+
+
+def _age_for_d4h(age_val: object) -> Optional[int]:
+    """Mirror of backend/d4h.py::_age_for_d4h."""
+    try:
+        age = int(age_val) if age_val not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    if age is not None and age <= D4H_AGE_MIN_EXCLUSIVE:
+        return None
+    return age
+
+
 SAMPLE_OCR = {
     "event_name":  "2026-05-13 SJPD Tradan",
     "event_number": "26-00193",
@@ -1204,13 +1222,8 @@ def _build_involved_person_payload(ocr_data: dict) -> dict:
 
     involvement_notes = "\n\n".join(paragraphs)
 
-    # Demographics — coerce age to int gracefully
-    age_val = ocr_data.get("mp_age")
-    age: Optional[int]
-    try:
-        age = int(age_val) if age_val not in (None, "") else None
-    except (TypeError, ValueError):
-        age = None
+    # Demographics — see backend/d4h.py::_age_for_d4h for the age > 0 constraint.
+    age = _age_for_d4h(ocr_data.get("mp_age"))
 
     # Cluster D — D4H-M4 pre-validation mirror. Empty mp_full_name would
     # produce {"name": ""} which D4H 400s on; the _post_involved_person
@@ -1845,7 +1858,10 @@ class TestTrackingNumberMirrorParity:
     def test_helper_matches_production(self):
         src = self._d4h_source()
         m = re.search(
-            r"^def _tracking_number_for_d4h\(.*?(?=\n\ndef _strip_eb_prefix)",
+            # Bound on the next TOP-LEVEL statement, not on a neighbour's
+            # NAME: #830 inserted a constant and a helper between these two
+            # functions and this slice silently swallowed both.
+            r"^def _tracking_number_for_d4h\(.*?(?=\n\n\S)",
             src, re.DOTALL | re.MULTILINE,
         )
         assert m, "_tracking_number_for_d4h not found in d4h.py (renamed? moved?)"
@@ -1879,6 +1895,156 @@ class TestTrackingNumberMirrorParity:
         assert "if tracking_number:" in body, (
             "trackingNumber is no longer conditionally omitted — an empty "
             "string is not the same as letting D4H default the field"
+        )
+
+
+
+class TestAgeForD4H:
+    """#830 — D4H rejects age 0, so a subject under one year old must be sent
+    with the field OMITTED rather than with a fabricated value.
+
+    D4H's Zod schema uses `inclusive: false`, i.e. age > 0. The 400 it returns
+    rejects the WHOLE involved-person POST, so a zero costs every other subject
+    field — name, DOB, sex, involvementNotes — on an incident whose Everbridge
+    and Slack legs have already fired.
+    """
+
+    def test_zero_is_omitted(self):
+        """The defect. Nothing upstream stopped it: index.html's guard is
+        `age >= 0`, the old coercion accepted 0 because `0 not in (None, "")`,
+        and the None-strip preserves falsy values by design."""
+        assert _age_for_d4h(0) is None
+
+    def test_one_is_still_sent(self):
+        """The boundary the constraint actually names. `inclusive: false`
+        means 1 is valid — a guard written as `< 0` or `<= 1` is wrong in
+        opposite directions and this is what separates them."""
+        assert _age_for_d4h(1) == 1
+
+    def test_negative_is_omitted(self):
+        """Belt to #765's braces. #765 removed the 2-digit-year pivot that
+        produced negative ages, but mp_age is dispatcher-editable and the
+        frontend is not the only producer."""
+        assert _age_for_d4h(-29) is None
+
+    def test_string_zero_is_omitted(self):
+        """Intake values arrive as strings. A gate applied before coercion
+        would pass "0" through."""
+        assert _age_for_d4h("0") is None
+
+    def test_ordinary_ages_are_unchanged(self):
+        assert _age_for_d4h(15) == 15
+        assert _age_for_d4h("81") == 81
+
+    def test_missing_and_unparseable_are_omitted(self):
+        """Unchanged from the pre-#830 behaviour — regression guard on the
+        coercion that moved into the helper."""
+        assert _age_for_d4h(None) is None
+        assert _age_for_d4h("") is None
+        assert _age_for_d4h("unknown") is None
+        assert _age_for_d4h([]) is None
+
+    def test_zero_age_omits_the_key_end_to_end(self):
+        """The whole point: None here becomes an ABSENT key at the wire.
+
+        Runs the payload builder and then the same null-strip
+        _post_involved_person applies, because "age": None would be as fatal
+        as "age": 0 if the strip ever stopped removing it.
+        """
+        ocr = dict(SAMPLE_OCR_INVOLVED, mp_age=0)
+        payload = _build_involved_person_payload(ocr)
+        assert payload["age"] is None
+        assert "age" not in _strip_nulls_for_test(payload)
+
+    def test_subject_survives_a_zero_age(self):
+        """A zero must cost the age field and nothing else — the failure being
+        prevented is losing the entire subject record."""
+        ocr = dict(SAMPLE_OCR_INVOLVED, mp_age=0)
+        cleaned = _strip_nulls_for_test(_build_involved_person_payload(ocr))
+        assert cleaned["name"] == SAMPLE_OCR_INVOLVED["mp_full_name"]
+        assert cleaned["dateOfBirth"]
+        assert cleaned["involvementNotes"]
+
+
+class TestAgeForD4HMirrorParity:
+    """#830 — pin the mirror above against production, and pin the fact the
+    mirror cannot express: that the builder actually routes through the helper.
+
+    Every test in TestAgeForD4H runs against the mirror, so reverting d4h.py
+    alone would leave them all green. d4h.py is not importable under local
+    pytest, which is exactly why this class exists.
+    """
+
+    @staticmethod
+    def _d4h_source() -> str:
+        return (Path(__file__).parent / "d4h.py").read_text(encoding="utf-8")
+
+    def test_constraint_literal_matches_production(self):
+        """Source of truth: D4H's own Zod schema, captured 2026-09-06 against
+        live team 1775. Undocumented — if this drifts, re-probe before
+        changing it."""
+        src = self._d4h_source()
+        assert "D4H_AGE_MIN_EXCLUSIVE = 0" in src, (
+            "D4H_AGE_MIN_EXCLUSIVE drifted from 0 in backend/d4h.py — D4H's "
+            "schema rejects age with inclusive:false, so the exclusive "
+            "minimum is 0. Re-probe before updating this mirror."
+        )
+        assert D4H_AGE_MIN_EXCLUSIVE == 0
+
+    def test_helper_matches_production(self):
+        src = self._d4h_source()
+        m = re.search(
+            r"^def _age_for_d4h\(.*?(?=\n\n\S)",
+            src, re.DOTALL | re.MULTILINE,
+        )
+        assert m, "_age_for_d4h not found in d4h.py (renamed? moved?)"
+        shape = TestZodIssuesMirrorParity._shape
+        assert shape(m.group(0)) == shape(inspect.getsource(_age_for_d4h)), (
+            "_age_for_d4h in test_d4h.py has drifted from backend/d4h.py — "
+            "the tests above exercise the stale copy"
+        )
+
+    def test_production_builder_routes_age_through_the_helper(self):
+        """The actual regression guard.
+
+        A helper that exists but is not called is the same as no helper, and
+        the inline `int(age_val)` coercion it replaced is what let 0 through.
+        """
+        src = self._d4h_source()
+        start = src.find("def _build_involved_person_payload(")
+        assert start != -1, "_build_involved_person_payload not found in d4h.py"
+        end = src.find("\ndef _auth_header(", start)
+        assert end != -1 and end > start, "could not bound the involved-person builder"
+        body = src[start:end]
+        assert '_age_for_d4h(ocr_data.get("mp_age"))' in body, (
+            "the involved-person builder no longer routes age through "
+            "_age_for_d4h — a subject under one year old will 400 the POST "
+            "and lose the entire subject record (issue #830)"
+        )
+        assert "age = int(age_val)" not in body, (
+            "the inline age coercion is back in the builder, bypassing the "
+            "age > 0 gate"
+        )
+
+    def test_production_does_not_substitute_a_fabricated_age(self):
+        """Omit, never substitute.
+
+        Sending 1 would satisfy D4H's schema and silently record a year of age
+        on a missing-infant report. The helper must return None.
+        """
+        src = self._d4h_source()
+        m = re.search(
+            r"^def _age_for_d4h\(.*?(?=\n\n\S)",
+            src, re.DOTALL | re.MULTILINE,
+        )
+        assert m, "_age_for_d4h not found in d4h.py"
+        code = "\n".join(
+            l.split("#")[0] for l in re.sub(r'"""(?:.|\n)*?"""', "", m.group(0)).splitlines()
+        )
+        assert "return 1" not in code and "= 1" not in code, (
+            "_age_for_d4h substitutes a fabricated age instead of omitting "
+            "the field — D4H cannot represent 'less than one year old', and a "
+            "wrong age on a missing-infant record is worse than none."
         )
 
 

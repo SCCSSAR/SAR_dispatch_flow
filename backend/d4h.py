@@ -362,6 +362,59 @@ def _tracking_number_for_d4h(event_number: str) -> str:
     return value[:D4H_TRACKING_NUMBER_MAX]
 
 
+# D4H's Zod schema for POST /incident-involved-persons requires age > 0:
+#   {"code": "too_small", "minimum": 0, "inclusive": false,
+#    "message": "Number must be greater than 0", "path": ["body", "age"]}
+# Note `inclusive: false` — the constraint is age > 0, NOT age >= 0. ZERO IS
+# REJECTED. Empirically confirmed 2026-09-06 against live team 1775 while
+# probing the age constraint for #765; the probe created nothing. Undocumented,
+# exactly like trackingNumber's max(50) and referenceDescription's max(100).
+#
+# A 400 here loses the WHOLE involved-person record — every subject field, not
+# just the age — on an incident whose Everbridge and Slack legs have already
+# fired. Same blast radius as the 2026-07-31 trackingNumber failure.
+#
+# Zero is reachable: a subject under one year old is a plausible SAR subject,
+# and nothing upstream stops it. index.html's sanity guard is `age >= 0`, so 0
+# passes; the coercion below accepted it because `0 not in (None, "")`; and
+# _post_involved_person's cleanup strips None, NOT falsy values — deliberately,
+# because "" and 0 are legitimate for other fields (pinned by
+# TestStripNulls::test_zero_preserved). So the gate has to be HERE, at the
+# point the field is built, or 0 reaches the wire.
+#
+# WE OMIT RATHER THAN SUBSTITUTE. Sending age 1 would fabricate a year of age
+# on a missing-infant record; D4H simply cannot represent "less than one year
+# old". The age remains visible to D4H users in involvementNotes and in the
+# summary text, so omitting costs a structured field, not the information.
+#
+# This is also the BELT to #765's braces: #765 removed the 2-digit-year pivot
+# that produced NEGATIVE ages, but mp_age is dispatcher-editable and the
+# frontend is not the only producer, so only a boundary check makes the 400
+# impossible. `<= 0` covers both the zero and the negative case.
+# Source of truth for this literal; mirrored in test_d4h.py.
+D4H_AGE_MIN_EXCLUSIVE = 0
+
+
+def _age_for_d4h(age_val: object) -> Optional[int]:
+    """Coerce an intake age to D4H's `age`, or None to omit the field.
+
+    Returns None — which _post_involved_person's None-strip turns into an
+    OMITTED key — for anything D4H's schema would reject: a missing or blank
+    value, a non-numeric one, and any value at or below
+    D4H_AGE_MIN_EXCLUSIVE. See the constraint block above for why omitting
+    beats substituting.
+
+    Test mirror: backend/test_d4h.py::TestAgeForD4H
+    """
+    try:
+        age = int(age_val) if age_val not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    if age is not None and age <= D4H_AGE_MIN_EXCLUSIVE:
+        return None
+    return age
+
+
 def _strip_eb_prefix(eb_group_name: str) -> str:
     """Strip common SCCSSAR EB prefixes for matching against D4H tag titles.
 
@@ -649,13 +702,11 @@ def _build_involved_person_payload(ocr_data: dict) -> dict:
 
     involvement_notes = "\n\n".join(paragraphs)
 
-    # Demographics — coerce age to int gracefully
-    age_val = ocr_data.get("mp_age")
-    age: Optional[int]
-    try:
-        age = int(age_val) if age_val not in (None, "") else None
-    except (TypeError, ValueError):
-        age = None
+    # Demographics. _age_for_d4h coerces AND enforces D4H's undocumented
+    # age > 0 Zod constraint — see the block above its definition. A subject
+    # under one year old yields None here and the key is omitted, rather than
+    # 400ing the POST and losing every other subject field with it.
+    age = _age_for_d4h(ocr_data.get("mp_age"))
 
     # Pre-validate the required name field. _post_involved_person's None-strip
     # filter at line ~788 does NOT strip empty strings, so an OCR failure
