@@ -7,7 +7,15 @@ description: Guided after-action review of ONE Dispatch Turbo callout or live di
 
 **Objective:** capture everything learnable from a single dispatch — one real callout, or one live end-to-end test — while it's still fresh, and convert it into tracked work (GitHub issues), durable context (MEMORY.md), and hardened rules (CLAUDE.md Locked Decisions) instead of losing it.
 
-**Repo:** `/Users/billburns/src/SAR_dispatch_flow` — work from there.
+**Repo:** the Dispatch Turbo code checkout — work from there. (Maintainer note: since the
+2026-09 migration that is the `SCCSSAR/SAR_dispatch_flow` clone, **not** the older personal
+checkout, which is now the ops/tracker repo `SCCSSAR/SAR_dispatch_flow-ops`.)
+
+> **This skill references maintainer-only files that are not published in this repository.**
+> `docs/release-notes.md`, `docs/ops-runbook.md`, `docs/dispatcher-guide.md` and the
+> `scripts/` helpers are withheld from the public tree and live in the ops repo. Steps that
+> name them are runnable by the maintainer only; every other step works from this repo
+> alone. Nothing here is a broken link — the files exist, just not here.
 
 ## Scope fence — read this before asking anything
 
