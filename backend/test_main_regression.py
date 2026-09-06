@@ -4358,7 +4358,7 @@ class TestPartitionArrivalsForShadow:
 # ---------------------------------------------------------------------------
 
 _DOB_AGE_HINT_RE_MIRROR = re.compile(
-    r"\((\d{1,3})\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o)\)",
+    r"\((\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
     re.IGNORECASE,
 )
 _DOB_LINE_RE_MIRROR = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
@@ -4670,6 +4670,157 @@ class TestRewriteDobAgeHint:
 # Drift would silently break textarea injection AND CalTopo arbitration.
 _DISPATCHER_OVERRIDE_LABEL_LITERAL = "Dispatcher-specified staging location"
 _OFFICER_OVERRIDE_LABEL_LITERAL    = "Officer-designated staging location"
+
+
+class TestDobAgeHintBareNumber:
+    """#814 — a bare-number parenthetical must reach the defensive recompute.
+
+    `12/03/1969 (57)` came off a real v2 AcroForm: an officer wrote a genuine
+    DOB *and their own arithmetic*, with no unit. Every accepted hint variant
+    required a unit, so `_rewrite_dob_age_hint` returned at `if not hint_match`
+    and the age was never checked against the date sitting beside it. The
+    officer's number was also wrong — 12/03/1969 is 56 until December — i.e.
+    wrong in exactly the direction the recompute exists to catch, on the one
+    consumer that could not see it.
+    """
+
+    BARE = (
+        "Event Name: 2026-09-06 XXSO MAIN\n"
+        "DOB: 12/03/1969 (57)\n"
+        "Missing Person: Jane Doe; at-risk: Dementia\n"
+    )
+
+    def test_bare_number_hint_is_recomputed_and_canonicalized(self):
+        # 2026-09-06 is before the December birthday, so 1969 -> 56, not 57.
+        new_summary, correction = _rewrite_dob_age_hint_mirror(
+            self.BARE, datetime.date(2026, 9, 6)
+        )
+        assert correction == (57, 56)
+        assert "(56 years old)" in new_summary
+        assert "(57)" not in new_summary
+
+    def test_bare_number_already_correct_stays_silent(self):
+        """Event-log policy: corrections and failures only, never a silent success."""
+        already = self.BARE.replace("(57)", "(56)")
+        new_summary, correction = _rewrite_dob_age_hint_mirror(
+            already, datetime.date(2026, 9, 6)
+        )
+        assert correction is None
+        assert "(56 years old)" in new_summary
+
+    def test_after_the_birthday_the_officer_was_right(self):
+        """Same fixture, later `today` — 57 becomes correct and nothing is flagged."""
+        new_summary, correction = _rewrite_dob_age_hint_mirror(
+            self.BARE, datetime.date(2026, 12, 4)
+        )
+        assert correction is None
+        assert "(57 years old)" in new_summary
+
+    def test_parenthesized_number_without_a_date_is_never_rewritten(self):
+        """The guard that makes accepting a bare number safe.
+
+        A hint match is NOT sufficient — `_compute_age_from_dob` must also parse
+        a real date off the SAME line. This is the false-positive case the issue
+        worried about, and it is closed by construction rather than by the regex.
+        """
+        no_date = "DOB: [not recorded] (57)\n"
+        new_summary, correction = _rewrite_dob_age_hint_mirror(
+            no_date, datetime.date(2026, 9, 6)
+        )
+        assert correction is None
+        assert new_summary == no_date
+
+    def test_four_digit_year_in_parens_cannot_match(self):
+        """\\d{1,3} must be followed immediately by `)`, so (2005) is not an age."""
+        year = "DOB: 12/03/1969 (2005)\n"
+        new_summary, correction = _rewrite_dob_age_hint_mirror(
+            year, datetime.date(2026, 9, 6)
+        )
+        assert correction is None
+        assert new_summary == year
+
+    def test_unit_bearing_variants_still_match(self):
+        """Making the unit optional must not lose any variant it used to accept."""
+        for hint in ("(57 years old)", "(57 year old)", "(57 yrs old)",
+                     "(57 yr old)", "(57 yo)", "(57 y.o.)", "(57 y/o)"):
+            summary = self.BARE.replace("(57)", hint)
+            _, correction = _rewrite_dob_age_hint_mirror(
+                summary, datetime.date(2026, 9, 6)
+            )
+            assert correction == (57, 56), f"{hint} stopped matching"
+
+
+class TestDobAgeHintRegexParity:
+    """The pin whose absence let three copies of this regex drift.
+
+    `_DOB_AGE_HINT_RE` exists in main.py, in this file's mirror, and in
+    apply_helpers.py. Nothing read production, so apply_helpers had quietly
+    narrowed to years-old-only — meaning every corpus run under-reported
+    corrections on `(N yo)` / `(N y/o)` forms and validated logic that does not
+    ship. Follows the TestUnansweredLpbNote production-pin pattern.
+    """
+
+    PATTERN = r'_DOB_AGE_HINT_RE = re\.compile\(\s*\n\s*r"(.*?)",\s*\n\s*re\.IGNORECASE'
+
+    def _pattern_in(self, relpath):
+        src = (Path(__file__).parent / relpath).read_text(encoding="utf-8")
+        m = re.search(self.PATTERN, src)
+        assert m, f"_DOB_AGE_HINT_RE not found in {relpath}"
+        return m.group(1)
+
+    def test_all_three_copies_are_identical(self):
+        prod = self._pattern_in("main.py")
+        helper = self._pattern_in("migration_validation/apply_helpers.py")
+        assert prod == _DOB_AGE_HINT_RE_MIRROR.pattern, (
+            f"main.py drifted from the test mirror.\n  main.py: {prod}\n"
+            f"  mirror:  {_DOB_AGE_HINT_RE_MIRROR.pattern}"
+        )
+        assert helper == prod, (
+            f"apply_helpers.py drifted from main.py — corpus runs would validate "
+            f"code that does not ship.\n  main.py:       {prod}\n"
+            f"  apply_helpers: {helper}"
+        )
+
+    def test_production_bails_when_the_date_is_unparseable(self):
+        """The guard that makes a bare number safe to accept — pinned in PRODUCTION.
+
+        Accepting `(N)` is only safe because a hint match is not sufficient:
+        `_compute_age_from_dob` must also parse a real date off the same line,
+        and `_rewrite_dob_age_hint` returns unchanged when it cannot. The
+        behavioural tests above exercise the hand-written mirror, so they stay
+        green if main.py's body drifts — mutation testing confirmed exactly that
+        leak. This reads main.py itself.
+        """
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        m = re.search(
+            r"^def _rewrite_dob_age_hint\(.*?(?=\n\ndef |\n\n@)",
+            src, re.DOTALL | re.MULTILINE,
+        )
+        assert m, "_rewrite_dob_age_hint not found in main.py"
+        body = [
+            l.strip() for l in m.group(0).splitlines()
+            if l.split("#")[0].strip()
+        ]
+        try:
+            i = body.index("new_age = _compute_age_from_dob(dob_line, today)")
+        except ValueError:
+            raise AssertionError(
+                "_compute_age_from_dob call site not found in _rewrite_dob_age_hint"
+            )
+        assert body[i + 1] == "if new_age is None:", (
+            f"expected a None-check immediately after the recompute, got: {body[i + 1]!r}"
+        )
+        assert body[i + 2] == "return summary, None", (
+            "the unparseable-date branch must return the summary UNCHANGED — "
+            f"got: {body[i + 2]!r}. Without it a parenthesized number on a line "
+            "with no valid date is rewritten as an age."
+        )
+
+    def test_production_accepts_a_bare_number(self):
+        """Reads main.py's own source, not the mirror — #814's actual fix."""
+        prod = re.compile(self._pattern_in("main.py"), re.IGNORECASE)
+        assert prod.search("DOB: 12/03/1969 (57)"), "bare-number hint not accepted"
+        assert not prod.search("DOB: 12/03/1969 (2005)"), "4-digit year matched as age"
 
 
 class TestDispatcherStagingOverrideLabel:

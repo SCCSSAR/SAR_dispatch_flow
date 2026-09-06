@@ -490,11 +490,18 @@ _AGENCY_DISPLAY: dict[str, str] = {
 #                    occasionally drifts to this form despite prompt instruction
 #   "(N y/o)"        common medical shorthand
 #   "(N y.o.)" / "(N y.o)" — dotted variants
+#   "(N)"            bare number, no unit — an officer writing their own
+#                    arithmetic beside the DOB (#814). Accepting it is safe
+#                    because a match is NOT sufficient: _rewrite_dob_age_hint
+#                    then requires _compute_age_from_dob to parse a real date
+#                    off the SAME line, so a parenthesized number with no date
+#                    beside it is never rewritten. A 4-digit year cannot match:
+#                    \d{1,3} must be followed immediately by ")".
 # All variants normalize to the canonical "(N years old)" via
 # `_rewrite_dob_age_hint()` so the dispatcher textarea is consistent
 # regardless of upstream path or Gemini non-determinism.
 _DOB_AGE_HINT_RE = re.compile(
-    r"\((\d{1,3})\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o)\)",
+    r"\((\d{1,3})(?:\s+(?:years?\s+old|yrs?\s+old|y\.?o\.?|y/o))?\)",
     re.IGNORECASE,
 )
 _DOB_LINE_RE = re.compile(r"^DOB:\s*(.+)$", re.MULTILINE)
