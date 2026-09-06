@@ -2279,6 +2279,14 @@ def _rank_dedupe_cap_staging(
     seen_names = set()
     seen_addrs = set()
     deduped = []
+    # Issue #807 — TELEMETRY ONLY, read after the loop, never inside it.
+    # Records the amenity of every candidate the proximity filter rejects so the
+    # park counters below can attribute a drop to THIS filter rather than to the
+    # name dedup or the cap. Deliberately generic: the filter itself must stay
+    # blind to amenity (see PARKS ARE NOT EXEMPT below, pinned by
+    # TestStagingProximityFilter.test_parks_are_not_exempt_in_production), so
+    # nothing here may become a condition on the drop.
+    prox_dropped_amenities = []
     for c in candidates:
         name_key = c["name"].lower()
         # DESIGN DECISION (issue #669): collapse word-reordered MALL names.
@@ -2356,6 +2364,7 @@ def _rank_dedupe_cap_staging(
             for k in deduped
             if k.get("lat") is not None and k.get("lng") is not None
         ):
+            prox_dropped_amenities.append(c["amenity"])
             continue
         seen_names.add(name_key)
         if addr_key:
@@ -2371,7 +2380,36 @@ def _rank_dedupe_cap_staging(
     # so the exclusion note logic can use them directly without touching staging_candidates.
     _school_count_uncapped  = sum(1 for c in deduped if c.get("amenity") in ("school", "college"))
     _church_count_uncapped  = sum(1 for c in deduped if c.get("amenity") == "place_of_worship")
-    return deduped[:12], _school_count_uncapped, _church_count_uncapped  # 7-entry cap + filtering headroom
+    capped = deduped[:12]  # 7-entry cap + filtering headroom
+    # DESIGN DECISION (issue #807): park telemetry, emitted here rather than in
+    # the two callers so both POI sources are instrumented identically — the
+    # same reason the ranking itself lives in this helper.
+    #
+    # Parks are tier 1 and are frequently the best staging SAR gets, but the
+    # caller log lines count only schools and churches, so an absent park and an
+    # EVICTED park looked identical in the logs. Those are opposite diagnoses:
+    # a provider gap versus the eviction the #674 row explicitly warns about
+    # ("it starts evicting parks in low-density anchors"). Four counters, each
+    # the boundary of one stage:
+    #     parks_in                 — returned by the provider
+    #     parks_dropped_proximity  — evicted by the #674 filter
+    #     parks_precap             — survived dedup + filter
+    #     parks_capped             — survived the :12 cap, i.e. reached Gemini
+    # Name-dedup drops are the remainder (in - proximity - precap); the address
+    # dedup cannot drop a park while the "(address not in OSM)" sentinel holds.
+    # Counted from `deduped`, never re-counted from `capped`, for the same
+    # reason as the school/church counts directly above.
+    #
+    # Counts only — no names, no coordinates (core privacy guarantee #3).
+    _parks_in = sum(1 for c in candidates if c.get("amenity") == "park")
+    _parks_precap = sum(1 for c in deduped if c.get("amenity") == "park")
+    logger.info(
+        "Staging park telemetry | parks_in=%d parks_dropped_proximity=%d "
+        "parks_precap=%d parks_capped=%d",
+        _parks_in, prox_dropped_amenities.count("park"),
+        _parks_precap, sum(1 for c in capped if c.get("amenity") == "park"),
+    )
+    return capped, _school_count_uncapped, _church_count_uncapped
 
 
 # ---------------------------------------------------------------------------
