@@ -4,7 +4,7 @@ python-multipart==0.0.32
 google-auth==2.49.1
 google-cloud-firestore==2.27.0
 google-genai==1.73.1
-Pillow==12.2.0
+Pillow==12.3.0
 httpx==0.28.1
 pymupdf==1.27.2.2
 google-api-python-client==2.194.0
