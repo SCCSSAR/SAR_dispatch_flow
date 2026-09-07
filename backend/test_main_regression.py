@@ -10731,7 +10731,12 @@ class TestEmptyOverpassNote:
 
     def test_empty_overpass_emits_note(self):
         source = (Path(__file__).parent / "main.py").read_text()
-        assert "No staging POIs found within 1200 m of the LKP (remote area)" in source
+        # The radius is no longer a literal: #838 retries wider on zero, so the note
+        # reports the radius ACTUALLY searched (0.75 mi, or 3.00 mi after a widened
+        # retry). Re-pinning 1200 m would understate a widened search and read to the
+        # dispatcher as a near-LKP failure. The note's EXISTENCE is what this pins.
+        assert "of the LKP (remote area) — staging options limited; confirm " in source
+        assert "_staging_searched_m" in source
         # Must be gated on a successful-but-empty result, not the failure path.
         assert "elif not staging_candidates:" in source
 
@@ -12527,3 +12532,83 @@ class TestEverbridgeCallerIdIsConfiguration:
             code = "\n".join(l.split("#")[0] for l in p.read_text(encoding="utf-8").splitlines())
             hits = re.findall(r"(?<![0-9])[2-9][0-9]{2}[2-9][0-9]{2}[0-9]{4}(?![0-9])", code)
             assert not hits, f"{p} carries a dialable number: {hits}"
+
+class TestStagingWidenedRetry:
+    """Pin the widened staging retry (#838, Bill approved 3 mi 2026-09-07).
+
+    Zero candidates at 1200 m is a RENDERING outcome, not evidence of a remote
+    LKP. Measured at 3101 Alexis Dr (suburban Palo Alto): the provider returns
+    28 features inside 1200 m and NOT ONE carries a house number, so every one
+    is dropped by the PASS 2 leading-digit predicate. The addressed POIs exist
+    further out — 21 at 3 mi, almost all from categories already queried. The
+    golf course we dropped for a missing OSM house number IS the address the
+    officer wrote as staging on that form.
+
+    What the retry really buys is Gemini's mode: supplying ANY candidate list
+    switches it out of training-data mode, whose output was measured
+    non-reproducible (15/17 corpus forms share NO addresses across three
+    identical runs) with false distances (claimed <=0.75 mi, actual median
+    4.3 mi, `123 Main St` shipping 8x).
+
+    ORDER IS LOAD-BEARING: the retry must run BEFORE the
+    `if not _overpass_ok / elif not staging_candidates` chain. Run it after and
+    the "remote area" note fires on an anchor where staging was in fact found.
+    """
+
+    @staticmethod
+    def _src():
+        return (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _block(src):
+        """The retry block only — bounded at BOTH ends on real markers."""
+        start = src.index("_staging_searched_m = 1200")
+        end = src.index("if not _overpass_ok:", start)
+        assert end > start
+        return src[start:end]
+
+    @staticmethod
+    def _nocomment(block):
+        return "\n".join(l.split("#")[0] for l in block.splitlines())
+
+    def test_fallback_radius_is_three_miles(self):
+        # 3.00 mi. Calibrated: 21 addressed POIs at this radius vs 0 at 1200 m.
+        assert "_STAGING_FALLBACK_RADIUS_M = 4828" in self._src()
+
+    def test_retry_calls_the_lookup_with_the_fallback_radius(self):
+        # Call site, not the bare identifier — a declared-but-unused constant
+        # would satisfy the identifier alone.
+        code = self._nocomment(self._block(self._src()))
+        assert "await _query_staging_pois(" in code
+        assert "radius_m=_STAGING_FALLBACK_RADIUS_M" in code
+
+    def test_retry_is_gated_on_zero_candidates_and_a_healthy_source(self):
+        code = self._nocomment(self._block(self._src()))
+        assert "if _overpass_ok and not staging_candidates:" in code
+
+    def test_retry_runs_before_the_zero_candidate_note(self):
+        # Ordering guard: the retry must precede the ok/zero branch chain, or a
+        # successful widened search still emits the "remote area" note.
+        src = self._src()
+        assert src.index("_staging_searched_m = 1200") < src.index("if not _overpass_ok:")
+
+    def test_widened_success_tells_the_dispatcher(self):
+        # Bill 2026-09-07: staging 3 mi out must never render silently.
+        code = self._nocomment(self._block(self._src()))
+        assert "event_log_additions.append(" in code
+        assert "search widened" in code
+
+    def test_note_reports_the_radius_actually_searched(self):
+        # The zero-candidate note must not hardcode 1200 m — after a widened
+        # retry it would understate the search and read as a near-LKP failure.
+        src = self._src()
+        note = src[src.index("(remote area)") - 400: src.index("(remote area)") + 200]
+        assert "_staging_searched_m" in note
+        assert "within 1200 m of the LKP" not in self._nocomment(src)
+
+    def test_source_ok_is_not_clobbered_by_the_retry(self):
+        # The narrow call already proved the source is up; letting a failed wide
+        # call flip _overpass_ok would fire the all-mirrors-failed ERROR.
+        code = self._nocomment(self._block(self._src()))
+        assert "_overpass_ok =" not in code
+

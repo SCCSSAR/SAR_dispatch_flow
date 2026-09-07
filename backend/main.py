@@ -1913,6 +1913,17 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # missing person, which is never legitimate. Confirmed with Bill 2026-07-25.
 _MAX_STAGING_DIST_M = 50_000
 
+# Widened retry radius, used ONLY when the 1200 m staging lookup returns zero
+# candidates (#838). Zero at 1200 m does NOT imply a remote LKP: measured at
+# 3101 Alexis Dr — suburban Palo Alto — the provider returns 28 features inside
+# 1200 m and NOT ONE carries a house number, so every one is dropped by the
+# PASS 2 leading-digit predicate. The addressed POIs exist further out: 21 of
+# them at exactly this radius, almost all from categories already queried.
+# 3 mi confirmed as acceptable field SOP by Bill 2026-09-07; the 1200 m cap's
+# own comment scopes its rationale to URBAN incidents, which this is not.
+# Well inside _MAX_STAGING_DIST_M, so the distance guard does not reject these.
+_STAGING_FALLBACK_RADIUS_M = 4828  # 3.00 mi
+
 
 def _staging_geocode_implausible(
     lkp_geo: tuple | None, lat: float | None, lng: float | None
@@ -4081,6 +4092,36 @@ async def ocr(
             staging_candidates, _overpass_school_count, _overpass_church_count, _overpass_ok = (
                 await _query_staging_pois(lat, lng, radius_m=1200)
             )
+            # Zero candidates at 1200 m is a RENDERING outcome, not necessarily a
+            # remote LKP — see _STAGING_FALLBACK_RADIUS_M. Retry once, wider, ONLY
+            # on zero: the common path is untouched, so nothing new competes for the
+            # 7-slot cap or the provider's 100-feature cap. Supplying candidates at
+            # all is the real prize — it switches Gemini out of training-data mode,
+            # whose fabricated list is not reproducible run-to-run (15/17 corpus
+            # forms share NO addresses across identical runs) and whose distances
+            # are false (claimed <=0.75 mi, actual median 4.3 mi). #838
+            _staging_searched_m = 1200
+            if _overpass_ok and not staging_candidates:
+                _wide_cands, _wide_sc, _wide_cc, _wide_ok = await _query_staging_pois(
+                    lat, lng, radius_m=_STAGING_FALLBACK_RADIUS_M
+                )
+                logger.info(
+                    "Staging widened retry | radius_m=%d count=%d source_ok=%s",
+                    _STAGING_FALLBACK_RADIUS_M, len(_wide_cands), _wide_ok,
+                )
+                if _wide_ok:
+                    _staging_searched_m = _STAGING_FALLBACK_RADIUS_M
+                    if _wide_cands:
+                        staging_candidates = _wide_cands
+                        _overpass_school_count = _wide_sc
+                        _overpass_church_count = _wide_cc
+                        event_log_additions.append(
+                            "Note: No staging POIs within 0.75 mi of the LKP — search widened "
+                            f"to {_STAGING_FALLBACK_RADIUS_M / 1609.34:.2f} mi. Recommendations "
+                            "below are farther out than usual; confirm travel time with the "
+                            "officer before dispatching."
+                        )
+
             if not _overpass_ok:
                 logger.error(
                     "All Overpass mirrors failed — staging recommendations will be based on "
@@ -4099,10 +4140,14 @@ async def ocr(
                 # failure case above: without a note, a lone officer-designated
                 # staging entry looks unexplained and the dispatcher can't tell
                 # "no options exist here" from "the lookup silently broke."
-                logger.info("Overpass returned zero staging candidates (remote LKP)")
+                logger.info(
+                    "Staging source returned zero candidates (remote LKP) | searched_m=%d",
+                    _staging_searched_m,
+                )
                 event_log_additions.append(
-                    "Note: No staging POIs found within 1200 m of the LKP (remote area) "
-                    "— staging options limited; confirm officer-designated staging or set manually."
+                    f"Note: No staging POIs found within {_staging_searched_m / 1609.34:.2f} mi "
+                    "of the LKP (remote area) — staging options limited; confirm "
+                    "officer-designated staging or set manually."
                 )
 
         # --- Pass 2 (JPEG) / Single Gemini call (PDF): staging + Koester analysis ---
