@@ -1,0 +1,40 @@
+name: Feature or change proposal
+description: Something the tool should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open one of these **before** writing the code. Large unsolicited pull requests
+        are the ones most likely to stall — see
+        [CONTRIBUTING.md](https://github.com/SCCSSAR/SAR_dispatch_flow/blob/main/CONTRIBUTING.md).
+
+        No real call-out data, please.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What goes wrong today, for whom. A dispatcher problem, a responder problem and
+        a maintainer problem get weighed differently, so say which this is.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: What should happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: locked
+    attributes:
+      label: Does this contradict a Locked Design Decision?
+      description: |
+        Check the table in
+        [CLAUDE.md](https://github.com/SCCSSAR/SAR_dispatch_flow/blob/main/CLAUDE.md).
+        If it does, quote the row and say what changed — that is a normal thing to
+        propose, it just has to be argued rather than done quietly. "I checked and it
+        does not" is a fine answer.
+    validations:
+      required: false

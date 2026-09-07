@@ -1,0 +1,49 @@
+name: Bug report
+description: Something the tool did wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste real call-out data.** No missing person's name, date of birth,
+        address or medical information; no responder or officer name, phone number or
+        email; no real incident number; no API key. Redact or invent the specifics —
+        the shape of the failure is what matters, and a redacted report is still
+        actionable. If the details are genuinely necessary, email them instead.
+
+        If this is a security vulnerability, close this and follow
+        [SECURITY.md](https://github.com/SCCSSAR/SAR_dispatch_flow/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the tool did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: |
+        The steps, and which intake path was involved — a fillable PDF form, or a
+        photograph of a paper form. Those are two entirely different code paths and
+        the answer usually decides where to look.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and commit
+      description: The footer of the running app reports both, e.g. `1.11.70 / 3d4bdb4`.
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Did this affect a real dispatch?
+      description: |
+        Whether a dispatcher or responder was actually affected, and whether anyone
+        had to correct something by hand. This decides priority more than severity
+        in the code does.
+    validations:
+      required: false

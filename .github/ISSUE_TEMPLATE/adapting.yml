@@ -1,0 +1,29 @@
+name: Question, or adapting this for another team
+description: You run SAR somewhere else and want to use or adapt this.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are welcome. Questions from other teams are the fastest way the
+        documentation gets better, so a question that turns out to be answered in the
+        docs is still worth asking — it means the docs were hard to find.
+
+        Please keep real operational details out of a public issue: no real subject or
+        responder information, no live keys or endpoints.
+  - type: textarea
+    id: question
+    attributes:
+      label: What you are trying to do
+      description: The question, or what you are trying to adapt.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Your setup, roughly
+      description: |
+        Optional, but it usually changes the answer. Your intake form, your
+        notification system, your mapping tool, and whether you are on Google Cloud.
+    validations:
+      required: false

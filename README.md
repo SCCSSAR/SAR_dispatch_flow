@@ -174,6 +174,7 @@ Registry all stay within free tier at this usage level.
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Ops / Team lead | Day-to-day running: reading logs, rate limits, cost signals, verifying a deploy |
 | [`docs/DISPATCHING.md`](docs/DISPATCHING.md) | Dispatchers | Step-by-step use of the app, and what to do when it misbehaves |
 | [`docs/FORMS.md`](docs/FORMS.md) | Ops / Developers | The call-out form: what it contains, what to change for your agency, what not to touch |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contributors | How changes get reviewed and merged, the no-real-data rule, and how to run the tests |
 | [`CLAUDE.md`](CLAUDE.md) | Contributors | Locked design decisions — what was tried, what failed, and why the current approach is what it is |
 
 `CLAUDE.md` is written as context for AI coding sessions, but it is the most useful
