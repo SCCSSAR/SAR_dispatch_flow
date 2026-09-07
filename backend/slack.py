@@ -167,6 +167,25 @@ def _gender_display(gender: str) -> str:
     return _GENDER_LONG_FORM.get((gender or "").strip().upper(), "Unknown")
 
 
+def _mrkdwn_escape(text: str) -> str:
+    """Escape the three characters Slack's mrkdwn parser treats as markup.
+
+    Intake free text (Request, Notes, Last seen, the MP name and at-risk list,
+    the officer's contact line, and the staging address) is interpolated into
+    message text that Slack renders as mrkdwn. Unescaped, a crafted form field
+    can smuggle `<url|label>` (a link authored by the trusted dispatch bot, in
+    a pinned message nobody can edit), `<!channel>` / `<!here>` (a mass push
+    to every responder), or a `>` that closes the staging link early so the
+    remainder parses as fresh markup. Found by the 2026-09-06 security review.
+
+    Content-preserving: Slack un-escapes on render, so the no-truncation rules
+    on at_risk and Request are untouched. Apply to every externally sourced
+    value and NEVER to the bot's own markup — the two staging URLs, `<#C…>`
+    channel deep-links, `*bold*`. `&` goes first or it double-escapes.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def novel_notes(raw_notes: str, at_risk: str) -> str:
     """Drop intake free-text snippets the at-risk line already says (issue #670).
 
@@ -328,15 +347,19 @@ def format_pinned_welcome(
     # Frontend sends `mp_age: ""` (not null) when OCR fails to extract age;
     # the prior `age is not None` guard let "" through and produced "yo".
     age_str = f"{age}yo" if age not in (None, "") else "?yo"
+    notes_clean = novel_notes(notes, at_risk_clean)
+    mp_name = _mrkdwn_escape(mp_name)
+    at_risk_clean = _mrkdwn_escape(at_risk_clean)
     mp_line = f"MP: {mp_name} – {age_str} {gender_display}, {at_risk_clean}"
 
     contact_clean = officer_contact.strip()
+    event_name = _mrkdwn_escape(event_name)
     lines = [
         f"*{event_name}*",
         mp_line,
     ]
-    notes_clean = novel_notes(notes, at_risk_clean)
     if notes_clean:
+        notes_clean = _mrkdwn_escape(notes_clean)
         lines.append(f"Notes: {notes_clean}")
     # pdf_extract.py renders an empty Request box as the literal "[not
     # recorded]" sentinel, and 6 of 20 corpus forms leave it blank. Dropping the
@@ -359,11 +382,14 @@ def format_pinned_welcome(
     # responders while both other surfaces correctly omitted it.
     last_seen_clean = last_seen.strip()
     if last_seen_clean and not last_seen_clean.startswith("["):
+        last_seen_clean = _mrkdwn_escape(last_seen_clean)
         lines.append(f"Last seen: {last_seen_clean}")
     request_clean = request.strip()
     if request_clean and request_clean.lower() != "[not recorded]":
+        request_clean = _mrkdwn_escape(request_clean)
         lines.append(f"Request: {request_clean}")
     if contact_clean:
+        contact_clean = _mrkdwn_escape(contact_clean)
         lines.append(f"Contact: {contact_clean}")
     return "\n".join(lines)
 
@@ -452,6 +478,7 @@ def format_staging_message(
     right; asking a responder to adjudicate that is not actionable. Telling
     them not to trust it until Dispatch confirms is.
     """
+    staging_address = _mrkdwn_escape(staging_address)
     lines = [f"Staging: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|G>)"]
     # Two INDEPENDENT conditions, deliberately not merged into one sentence.
     # They co-occur (a remote LKP that also disagrees with the officer's

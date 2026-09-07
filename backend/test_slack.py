@@ -112,6 +112,11 @@ def novel_notes(raw_notes: str, at_risk: str) -> str:
     return "; ".join(kept)
 
 
+def _mrkdwn_escape(text):
+    """Mirror of backend/slack.py::_mrkdwn_escape()."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def format_pinned_welcome(
     *,
     event_name: str,
@@ -136,23 +141,30 @@ def format_pinned_welcome(
         at_risk_clean = "no risk factors"
     # Cluster F (Slack-M6) mirror: also treat empty-string as "no age."
     age_str = f"{age}yo" if age not in (None, "") else "?yo"
+    notes_clean = novel_notes(notes, at_risk_clean)
+    mp_name = _mrkdwn_escape(mp_name)
+    at_risk_clean = _mrkdwn_escape(at_risk_clean)
     mp_line = f"MP: {mp_name} – {age_str} {gender_display}, {at_risk_clean}"
 
     contact_clean = officer_contact.strip()
+    event_name = _mrkdwn_escape(event_name)
     lines = [
         f"*{event_name}*",
         mp_line,
     ]
-    notes_clean = novel_notes(notes, at_risk_clean)
     if notes_clean:
+        notes_clean = _mrkdwn_escape(notes_clean)
         lines.append(f"Notes: {notes_clean}")
     last_seen_clean = last_seen.strip()
     if last_seen_clean and not last_seen_clean.startswith("["):
+        last_seen_clean = _mrkdwn_escape(last_seen_clean)
         lines.append(f"Last seen: {last_seen_clean}")
     request_clean = request.strip()
     if request_clean and request_clean.lower() != "[not recorded]":
+        request_clean = _mrkdwn_escape(request_clean)
         lines.append(f"Request: {request_clean}")
     if contact_clean:
+        contact_clean = _mrkdwn_escape(contact_clean)
         lines.append(f"Contact: {contact_clean}")
     return "\n".join(lines)
 
@@ -179,6 +191,7 @@ def format_staging_message(
     unmapped: bool = False,
 ) -> str:
     """Mirror of backend/slack.py::format_staging_message() (issue #673)."""
+    staging_address = _mrkdwn_escape(staging_address)
     lines = [f"Staging: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|G>)"]
     if unverified:
         lines.append(STAGING_UNVERIFIED_WARNING)
@@ -929,6 +942,150 @@ class TestWelcomeNotesLine:
         """#673 must survive #670 — staging is its own pinned message."""
         msg = format_pinned_welcome(**self._kwargs(notes="wanders at night"))
         assert "Staging:" not in msg
+
+
+
+class TestSlackMrkdwnEscaping:
+    """Intake free text is interpolated into mrkdwn (security review 2026-09-06).
+
+    Every case below is a string an adversary can put on an intake form —
+    a hoax caller, a spoofed mutual-aid PDF — and that reached responders
+    verbatim in a message authored by the trusted dispatch bot. All run
+    against the mirrors; production parity is pinned in the class below.
+    """
+
+    def _welcome(self, **kw):
+        base = dict(event_name="2026-09-06 SJPD Test", mp_name="DOE, JANE",
+                    age=30, gender="F", at_risk="Dementia")
+        base.update(kw)
+        return format_pinned_welcome(**base)
+
+    def test_phishing_link_in_request_is_neutralised(self):
+        """The strongest vector: Request is unescaped BY DESIGN — never
+        echo-filtered, never truncated — so nothing else ever touched it."""
+        out = self._welcome(request="K9 + 2 teams. <https://evil.example/login|Updated staging — tap here>")
+        assert "<https://evil.example" not in out
+        assert "&lt;https://evil.example/login|Updated staging — tap here&gt;" in out
+
+    def test_channel_wide_ping_in_notes_is_neutralised(self):
+        out = self._welcome(notes="<!channel> <!here> check the creek")
+        assert "<!channel>" not in out and "<!here>" not in out
+        assert "&lt;!channel&gt; &lt;!here&gt; check the creek" in out
+
+    def test_mp_name_and_at_risk_are_escaped(self):
+        out = self._welcome(mp_name="DOE, JANE <!here>", at_risk="Armed & <dangerous>")
+        assert "MP: DOE, JANE &lt;!here&gt; – 30yo" in out
+        assert "Armed &amp; &lt;dangerous&gt;" in out
+
+    def test_last_seen_and_contact_are_escaped_after_their_sentinel_checks(self):
+        """Escaping runs AFTER the `[` sentinel test, so a bracketed
+        placeholder is still dropped rather than rendered as `[…]`."""
+        out = self._welcome(last_seen="<!here> 14:30", officer_contact="Sgt <X> 555-0100")
+        assert "Last seen: &lt;!here&gt; 14:30" in out
+        assert "Contact: Sgt &lt;X&gt; 555-0100" in out
+        assert "Last seen" not in self._welcome(last_seen="[date/time only from form]")
+
+    def test_echo_filter_still_compares_raw_text(self):
+        """novel_notes must see the UNESCAPED at-risk text. A note that is a
+        pure echo of the at-risk line is dropped whether or not it carries
+        an ampersand — the escape must not make it 'novel'."""
+        out = self._welcome(at_risk="Food & water issues", notes="food water issues")
+        assert "Notes:" not in out
+
+    def test_staging_label_cannot_close_the_link_early(self):
+        """A `>` in the address slot ends the mrkdwn link and the remainder
+        parses as fresh markup. The two URLs are built with
+        encodeURIComponent upstream and must NOT be escaped."""
+        out = format_staging_message(
+            staging_address="123 Main St> <https://evil.example|tap>",
+            staging_apple_url="https://maps.apple.com/?q=123%20Main",
+            staging_google_url="https://www.google.com/maps/search/123%20Main",
+        )
+        assert "Staging: <https://maps.apple.com/?q=123%20Main|123 Main St&gt; &lt;https://evil.example|tap&gt;> (<https://www.google.com/maps/search/123%20Main|G>)" in out
+
+    def test_a_plain_address_is_byte_identical(self):
+        """Content-preserving: the common case renders exactly as before, so
+        the no-truncation rules on at_risk and Request are untouched."""
+        out = self._welcome(request="SEARCH AND RESCUE FOR 10-65 AT RISK",
+                            at_risk="Dementia, Alone, No proper equipment")
+        assert "Request: SEARCH AND RESCUE FOR 10-65 AT RISK" in out
+        assert "Dementia, Alone, No proper equipment" in out
+
+    def test_ampersand_is_escaped_first(self):
+        """Otherwise `<` → `&lt;` → `&amp;lt;` and Slack renders the literal."""
+        assert _mrkdwn_escape("<&>") == "&lt;&amp;&gt;"
+
+
+class TestSlackMrkdwnEscapingProductionParity:
+    """The tests above run against mirrors; these read backend/slack.py.
+
+    slack.py is not importable here (no slack_sdk), so without this class
+    every escape could be removed from production and the suite would stay
+    green — the exact failure TestWelcomeAndStagingProductionParity was
+    written for. Each pin asserts a CALL SITE on comment-stripped code, and
+    each was verified by reintroducing the defect it names.
+    """
+
+    @staticmethod
+    def _prod():
+        return (Path(__file__).parent / "slack.py").read_text(encoding="utf-8")
+
+    @classmethod
+    def _fn(cls, name):
+        m = re.search(rf"^def {name}\(.*?(?=\n\n\S)", cls._prod(), re.DOTALL | re.MULTILINE)
+        assert m, f"{name} not found in slack.py"
+        return m.group(0)
+
+    @staticmethod
+    def _code_only(text):
+        body = re.sub(r'"""(?:.|\n)*?"""', "", text)
+        return "\n".join(l.split("#")[0] for l in body.splitlines())
+
+    def test_helper_matches_production(self):
+        prod = self._code_only(self._fn("_mrkdwn_escape"))
+        assert 'return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")' in prod, (
+            "_mrkdwn_escape in slack.py no longer escapes &, <, > in that order"
+        )
+        assert prod.index('"&", "&amp;"') < prod.index('"<", "&lt;"'), (
+            "ampersand is no longer escaped FIRST — every other escape double-encodes"
+        )
+
+    def test_every_external_value_is_escaped_in_the_welcome(self):
+        code = self._code_only(self._fn("format_pinned_welcome"))
+        for value in ("mp_name", "at_risk_clean", "event_name", "notes_clean",
+                      "last_seen_clean", "request_clean", "contact_clean"):
+            assert f"{value} = _mrkdwn_escape({value})" in code, (
+                f"`{value}` reaches the Slack welcome unescaped — a crafted form "
+                f"field can smuggle <url|label> or <!channel> into a pinned message"
+            )
+
+    def test_escapes_happen_before_their_f_strings(self):
+        """Order, not presence: an escape AFTER the append is a no-op that
+        still contains every string the pin above looks for."""
+        code = self._code_only(self._fn("format_pinned_welcome"))
+        assert code.index("mp_name = _mrkdwn_escape(mp_name)") < code.index('mp_line = f"MP: ')
+        assert code.index("event_name = _mrkdwn_escape(event_name)") < code.index('f"*{event_name}*"')
+        for value, tag in (("notes_clean", "Notes"), ("last_seen_clean", "Last seen"),
+                           ("request_clean", "Request"), ("contact_clean", "Contact")):
+            assert code.index(f"{value} = _mrkdwn_escape({value})") < code.index(f'f"{tag}: '), (
+                f"`{value}` is escaped after it is rendered"
+            )
+
+    def test_echo_filter_receives_raw_at_risk(self):
+        """novel_notes must run BEFORE at_risk_clean is escaped, or the echo
+        comparison sees `&amp;` on one side and `&` on the other."""
+        code = self._code_only(self._fn("format_pinned_welcome"))
+        assert code.index("novel_notes(notes, at_risk_clean)") < code.index("at_risk_clean = _mrkdwn_escape(")
+
+    def test_staging_label_is_escaped_and_urls_are_not(self):
+        code = self._code_only(self._fn("format_staging_message"))
+        assert "staging_address = _mrkdwn_escape(staging_address)" in code
+        assert code.index("staging_address = _mrkdwn_escape(") < code.index('lines = [f"Staging: ')
+        assert "_mrkdwn_escape(staging_apple_url)" not in code
+        assert "_mrkdwn_escape(staging_google_url)" not in code, (
+            "escaping a URL breaks the link responders tap — the URLs are "
+            "encodeURIComponent'd upstream and are the bot's own markup"
+        )
 
 
 class TestWelcomeAndStagingProductionParity:
