@@ -133,6 +133,27 @@ call any Google API is a billing incident waiting to happen.
 
 Keep `terraform.tfvars` out of version control. It is already in `.gitignore`.
 
+### Environment variables that are not secrets
+
+Most configuration reaches Cloud Run as a secret reference. These do not — they are plain
+values set in `main.tf`, and they are easy to miss because nothing fails loudly when they
+are absent (each defaults to an empty string).
+
+| Variable | Purpose |
+|---|---|
+| `GCP_PROJECT` | Project ID used when constructing Cloud Tasks queue paths |
+| `GCP_REGION` | Region for those queues; defaults to `us-central1` |
+| `CLOUD_TASKS_SERVICE_ACCOUNT` | Service account whose OIDC token the polling tasks carry. The polling endpoints pin this address, so a mismatch makes every poll 403 |
+| `EVERBRIDGE_ORG_ID` | Everbridge organization the notifications are created in |
+| `EVERBRIDGE_CALLER_ID` | Caller ID presented on Everbridge voice paths |
+| `EVERBRIDGE_DELIVER_PATHS` | Which Everbridge delivery paths a notification uses (SMS, voice, email) |
+| `EVERBRIDGE_CATEGORY_INCOUNTY` | Everbridge category ID applied to in-county call-outs |
+| `EVERBRIDGE_CATEGORY_MUTUALAID` | Everbridge category ID applied to mutual-aid call-outs |
+| `EVERBRIDGE_SUPPRESSED_GROUP_IDS` | Groups that must never be paged, even if selected — a safety stop, so set it before your first live send |
+
+The Everbridge values are specific to your organization; read them from your own Everbridge
+account rather than copying another team's.
+
 **Any change to an environment variable requires `terraform apply`.** The build scripts do
 not read Terraform configuration. A merged `.tf` change that has not been applied is a
 change that has not happened, and the resulting deployment looks completely healthy.

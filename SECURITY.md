@@ -108,7 +108,8 @@ complete inventory of outbound data flows; any addition requires updating this t
 |---|---|---|---|
 | **Vertex AI (Google)** | Form image + extracted text for OCR/reasoning | Service-account ADC | Transient; not stored by Google per API terms |
 | **Nominatim (OSM)** | LKP street address (no PII attached) | Anonymous | Logged by OSM operators per public terms; no account |
-| **Overpass API (OSM)** | Lat/lng + bounding-box queries (no PII) | Anonymous | Logged by mirror operators per public terms; no account |
+| **Geoapify Places API** | The LKP coordinate, a search radius, and a list of POI categories. No name, date of birth or other identifier is attached — but the coordinate is the subject's last known position, so it is location data about an active search | API key (`geoapify-api-key`) | Per Geoapify's terms. Unlike the anonymous OSM services below, requests are attributable to the team's Geoapify account |
+| **Overpass API (OSM)** | Same shape as Geoapify — lat/lng and a bounding box, no identifiers attached. **Fallback only**: called when the Geoapify lookup fails (`STAGING_SOURCE=geoapify`, `STAGING_SHADOW=off` in the team environment) | Anonymous | Logged by mirror operators per public terms; no account |
 | **Google Maps Geocoding API** | Misspelled street as fallback only (no PII attached) | API key (Geocoding API only) | Per Google API terms |
 | **CalTopo** | LKP, residence, staging coordinates as map markers | HMAC-SHA256 signed (per-request, no Bearer) | Persists in the team's CalTopo account |
 | **Google Docs / Drive** | Working-notes doc body (event name + extracted summary) | Dispatcher's own OAuth access token, `drive.file` scope | Persists in dispatcher's Drive |
@@ -162,6 +163,22 @@ the other server-side:
 - This dual-pin means the polling endpoints cannot be invoked by any other Cloud Run
   service, by a browser, or by a different SA — even if the SA token were leaked.
 
+**Two dispatcher endpoints are deliberately not ownership-gated:**
+- `GET /dispatch-status/{event_id}` and `POST /send-followup-notification/{event_id}` are
+  gated on the allowlist but **any** authorized dispatcher may call them for **any**
+  incident. This is a deliberate operational choice, not an oversight. A follow-up is the
+  time-critical correction to an already-sent notification; on 2026-07-24 the dispatcher
+  who needed to send one was driving to collect drone gear, and an ownership gate would
+  have blocked precisely the backup dispatcher who was free to help. Everyone reaching
+  these handlers is already on the allowlist and already trusted to originate a dispatch,
+  and the acting dispatcher is logged. Contrast `GET /incident-status/{event_id}`, which
+  **is** ownership-gated and returns 404 on not-owned as defence-in-depth against
+  ownership-existence inference. Reviewed and confirmed 2026-09-06; do not "harden" the
+  first two to match the third without re-reading this rationale.
+- Recipients of a follow-up are **derived, never dispatcher-selected**: everyone who
+  replied affirmatively plus everyone who has not yet replied, excluding decliners. There
+  is no code path by which a caller chooses who receives one.
+
 **Slack and Everbridge admin onboarding (out-of-band trust):**
 - The Slack bot must be installed by a workspace admin and granted the documented scopes
   (channel create/invite/post/pin); the workspace admin retains the ability to revoke
@@ -182,9 +199,11 @@ environment variables at deploy time. They are never committed to source code.
 | `caltopo-team-id` | CalTopo Team ID (account scope for map creation) |
 | `caltopo-credential-id` | CalTopo Team API Credential ID (HMAC-SHA256 signing) |
 | `caltopo-credential-secret` | CalTopo Team API signing secret |
+| `geoapify-api-key` | Geoapify Places API key — the primary staging POI lookup |
 | `google-maps-api-key` | Google Maps Geocoding API key (optional fallback for misspelled streets) |
 | `everbridge-credentials` | Everbridge service-account credentials, base64-encoded `username:password` (used directly as `Authorization: Basic <value>`) |
 | `slack-bot-token` | Slack bot token (`xoxb-…`, no expiry); rotate via `bin/rotate-secret.sh` |
+| `slack-so-coordinator-email` | Sheriff's Office SAR Coordinator address, added to every incident channel (a Slack guest, so excluded from user groups) |
 | `d4h-access-token` | D4H Personal Access Token for incident creation and attendance sync |
 | `dispatch-safe-list` | Email + Slack-handle allowlist used by `_route_send()` to gate live Everbridge sends and to partition Slack invitations during shadow mode (temporary scaffolding for the EB+Slack rollout) |
 
