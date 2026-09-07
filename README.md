@@ -1,11 +1,23 @@
-# SCCSSAR Dispatch Console
+<p align="center">
+  <img src="docs/assets/sccssar-logo.png" alt="Santa Clara County Search and Rescue" width="120">
+</p>
 
-**Cut SAR callout dispatch time to ~2–3 minutes, reduce data entry errors.**
+<h1 align="center">Dispatch Turbo</h1>
+
+<p align="center">
+  <strong>Cut SAR call-out dispatch time to under 5 minutes, and reduce data-entry errors.</strong><br>
+  The SCCSSAR dispatch console.
+</p>
 
 A web app built for the Santa Clara County SAR team that lets a dispatcher photograph a
 handwritten call-out form, extract all structured data via Gemini AI, review and correct
 it, then push to Everbridge, Slack, CalTopo and D4H in a single workflow — instead of
 re-typing the same information into four separate systems by hand.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/dispatch-flow-dark.svg">
+  <img src="docs/assets/dispatch-flow-light.svg" alt="Dispatch Turbo initial response timeline: the call-out form arrives as a photo or fillable PDF; Dispatch Turbo extracts every field with Gemini, geocodes the LKP and ranks real staging, and the dispatcher reviews and corrects it in about 30 seconds. Two clicks then dispatch that reviewed data — the first creates the CalTopo incident map, the second notifies Everbridge, opens the Slack incident channel and creates the D4H record together — in under 5 minutes. An optional further click creates a pre-filled Google Doc.">
+</picture>
 
 > Built for SCCSSAR. Designed to be adapted for any team with a paper-based SAR dispatch process.
 
@@ -43,7 +55,7 @@ is re-entering a date of birth into a third system.
    - 📋 **D4H** — auto-creates the incident, syncs per-YES attendance, attaches drone + K9 tabs (Phase 2 Selective mode)
    - 🗺 **Google Maps** — opens a reference map centered on the LKP
 
-**Total elapsed time:** ~2–3 minutes from photo upload to all systems notified.
+**Total elapsed time:** under 5 minutes from photo upload to all systems notified.
 
 ---
 

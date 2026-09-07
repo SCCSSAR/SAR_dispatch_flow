@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 780" width="1240" height="780" role="img" aria-labelledby="ti de" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">
+<title id="ti">Dispatch Turbo: initial response timeline</title>
+<desc id="de">The call-out form arrives as a photo or fillable PDF. Dispatch Turbo extracts every field with Gemini, geocodes the last known position, ranks real staging locations, and the dispatcher reviews and corrects it in about thirty seconds. Two clicks then dispatch that same reviewed data: the first creates the CalTopo incident map, the second notifies Everbridge, opens the Slack incident channel and creates the D4H record together. An optional further click creates a pre-filled Google Doc for teams who work the incident in Docs. The manual process entered the same data into each of those systems in turn.</desc>
+<rect width="1240" height="780" fill="#FFFFFF"/>
+<rect x="0" y="0" width="1240" height="48" fill="#F1592A"/>
+<text x="24" y="32" font-size="21" font-weight="700" fill="#FFFFFF">Dispatch Turbo: Initial Response Timeline</text>
+<text x="1216" y="32" text-anchor="end" font-size="14.5" font-weight="600" fill="#FFFFFF">Form to fully dispatched: &lt; 5 minutes</text>
+<rect x="0" y="48" width="246" height="692" fill="#DFF2F9"/>
+<circle cx="123.0" cy="348" r="38" fill="none" stroke="#22312A" stroke-width="2.5"/>
+<text x="123.0" y="356" text-anchor="middle" font-size="26" font-weight="700" fill="#22312A">T+0</text>
+<text x="123.0" y="424" text-anchor="middle" font-size="16" font-weight="700" fill="#22312A">FORM ARRIVES</text>
+<text x="123.0" y="450" text-anchor="middle" font-size="13" fill="#5F6E64">Photo of the paper</text>
+<text x="123.0" y="469" text-anchor="middle" font-size="13" fill="#5F6E64">call-out form, or the</text>
+<text x="123.0" y="488" text-anchor="middle" font-size="13" fill="#5F6E64">fillable PDF</text>
+<path d="M258 399.0 H278" stroke="#9AA9A1" stroke-width="3" stroke-linecap="round"/>
+<path d="M271 392.0 l8 7 -8 7" fill="none" stroke="#9AA9A1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="292" y="282.5" width="286" height="233" rx="10" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
+<path d="M292 292.5 A10 10 0 0 1 302 282.5 H568 A10 10 0 0 1 578 292.5 V338.5 H292 Z" fill="#283F2E"/>
+<text x="435.0" y="308.5" text-anchor="middle" font-size="17" font-weight="700" fill="#FFFFFF">DISPATCH TURBO</text>
+<text x="435.0" y="327.5" text-anchor="middle" font-size="12.5" fill="#FFFFFF" opacity="0.85">Automates the dispatch flow</text>
+<circle cx="314" cy="361.5" r="3.5" fill="#F1592A"/>
+<text x="328" y="366.5" font-size="13.5" fill="#22312A">Gemini extracts every field:</text>
+<text x="328" y="383.5" font-size="13.5" fill="#22312A">MP Subject Data, Planning</text>
+<text x="328" y="400.5" font-size="13.5" fill="#22312A">Data, Urgency Fields</text>
+<circle cx="314" cy="424.5" r="3.5" fill="#F1592A"/>
+<text x="328" y="429.5" font-size="13.5" fill="#22312A">LKP geocoded; real staging</text>
+<text x="328" y="446.5" font-size="13.5" fill="#22312A">ranked</text>
+<circle cx="314" cy="470.5" r="3.5" fill="#F1592A"/>
+<text x="328" y="475.5" font-size="13.5" fill="#22312A">Dispatcher reviews and</text>
+<text x="328" y="492.5" font-size="13.5" fill="#22312A">corrects (~30 s)</text>
+<rect x="660" y="70" width="560" height="132" rx="12" fill="#EDF1EF" stroke="#CBD5D0" stroke-width="1.5"/>
+<text x="676" y="88" font-size="11.5" font-weight="700" fill="#F1592A" letter-spacing="0.6">CLICK 1</text>
+<text x="734" y="88" font-size="11.5" fill="#5F6E64">· Create Incident Map</text>
+<rect x="676" y="96" width="528" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
+<path d="M676 105 A9 9 0 0 1 685 96 H1195 A9 9 0 0 1 1204 105 V126 H676 Z" fill="#5F8049"/>
+<text x="690" y="116" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">CALTOPO</text>
+<text x="1190" y="116" text-anchor="end" font-size="12.5" fill="#FFFFFF" opacity="0.9">Tactical Mapping</text>
+<circle cx="694" cy="144" r="3" fill="#5F8049"/>
+<text x="708" y="148" font-size="12.5" fill="#22312A">Create private map, seeded with MP subject information</text>
+<circle cx="694" cy="168" r="3" fill="#5F8049"/>
+<text x="708" y="172" font-size="12.5" fill="#22312A">ICP marker and staging recommendations</text>
+<rect x="660" y="220" width="560" height="358" rx="12" fill="#EDF1EF" stroke="#CBD5D0" stroke-width="1.5"/>
+<text x="676" y="238" font-size="11.5" font-weight="700" fill="#F1592A" letter-spacing="0.6">CLICK 2</text>
+<text x="734" y="238" font-size="11.5" fill="#5F6E64">· Everbridge + Slack + D4H</text>
+<rect x="676" y="246" width="528" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
+<path d="M676 255 A9 9 0 0 1 685 246 H1195 A9 9 0 0 1 1204 255 V276 H676 Z" fill="#DD5920"/>
+<text x="690" y="266" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">EVERBRIDGE</text>
+<text x="1190" y="266" text-anchor="end" font-size="12.5" fill="#FFFFFF" opacity="0.9">Notification</text>
+<circle cx="694" cy="294" r="3" fill="#DD5920"/>
+<text x="708" y="298" font-size="12.5" fill="#22312A">Page the members and specialty teams</text>
+<circle cx="694" cy="318" r="3" fill="#DD5920"/>
+<text x="708" y="322" font-size="12.5" fill="#22312A">Poll for responses</text>
+<rect x="676" y="350" width="528" height="114" rx="9" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
+<path d="M676 359 A9 9 0 0 1 685 350 H1195 A9 9 0 0 1 1204 359 V380 H676 Z" fill="#7B3C8D"/>
+<text x="690" y="370" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">SLACK</text>
+<text x="1190" y="370" text-anchor="end" font-size="12.5" fill="#FFFFFF" opacity="0.9">Team Coordination</text>
+<circle cx="694" cy="398" r="3" fill="#7B3C8D"/>
+<text x="708" y="402" font-size="12.5" fill="#22312A">Create private incident channel for responders, live tally for search</text>
+<text x="708" y="420" font-size="12.5" fill="#22312A">management</text>
+<circle cx="694" cy="440" r="3" fill="#7B3C8D"/>
+<text x="708" y="444" font-size="12.5" fill="#22312A">Pinned info: Incident and MP info, CalTopo map, Apple/Google maps links</text>
+<rect x="676" y="472" width="528" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
+<path d="M676 481 A9 9 0 0 1 685 472 H1195 A9 9 0 0 1 1204 481 V502 H676 Z" fill="#3A7C9E"/>
+<text x="690" y="492" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">D4H</text>
+<text x="1190" y="492" text-anchor="end" font-size="12.5" fill="#FFFFFF" opacity="0.9">Incident Documentation</text>
+<circle cx="694" cy="520" r="3" fill="#3A7C9E"/>
+<text x="708" y="524" font-size="12.5" fill="#22312A">Create incident record</text>
+<circle cx="694" cy="544" r="3" fill="#3A7C9E"/>
+<text x="708" y="548" font-size="12.5" fill="#22312A">Automatically sync with attendees, specialty teams, MP info, map</text>
+<rect x="660" y="596" width="560" height="132" rx="12" fill="#EDF1EF" stroke="#CBD5D0" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="676" y="614" font-size="11.5" font-weight="700" fill="#5F6E64" letter-spacing="0.6">OPTIONAL</text>
+<text x="748" y="614" font-size="11.5" fill="#5F6E64">· Google Doc</text>
+<rect x="676" y="622" width="528" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
+<path d="M676 631 A9 9 0 0 1 685 622 H1195 A9 9 0 0 1 1204 631 V652 H676 Z" fill="#6B7869"/>
+<text x="690" y="642" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">GOOGLE DOC</text>
+<text x="1190" y="642" text-anchor="end" font-size="12.5" fill="#FFFFFF" opacity="0.9">Working Document</text>
+<circle cx="694" cy="670" r="3" fill="#6B7869"/>
+<text x="708" y="674" font-size="12.5" fill="#22312A">Create pre-filled working document</text>
+<circle cx="694" cy="694" r="3" fill="#6B7869"/>
+<text x="708" y="698" font-size="12.5" fill="#22312A">Share with every dispatcher — for teams who work the incident in Docs</text>
+<path d="M586 399.0 H620" stroke="#9AA9A1" stroke-width="3" stroke-linecap="round"/>
+<path d="M620 136.0 V662.0" stroke="#9AA9A1" stroke-width="3" stroke-linecap="round"/>
+<path d="M620 136.0 H650" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round"/>
+<path d="M643 129.0 l8 7 -8 7" fill="none" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M620 399.0 H650" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round"/>
+<path d="M643 392.0 l8 7 -8 7" fill="none" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M620 662.0 H650" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="6 5"/>
+<path d="M643 655.0 l8 7 -8 7" fill="none" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="0" y="740" width="1240" height="40" fill="#F5F7F6"/>
+<text x="24" y="765" font-size="13" fill="#5F6E64">The same systems as the manual SOP — but the dispatcher enters the data <tspan font-weight="700" fill="#22312A">once, not once per system</tspan>.</text>
+</svg>
