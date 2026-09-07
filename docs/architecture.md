@@ -1,6 +1,6 @@
 # SCCSSAR Dispatch Console — Architecture Reference
 
-**Phase 1.9** | July 2026 | [GitHub](https://github.com/billburns250/SAR_dispatch_flow) | [SCCSSAR Dev](https://dispatch-console-1010784158087.us-central1.run.app) | [Personal Dev](https://dispatch-console-970461953836.us-central1.run.app)
+**Phase 1.9** | July 2026 | [GitHub](https://github.com/SCCSSAR/SAR_dispatch_flow) | [SCCSSAR Dev](https://dispatch-console-1010784158087.us-central1.run.app) | [Personal Dev](https://dispatch-console-970461953836.us-central1.run.app)
 
 ---
 
@@ -304,7 +304,7 @@ Geoapify's `/v2/places` endpoint (`X-API-Key` header; per-project key in the `ge
 
 **Parks return the `(address not in OSM)` sentinel, never a city string** (`_geoapify_addr_shape`, PR `a31f7f5`) — Geoapify populates `city` for nearly every park (unlike OSM/Overpass parks, which usually lack `addr:city`), and the shared dedupe keys on the pre-comma text *unless* it is that sentinel. Returning the bare city would collapse all same-city parks to one as false strip-mall duplicates. The sentinel makes Geoapify parks behave exactly like Overpass parks (exempt from address dedup; dropped from the `/apply-staging-override` navigability filter). This is a CLAUDE.md Locked Decision.
 
-> **Geoapify does not fix OSM's wilderness gaps.** Remote/rural anchors (e.g. Joseph D. Grant County Park, San Felipe Rd) are sparse in *both* sources' underlying OSM data — Geoapify is faster and more reliable, not more complete. Adaptive-radius-on-≤1-POI is tracked in issue [#587](https://github.com/billburns250/SAR_dispatch_flow/issues/587).
+> **Geoapify does not fix OSM's wilderness gaps.** Remote/rural anchors (e.g. Joseph D. Grant County Park, San Felipe Rd) are sparse in *both* sources' underlying OSM data — Geoapify is faster and more reliable, not more complete. Adaptive-radius-on-≤1-POI is tracked in issue #587.
 
 #### Fallback: Overpass API (OpenStreetMap)
 
@@ -317,7 +317,7 @@ Overpass queries the OSM database directly. Parks use `nwr` (nodes, ways, and re
 
 `maps.mail.ru` (VK Maps) was removed 2026-03-16 after the operator officially suspended the public mirror. All mirrors fail → log warning, return empty candidate list. If Geoapify has already answered (sequential mode) the dispatcher never sees this; if both sources fail, Gemini falls back to training-data knowledge for staging (less reliable).
 
-**Response-time profile and per-mirror timeout (issue [#551](https://github.com/billburns250/SAR_dispatch_flow/issues/551), May 2026):** A 30-day analysis of Cloud Run logs across both environments (158 Overpass calls) measured the per-mirror response-time distribution:
+**Response-time profile and per-mirror timeout (issue #551, May 2026):** A 30-day analysis of Cloud Run logs across both environments (158 Overpass calls) measured the per-mirror response-time distribution:
 
 - `overpass-api.de`: p50 ≈ 1.3s, p95 ≈ 8.3s, p99 ≈ 11.5s; max observed success 11.9s; ~88% of successful queries complete in under 3s. Its failure mode is exclusively HTTP 504 returned within ~8–12s — the per-mirror timeout never fired on the primary across 30 days.
 - `overpass.private.coffee`: when reachable, ~11s; when down, it accepts the TCP connection then hangs to the full timeout.
@@ -583,7 +583,7 @@ Sending individual template messages to each team member's personal number (a br
 
 **Per-YES attendance sync (`/d4h-sync-yes`):** Each YES response surfaced by the EB polling chain is dispatched as a single Cloud Tasks job to `POST /d4h-sync-yes` (queue `d4h-per-yes-sync`, `max_attempts=5`). The handler calls `POST /v3/team/{teamId}/attendance` with `{activityId, memberId, status: ATTENDING, startsAt, endsAt}`. Member lookup uses the EB-stored SAR email as the join key (see Identity model above). 5 retries covers transient D4H 5xx without burying a real outage — Cloud Tasks default of 100 retries would hide an outage for hours.
 
-**Decline (NO) replies are not synced.** EB telemetry surfaces decline replies but the architectural decision (CLAUDE.md Locked Decision; backlog [#442](https://github.com/billburns250/SAR_dispatch_flow/issues/442)) is YES-only sync. Mapping NO → ABSENT would conflate "actively declined" with "phone off / hasn't read yet."
+**Decline (NO) replies are not synced.** EB telemetry surfaces decline replies but the architectural decision (CLAUDE.md Locked Decision; backlog #442) is YES-only sync. Mapping NO → ABSENT would conflate "actively declined" with "phone off / hasn't read yet."
 
 **Authentication:** D4H API v3 Bearer Token (Personal Access Token), stored in Secret Manager as `d4h-access-token`. Future improvement: least-privilege scope down + OAuth replacement when D4H ships it.
 
@@ -1152,7 +1152,7 @@ Each `check_rate_limits(email)` call atomically increments all three buckets in 
 | Nominatim geocode (LKP + Residence) | 1–3s | Free tier, 1 req/sec limit. Two calls per form (LKP + Residence), run in sequence. |
 | Google Maps geocode (fallback) | 1–2s | Only called when Nominatim returns no result. Typically 0 calls per form on well-formed addresses. |
 | Geoapify POI query (primary) | ~0.5–1.1s | Two concurrent category calls. Primary staging source on both live envs; ~half the Overpass path. |
-| Overpass POI query (fallback) | 1–3s typical, p99 ≤ 12s | 12s timeout per mirror (cut from 18s in [#551](https://github.com/billburns250/SAR_dispatch_flow/issues/551) based on 30d log analysis; max observed success was 11.92s). Worst case with both mirrors: ~24s. Reached only when Geoapify fails (sequential) or unset (default). |
+| Overpass POI query (fallback) | 1–3s typical, p99 ≤ 12s | 12s timeout per mirror (cut from 18s in #551 based on 30d log analysis; max observed success was 11.92s). Worst case with both mirrors: ~24s. Reached only when Geoapify fails (sequential) or unset (default). |
 | Staging + Koester Gemini call (PDF path) | 10–20s | Text-only. `max_output_tokens=16384` — staging candidate text + full Koester analysis routinely exceeds 8192. |
 | Pass 2 Gemini format (JPEG path) | 10–20s | `max_output_tokens=32768` — raised from 16384 after confirmed MAX_TOKENS truncation on Torres form (PR #192). Scales with staging candidates and LPB detail. |
 | Firestore rate check | 50–200ms | Negligible. |

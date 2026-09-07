@@ -1070,7 +1070,7 @@ async def _geocode_nominatim(address: str) -> tuple[float, float, str, str | Non
                 "https://nominatim.openstreetmap.org/search",
                 params={"q": address, "format": "json", "limit": 1,
                         "addressdetails": 1, "countrycodes": "us"},
-                headers={"User-Agent": "SCCSSAR-Dispatch/1.5c (SAR operations, contact bill.burns@sccssar.org)"},
+                headers={"User-Agent": "SCCSSAR-Dispatch/1.5c (SAR operations, contact dispatcher@sccssar.org)"},
             )
         data = r.json()
         if data:
@@ -2470,7 +2470,7 @@ out center body;
                 r = await client.post(
                     _endpoint,
                     data={"data": query},
-                    headers={"User-Agent": "SCCSSAR-Dispatch/1.5i (SAR operations, contact bill.burns@sccssar.org)"},
+                    headers={"User-Agent": "SCCSSAR-Dispatch/1.5i (SAR operations, contact dispatcher@sccssar.org)"},
                 )
             if r.status_code == 200:
                 elements = r.json().get("elements", [])
@@ -2825,6 +2825,15 @@ class _StructuredJsonHandler(logging.StreamHandler):
 
 
 _root_logger = logging.getLogger()
+# KNOWN GAP (security review 2026-09-06): uvicorn installs its own handlers on
+# `uvicorn`, `uvicorn.error` and `uvicorn.access` with propagate=False, so an
+# UNHANDLED ASGI traceback ("Exception in ASGI application") goes to stderr
+# WITHOUT passing through _redact_secrets. Every handled path is covered --
+# both Maps call sites swallow exceptions and log only the type -- so nothing
+# routes a secret or subject text into such a traceback today. A future
+# raise_for_status() on a geocode call, or any exception whose str() embeds
+# user text, would. Closing it means configuring uvicorn's loggers to
+# propagate into this handler; not done because no live path needs it yet.
 _root_logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 _root_logger.handlers.clear()
 _root_logger.addHandler(_StructuredJsonHandler())
@@ -8882,8 +8891,15 @@ async def send_followup_notification(
     `dispatcher_email` would block precisely the backup dispatcher who is free to
     help during a shift handoff. Everyone reaching this handler is already on the
     allowlist and already trusted to originate a dispatch. The acting dispatcher
-    is logged. ⚠️ This is a judgement call made while Bill was offline — flagged
-    in the PR for confirmation.
+    is logged.
+
+    CONFIRMED by Bill 2026-09-06 (security review, row 6): leave allowlist-only.
+    Two reasons, the second decisive. (1) Gating on ownership would recreate the
+    2026-07-24 failure above. (2) There is NO UI in Dispatch Turbo through which
+    a non-owning dispatcher can reach this endpoint — every browser session is
+    ephemeral and holds only its own dispatch — so an ownership gate would block
+    nothing that is actually reachable while still costing the recovery path.
+    Do not re-raise this as a hardening item without a new UI path to point at.
 
     Request body (JSON):
         title: str  — composed by the dispatcher; "SOSAR - " enforced server-side
