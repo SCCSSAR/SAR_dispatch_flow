@@ -463,7 +463,7 @@ _EB_NON_DISPATCH_GROUPS: frozenset[str] = frozenset({"admin", "all members", "au
 
 def _strip_eb_prefix(eb_group_name: str) -> str:
     """Strip common SCCSSAR EB prefixes. Only ALERTSCC survives in live EB
-    as of 2026-05-19 (Kris dropped SAR- and DOGS- prefixes in the rebuild)."""
+    as of 2026-05-19 (Dana dropped SAR- and DOGS- prefixes in the rebuild)."""
     for prefix in ("ALERTSCC ",):
         if eb_group_name.startswith(prefix):
             return eb_group_name[len(prefix):]
@@ -502,7 +502,7 @@ class TestMapEBGroupsToD4HTags:
     def test_canine_maps_with_transport(self):
         """`Canine` dispatch triggers TAG_CANINE + TAG_TRANSPORT + always-on
         TAG_SEARCH_MANAGEMENT. DOGS-* sub-groups were collapsed into the
-        single `Canine` group in Kris's 2026-05-19 EB rebuild."""
+        single `Canine` group in Dana's 2026-05-19 EB rebuild."""
         mapped, unmapped = _map_eb_groups_to_d4h_tags(["Canine"])
         assert TAG_CANINE in mapped
         assert TAG_SEARCH_MANAGEMENT in mapped
@@ -586,7 +586,7 @@ class TestMapEBGroupsToD4HTags:
 class TestStripEbPrefix:
     """Direct unit tests for _strip_eb_prefix.
 
-    Only `ALERTSCC ` remains in the prefix tuple after Kris's 2026-05-19
+    Only `ALERTSCC ` remains in the prefix tuple after Dana's 2026-05-19
     EB rebuild dropped the `SAR - ` and `DOGS - ` conventions. The only
     live group hitting this branch is `ALERTSCC ADMIN`.
     """
@@ -2784,10 +2784,10 @@ class TestMarkMemberAttendingRoleId:
     def test_role_id_included_when_provided(self):
         """When role_id is set, 'roleId' appears in the payload with that value."""
         client = FakeD4HClient(
-            member={"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}},
+            member={"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}},
             attendance=[],
         )
-        _mark_member_attending(99, "kris@sccssar.org", client=client, role_id=K9_HANDLER_ROLE_ID)
+        _mark_member_attending(99, "dana@sccssar.org", client=client, role_id=K9_HANDLER_ROLE_ID)
         post_call = [c for c in client.calls if c[0] == "_post_attendance"][0]
         assert post_call[1]["roleId"] == K9_HANDLER_ROLE_ID
         assert post_call[1]["roleId"] == 11487  # cross-file literal pin
@@ -2802,16 +2802,16 @@ class TestResolveK9HandlerRoleId:
     The sufficient signal is the existence of /handlers rows for the member.
     """
 
-    _KRIS = {"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}}
-    _KRIS_HANDLERS = [
+    _DANA = {"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}}
+    _DANA_HANDLERS = [
         {"id": 3614, "member": {"id": 555}, "animal": {"id": 2929}},  # Aria
         {"id": 3679, "member": {"id": 555}, "animal": {"id": 2954}},  # Annie
     ]
 
     def test_canine_group_with_handlers_returns_role_id(self):
         """K9 handler in Canine group → K9_HANDLER_ROLE_ID."""
-        client = FakeD4HClient(member=self._KRIS, handlers=self._KRIS_HANDLERS)
-        result = _resolve_k9_handler_role_id("kris@sccssar.org", ["Canine"], client=client)
+        client = FakeD4HClient(member=self._DANA, handlers=self._DANA_HANDLERS)
+        result = _resolve_k9_handler_role_id("dana@sccssar.org", ["Canine"], client=client)
         assert result == K9_HANDLER_ROLE_ID
         assert result == 11487
 
@@ -2819,13 +2819,13 @@ class TestResolveK9HandlerRoleId:
         """Canine group member with NO /handlers rows (driver/flanker case) → None.
         Tagging them as K9 Handler would be wrong — they're qualified for K9
         support but aren't actually a handler this incident."""
-        client = FakeD4HClient(member=self._KRIS, handlers=[])
+        client = FakeD4HClient(member=self._DANA, handlers=[])
         result = _resolve_k9_handler_role_id("driver@sccssar.org", ["Canine"], client=client)
         assert result is None
 
     def test_non_canine_group_returns_none_without_http(self):
         """Non-K9 dispatch → None, zero HTTP. Most responders take this fast path."""
-        client = FakeD4HClient(member=self._KRIS, handlers=self._KRIS_HANDLERS)
+        client = FakeD4HClient(member=self._DANA, handlers=self._DANA_HANDLERS)
         result = _resolve_k9_handler_role_id("bill@sccssar.org", ["UAS", "ATV"], client=client)
         assert result is None
         # Critical: no member lookup, no handlers lookup. The Canine check is the
@@ -2838,14 +2838,14 @@ class TestResolveK9HandlerRoleId:
         pattern). EB rename to lowercase / mixed case should NOT silently
         break role tagging."""
         for variant in ("canine", "Canine", "CANINE", "CaNiNe"):
-            client = FakeD4HClient(member=self._KRIS, handlers=self._KRIS_HANDLERS)
-            result = _resolve_k9_handler_role_id("kris@sccssar.org", [variant], client=client)
+            client = FakeD4HClient(member=self._DANA, handlers=self._DANA_HANDLERS)
+            result = _resolve_k9_handler_role_id("dana@sccssar.org", [variant], client=client)
             assert result == K9_HANDLER_ROLE_ID, f"variant {variant!r} should match"
 
     def test_member_not_found_returns_none(self):
         """Member not in D4H roster → None (graceful degrade). Attendance POST
         still happens via the caller; just no role tag."""
-        client = FakeD4HClient(member=None, handlers=self._KRIS_HANDLERS)
+        client = FakeD4HClient(member=None, handlers=self._DANA_HANDLERS)
         result = _resolve_k9_handler_role_id("unknown@example.com", ["Canine"], client=client)
         assert result is None
 
@@ -2853,10 +2853,10 @@ class TestResolveK9HandlerRoleId:
         """D4H 4xx on /handlers → None (graceful degrade), NOT propagated.
         Best-effort by design — don't block attendance POST on a role lookup."""
         client = FakeD4HClient(
-            member=self._KRIS,
+            member=self._DANA,
             get_handlers_raises=D4HClientError("D4H 404"),
         )
-        result = _resolve_k9_handler_role_id("kris@sccssar.org", ["Canine"], client=client)
+        result = _resolve_k9_handler_role_id("dana@sccssar.org", ["Canine"], client=client)
         assert result is None
 
     def test_handlers_lookup_d4h_server_error_returns_none(self):
@@ -2865,10 +2865,10 @@ class TestResolveK9HandlerRoleId:
         regardless of HTTP class. (Q5 of the Failure-mode Discipline 6-question
         rubric for this PR.)"""
         client = FakeD4HClient(
-            member=self._KRIS,
+            member=self._DANA,
             get_handlers_raises=D4HServerError("D4H 503"),
         )
-        result = _resolve_k9_handler_role_id("kris@sccssar.org", ["Canine"], client=client)
+        result = _resolve_k9_handler_role_id("dana@sccssar.org", ["Canine"], client=client)
         assert result is None
 
 
@@ -2951,7 +2951,7 @@ class TestAddDroneIfUasDispatched:
 
     def test_uas_match_is_case_insensitive(self):
         """Cluster D — D4H-L7. Pre-fix: `"UAS" not in [...]` was case-sensitive.
-        Kris's 2026-05-19 EB rebuild already changed group names once; a
+        Dana's 2026-05-19 EB rebuild already changed group names once; a
         future rename to lowercase would silently skip drone-attach with
         no log or error. _map_eb_groups_to_d4h_tags already lowercases
         internally — this defensive match keeps the two layers in sync."""
@@ -3052,7 +3052,7 @@ def _sync_k9_attendance(activity_id, member_email, *, client):
     return {"status": "success", "created": created, "skipped": skipped}
 
 
-_KRIS = {"id": 120358, "email": {"value": "kris@sccssar.org", "verified": True}}
+_DANA = {"id": 120358, "email": {"value": "dana@sccssar.org", "verified": True}}
 
 
 class TestSyncK9Attendance:
@@ -3066,8 +3066,8 @@ class TestSyncK9Attendance:
         assert [c[0] for c in client.calls] == ["_get_member_by_email"]
 
     def test_member_with_no_dogs_is_not_a_handler(self):
-        client = FakeD4HClient(member=_KRIS, handlers=[])
-        assert _sync_k9_attendance(99, "kris@sccssar.org", client=client) == {
+        client = FakeD4HClient(member=_DANA, handlers=[])
+        assert _sync_k9_attendance(99, "dana@sccssar.org", client=client) == {
             "status": "not_a_handler"}
         assert "_post_animal_attendance" not in [c[0] for c in client.calls]
 
@@ -3077,19 +3077,19 @@ class TestSyncK9Attendance:
         /attendance. Both of the team's K9 handlers on the 2026-08-18 callout
         had exactly this shape."""
         client = FakeD4HClient(
-            member=_KRIS,
+            member=_DANA,
             handlers=[{"animal": {"id": 2865}}, {"animal": {"id": 3149}}],
             animal_attendance=[],
         )
-        result = _sync_k9_attendance(1732308, "kris@sccssar.org", client=client)
+        result = _sync_k9_attendance(1732308, "dana@sccssar.org", client=client)
         assert result == {"status": "success", "created": 2, "skipped": 0}
         posted = [c[1] for c in client.calls if c[0] == "_post_animal_attendance"]
         assert [p["animalId"] for p in posted] == [2865, 3149]
 
     def test_payload_shape_matches_the_measured_contract(self):
         client = FakeD4HClient(
-            member=_KRIS, handlers=[{"animal": {"id": 2865}}], animal_attendance=[])
-        _sync_k9_attendance(1732308, "kris@sccssar.org", client=client)
+            member=_DANA, handlers=[{"animal": {"id": 2865}}], animal_attendance=[])
+        _sync_k9_attendance(1732308, "dana@sccssar.org", client=client)
         payload = [c[1] for c in client.calls if c[0] == "_post_animal_attendance"][0]
         assert payload == {
             "animalId": 2865,
@@ -3104,8 +3104,8 @@ class TestSyncK9Attendance:
         ABSENT — the row's existence IS the attendance. Sending the member
         endpoint's status field would 400 every K9 sync."""
         client = FakeD4HClient(
-            member=_KRIS, handlers=[{"animal": {"id": 2865}}], animal_attendance=[])
-        _sync_k9_attendance(1732308, "kris@sccssar.org", client=client)
+            member=_DANA, handlers=[{"animal": {"id": 2865}}], animal_attendance=[])
+        _sync_k9_attendance(1732308, "dana@sccssar.org", client=client)
         payload = [c[1] for c in client.calls if c[0] == "_post_animal_attendance"][0]
         for rejected in ("status", "startsAt", "endsAt", "activityId"):
             assert rejected not in payload, (
@@ -3115,29 +3115,29 @@ class TestSyncK9Attendance:
 
     def test_existing_row_is_skipped(self):
         client = FakeD4HClient(
-            member=_KRIS,
+            member=_DANA,
             handlers=[{"animal": {"id": 2865}}, {"animal": {"id": 3149}}],
             animal_attendance=[{"animal": {"id": 2865}}],
         )
-        result = _sync_k9_attendance(1732308, "kris@sccssar.org", client=client)
+        result = _sync_k9_attendance(1732308, "dana@sccssar.org", client=client)
         assert result == {"status": "success", "created": 1, "skipped": 1}
         posted = [c[1] for c in client.calls if c[0] == "_post_animal_attendance"]
         assert [p["animalId"] for p in posted] == [3149]
 
     def test_all_rows_present_posts_nothing(self):
         client = FakeD4HClient(
-            member=_KRIS,
+            member=_DANA,
             handlers=[{"animal": {"id": 2865}}],
             animal_attendance=[{"animal": {"id": 2865}}],
         )
-        result = _sync_k9_attendance(1732308, "kris@sccssar.org", client=client)
+        result = _sync_k9_attendance(1732308, "dana@sccssar.org", client=client)
         assert result == {"status": "success", "created": 0, "skipped": 1}
         assert "_post_animal_attendance" not in [c[0] for c in client.calls]
 
     def test_malformed_handler_rows_do_not_crash_or_post(self):
         client = FakeD4HClient(
-            member=_KRIS, handlers=[{"animal": None}, {}], animal_attendance=[])
-        assert _sync_k9_attendance(99, "kris@sccssar.org", client=client) == {
+            member=_DANA, handlers=[{"animal": None}, {}], animal_attendance=[])
+        assert _sync_k9_attendance(99, "dana@sccssar.org", client=client) == {
             "status": "not_a_handler"}
 
 
@@ -3650,12 +3650,12 @@ class TestHandlePerYesSyncTask:
         try-catch NotImplementedError from sync_k9_attendance.
         Pre-rebuild this fired on `DOGS - *` names; collapsed into Canine."""
         client = FakeD4HClient(
-            member={"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}},
+            member={"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}},
             attendance=[],
         )
         # Should NOT raise — v1.1 contract swallows the v1.2 NotImplementedError
         _handle_per_yes_sync_task(
-            "evt-1", "kris@sccssar.org", ["Canine"],
+            "evt-1", "dana@sccssar.org", ["Canine"],
             client=client, load_activity_id=lambda eid: 99,
         )
         assert any(c[0] == "_post_attendance" for c in client.calls)
@@ -3668,7 +3668,7 @@ class TestHandlePerYesSyncTask:
         resolves the role (Canine + ≥1 handler) and forwards it to
         mark_member_attending, which appends it to the payload."""
         client = FakeD4HClient(
-            member={"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}},
+            member={"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}},
             attendance=[],
             handlers=[
                 {"id": 3614, "member": {"id": 555}, "animal": {"id": 2929}},  # Aria
@@ -3676,7 +3676,7 @@ class TestHandlePerYesSyncTask:
             ],
         )
         _handle_per_yes_sync_task(
-            "evt-1", "kris@sccssar.org", ["Canine"],
+            "evt-1", "dana@sccssar.org", ["Canine"],
             client=client, load_activity_id=lambda eid: 99,
         )
         post_call = [c for c in client.calls if c[0] == "_post_attendance"][0]
@@ -3723,7 +3723,7 @@ class TestHandlePerYesSyncTask:
         creation on a role-tag failure. (Q2 of the 6-question Failure-mode
         Discipline rubric.)"""
         client = FakeD4HClient(
-            member={"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}},
+            member={"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}},
             attendance=[],
             get_handlers_raises=D4HServerError("D4H 503"),
         )
@@ -3735,7 +3735,7 @@ class TestHandlePerYesSyncTask:
         # blocked, and the retry re-drives it idempotently.
         with pytest.raises(D4HServerError):
             _handle_per_yes_sync_task(
-                "evt-1", "kris@sccssar.org", ["Canine"],
+                "evt-1", "dana@sccssar.org", ["Canine"],
                 client=client, load_activity_id=lambda eid: 99,
             )
         post_call = [c for c in client.calls if c[0] == "_post_attendance"][0]
@@ -3748,14 +3748,14 @@ class TestHandlePerYesSyncTask:
         burn the max_attempts=5 budget to no effect, and attendance has
         already landed."""
         client = FakeD4HClient(
-            member={"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}},
+            member={"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}},
             attendance=[],
             handlers=[{"animal": {"id": 2865}}],
             animal_attendance=[],
             post_animal_attendance_raises=D4HClientError("D4H 400 bad payload"),
         )
         _handle_per_yes_sync_task(
-            "evt-1", "kris@sccssar.org", ["Canine"],
+            "evt-1", "dana@sccssar.org", ["Canine"],
             client=client, load_activity_id=lambda eid: 99,
         )
         assert [c for c in client.calls if c[0] == "_post_attendance"], \
@@ -3766,7 +3766,7 @@ class TestHandlePerYesSyncTask:
         swallowing it would permanently lose the row, handing the dispatcher
         back the close-out data entry this feature removes."""
         client = FakeD4HClient(
-            member={"id": 555, "email": {"value": "kris@sccssar.org", "verified": True}},
+            member={"id": 555, "email": {"value": "dana@sccssar.org", "verified": True}},
             attendance=[],
             handlers=[{"animal": {"id": 2865}}],
             animal_attendance=[],
@@ -3774,7 +3774,7 @@ class TestHandlePerYesSyncTask:
         )
         with pytest.raises(D4HServerError):
             _handle_per_yes_sync_task(
-                "evt-1", "kris@sccssar.org", ["Canine"],
+                "evt-1", "dana@sccssar.org", ["Canine"],
                 client=client, load_activity_id=lambda eid: 99,
             )
         assert [c for c in client.calls if c[0] == "_post_attendance"], \
@@ -3978,7 +3978,7 @@ class TestPostInvolvedPersonNullStripping:
 class TestInvolvedPersonLastSeen:
     """#755 — last-seen date/time on the D4H involved-person record.
 
-    Kris (Ops, 2026-08-18) asked for both "when were we notified" and "when was
+    Dana (Ops, 2026-08-18) asked for both "when were we notified" and "when was
     the subject last seen" in D4H. The first already reaches the incident's long
     description via Event Log line 1; this is the second.
 
@@ -4050,7 +4050,7 @@ class TestInvolvedPersonLastSeenProductionParity:
         prod = self._fn()
         assert 'paragraphs.append(f"Last seen: {last_seen}")' in prod, (
             "the last-seen paragraph is gone from involvementNotes — D4H is the "
-            "surface Kris actually asked for"
+            "surface Dana actually asked for"
         )
 
     def test_production_reads_the_last_seen_at_key(self):
