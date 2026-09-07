@@ -2776,17 +2776,33 @@ _SECRET_QS_RE = re.compile(
     r"[^&\s\"'\\]+"
 )
 
+# PII-bearing query parameters — the SAME leak one layer over. httpx logs
+# every outbound URL at INFO, and the geocoders carry the subject's address in
+# the query string: Nominatim `q=` and Google Maps `address=` (LKP and the
+# subject's RESIDENCE), Geoapify `filter=` and `bias=` (LKP coordinates at full
+# float precision). Measured 2026-09-06 on sccssar-dev: 42 / 7 / 12 such lines
+# in seven days. Core privacy guarantee #3 ("no PII in logs") held at every
+# logger.* call in this repo and failed here, in a library logger that the AST
+# guard (test_pii_log_patterns.py) cannot see. Host and path survive so the
+# line still says WHICH provider answered; the value does not. Pinned by
+# test_log_redaction.py, which until this change asserted the address SURVIVED.
+_PII_QS_RE = re.compile(
+    r"(?i)([?&](?:q|address|filter|bias)=)"
+    r"[^&\s\"'\\]+"
+)
+
 
 def _redact_secrets(text: str) -> str:
-    """Replace the VALUE of any secret-bearing query parameter with REDACTED.
+    """Replace the VALUE of any secret- or PII-bearing query parameter.
 
     Keeps the parameter NAME so a reader can still tell the call was
-    authenticated, and leaves the rest of the URL (host, path, address) intact
-    so the line stays useful for debugging. Never raises — a logging path that
-    can throw is worse than the leak it prevents.
+    authenticated and which field was sent, and leaves host and path intact so
+    the line still identifies the provider. The address itself does not
+    survive — it is the subject's. Never raises — a logging path that can
+    throw is worse than the leak it prevents.
     """
     try:
-        return _SECRET_QS_RE.sub(r"\1REDACTED", text)
+        return _PII_QS_RE.sub(r"\1REDACTED", _SECRET_QS_RE.sub(r"\1REDACTED", text))
     except Exception:  # pragma: no cover — defensive; logging must not fail
         return text
 
