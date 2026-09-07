@@ -96,9 +96,11 @@ A dispatcher uploads a photo of a handwritten call-out form **or a digitally-fil
     ├─► Vertex AI / Gemini 2.5 Flash — OCR (JPEG: 2-pass; PDF: 1-pass text-only)
     ├─► Nominatim (OSM) + Google Maps fallback — street address → lat/lng
     ├─► Geoapify Places API — primary staging POI source, 1200 m radius
-    │     (per-env key; STAGING_SOURCE=geoapify on both live envs)
+    │     (per-env key; STAGING_SOURCE=geoapify on both live envs;
+    │      retried once at 4828 m when 1200 m returns zero candidates)
     ├─► Overpass API (OSM) — staging POI fallback, 1200 m radius, 2 mirrors
-    │     (drives only when STAGING_SOURCE unset/overpass, else fallback-on-failure)
+    │     (drives only when STAGING_SOURCE unset/overpass, else fallback-on-failure;
+    │      same widened retry applies when it is the driving source)
     ├─► CalTopo Team API (HMAC-SHA256) — map + marker creation
     ├─► Google Docs + Drive APIs (dispatcher drive.file token) — working notes
     ├─► Everbridge REST API (HTTP Basic) — groups, contacts, notification
@@ -287,6 +289,15 @@ Both flags are Terraform-managed. On sccssar-dev they are hardcoded in `main.tf`
 
 Applies to both sources:
 - Radius: 1200m (~0.75 miles) from the geocoded LKP
+- Widened retry: if the 1200m query returns **zero** candidates and the source itself was
+  healthy, the lookup runs once more at `_STAGING_FALLBACK_RADIUS_M` = 4828m (3.00 mi), and
+  an Event Log note tells the dispatcher the search was widened and that results are farther
+  out than usual. Zero at 1200m is usually a *rendering* outcome rather than a remote LKP:
+  at a measured suburban anchor the provider returned 28 features inside 1200m and not one
+  carried a house number, so every one was dropped by the §6 PASS 2 leading-digit predicate.
+  The retry fires only on zero, so the common path is untouched and nothing new competes for
+  the 7-slot cap or the provider's 100-feature cap. Well inside `_MAX_STAGING_DIST_M`, so the
+  staging distance guard does not reject the results.
 - POI types: fast food, gas station, pharmacy, hotel, motel, school, place of worship, convenience store, supermarket, grocery store, park
 - Returns: up to 12 candidates after ranking
 
@@ -794,7 +805,7 @@ A complete form submission, step by step. **Typical total time from photo upload
 
 9a. **Geocoding** — Same as PDF path (see step 7b below).
 
-10a. **Overpass POI query** — Same as PDF path (see step 8b below).
+10a. **Staging POI query** — Same as PDF path (see step 9b below).
 
 11a. **Pass 2 — Gemini formatting** — A second Gemini call formats the full structured output using `SYSTEM_PROMPT`. The prompt includes the verified LKP coordinates (`__LKP_COORDS__`) and the real OSM POI candidates (`__STAGING_CANDIDATES__`) injected as INTERNAL context. Gemini selects staging candidates top-to-bottom (no reordering) and formats the complete output including the LPB Range Ring Analysis. `finish_reason` checked again; HTTP 502 on `MAX_TOKENS`. Typical latency: 10–20 seconds.
 
@@ -804,7 +815,7 @@ A complete form submission, step by step. **Typical total time from photo upload
 
 8b. **Geocoding** — Backend sends the extracted LKP address to Nominatim (apartment/unit qualifiers stripped first). City/state cascade applied if needed. If Nominatim returns no result, falls back to the Google Maps Geocoding API (`_geocode_google_maps()`), which can resolve misspelled street names (e.g., "TRADEN" → "TRADAN"). Google Maps spelling correction is propagated throughout the summary text via server-side post-processing. Also geocodes the Residence address in parallel (with the same qualifier stripping and fallback logic). Returns `lat,lng` for both. Typical latency: 1–3 seconds.
 
-9b. **Overpass POI query** — Backend queries Overpass API for OSM points of interest within 1200m of the geocoded LKP coordinates. Tier-sorts results by `(tier, distance)`. Mirror fallback chain applied if needed. Returns up to 12 candidates. Typical latency: 2–5 seconds.
+9b. **Staging POI query** — Backend queries the active staging source (Geoapify on both live envs, Overpass as fallback — see §5) for points of interest within 1200m of the geocoded LKP coordinates. On zero candidates, retries once at 4828m (3.00 mi) and appends a widened-search note to the Event Log. Tier-sorts results by `(tier, distance)`. Mirror fallback chain applied if needed. Returns up to 12 candidates. Typical latency: <1s on Geoapify, 1–3s on Overpass (see §12); a widened retry adds one more source call.
 
 10b. **PDF Gemini call — staging + Koester** — A single text-only Gemini call (`STAGING_KOESTER_PROMPT` + `extract_staging_and_koester()`) formats the staging recommendations and LPB Range Ring Analysis. No image is sent. `max_output_tokens=16384` required — staging candidate text + full Koester analysis exceeds 8192 tokens. `finish_reason` checked; HTTP 502 on `MAX_TOKENS`. Typical latency: 10–20 seconds.
 
