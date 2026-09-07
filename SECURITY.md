@@ -83,6 +83,22 @@ of any security assessment — can be evaluated against a clear baseline.
   latency, Gemini finish reason, error type. Names, dates of birth, addresses, and case
   numbers are never logged — this is the core privacy guarantee.
 
+**How the guarantee is enforced, and where it once broke.** Two controls back it up.
+`backend/test_pii_log_patterns.py` walks every backend module's AST and fails the build if
+a `logger.*` call interpolates PII; its baseline is monotone non-increasing, so a cleanup
+can lower it but nothing may raise it. That guard covers only *our* logging calls, and in
+September 2026 a review found the guarantee broken by a logger we do not own: `httpx` logs
+every outbound request URL at INFO, which put the subject's residence and last-known
+position into the query strings of Nominatim and Google Maps calls, and the LKP coordinates
+into Geoapify calls — on every `/ocr`. It was measured at 42 / 7 / 12 log lines over seven
+days on the team environment before the fix. The control is now a query-string redactor
+applied at the single root log handler, which replaces the *values* of the `q`, `address`,
+`filter` and `bias` parameters while leaving host and path intact; it is pinned against the
+production pattern by `backend/test_log_redaction.py`. Adding a new geocoding parameter
+means adding it there. One bypass is known and stated rather than implied: uvicorn's own
+loggers do not propagate to that handler, so an unhandled ASGI traceback would skip the
+redactor. Nothing currently routes subject text into one.
+
 **Note on authorized third-party services:** Incident data is transmitted to authorized,
 SCCSSAR-reviewed service providers as part of the dispatch workflow. These are deliberate
 data flows to approved services, not accidental retention. The table below is the
@@ -98,8 +114,7 @@ complete inventory of outbound data flows; any addition requires updating this t
 | **Google Docs / Drive** | Working-notes doc body (event name + extracted summary) | Dispatcher's own OAuth access token, `drive.file` scope | Persists in dispatcher's Drive |
 | **Everbridge** | Notification title/body (no PII), selected group/contact IDs, polling reads of responder roster | Basic auth via `everbridge-credentials` (base64 user:pass) | Notification + event records persist in the SCCSSAR Everbridge org |
 | **Slack** | Channel name (event name), welcome/tally messages, invited responder Slack user IDs | Bot token (`xoxb-…`, `slack-bot-token`) | Channel + message history persists per Slack workspace retention |
-| **D4H** (future) | Full incident record + roster as attendees once enabled | Personal Access Token | Persists in D4H |
-| **WhatsApp** | None server-side — `wa.me` deep link only; dispatcher reviews + sends manually | N/A | None |
+| **D4H** | Incident record (event name, agency event #), involved-person details for the subject, and one attendance record per confirmed-YES responder | Personal Access Token (`d4h-access-token`) | Persists in the SCCSSAR D4H team |
 
 **Internal stores under SCCSSAR control:**
 - **Firestore `rate_limits`** — per-user and global request counters; no PII.
@@ -170,19 +185,28 @@ environment variables at deploy time. They are never committed to source code.
 | `google-maps-api-key` | Google Maps Geocoding API key (optional fallback for misspelled streets) |
 | `everbridge-credentials` | Everbridge service-account credentials, base64-encoded `username:password` (used directly as `Authorization: Basic <value>`) |
 | `slack-bot-token` | Slack bot token (`xoxb-…`, no expiry); rotate via `bin/rotate-secret.sh` |
+| `d4h-access-token` | D4H Personal Access Token for incident creation and attendance sync |
 | `dispatch-safe-list` | Email + Slack-handle allowlist used by `_route_send()` to gate live Everbridge sends and to partition Slack invitations during shadow mode (temporary scaffolding for the EB+Slack rollout) |
-
-Secrets for D4H will be added to Secret Manager when that integration is activated.
-The same pattern applies — never in source, always injected at runtime.
 
 **`terraform.tfvars` and `*.tfstate` files are gitignored** and must never be committed.
 They may contain credential references or infrastructure state.
 
 ### Rate Limiting
 
-The `/ocr` endpoint is rate-limited to **10 requests per user per hour** using a
-Firestore-backed counter. This prevents runaway usage (accidental loops, credential
-misuse) and constrains Vertex AI costs. Requests over the limit receive HTTP 429.
+The `/ocr` endpoint is rate-limited per dispatcher using a Firestore-backed counter, on
+four tiers (defaults; each is overridable by environment variable):
+
+| Tier | Default | Env var |
+|---|---|---|
+| Per minute, per user | 5 | `OCR_RATE_LIMIT_PER_MINUTE` |
+| Per hour, per user | 20 | `OCR_RATE_LIMIT_PER_HOUR` |
+| Per day, per user | 50 | `OCR_RATE_LIMIT_PER_DAY` |
+| Per day, all users | 200 | `OCR_DAILY_GLOBAL_CAP` |
+
+This prevents runaway usage (accidental loops, credential misuse) and constrains Vertex
+AI costs. Requests over a limit receive HTTP 429. The limiter is a cost control, not the
+anti-abuse layer — the allowlist is. Source of truth: `backend/rate_limit.py`; the values
+are pinned against `docs/architecture.md` by `backend/test_doc_parity.py`.
 
 ### Transport Security
 
@@ -191,7 +215,7 @@ on every response:
 
 - `X-Content-Type-Options: nosniff`
 - `X-Frame-Options: DENY`
-- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Referrer-Policy: strict-origin`
 - `X-Permitted-Cross-Domain-Policies: none`
 - Server header suppressed
 
@@ -297,7 +321,6 @@ production or third-party services during the review.
 
 A new assessment should be run when:
 
-- D4H live integration is activated (Issue #91) — new outbound authenticated API
 - Any new endpoint is added to `backend/main.py`
 - The authentication or rate-limiting logic is modified
 - A new third-party integration is added or an existing integration's auth model
@@ -306,7 +329,7 @@ A new assessment should be run when:
   existing collection changes
 
 History of cleared triggers (PDF ingest, `/create-doc`, Everbridge + Slack, Vertex AI
-SDK migration) is preserved in the Assessment record table below.
+SDK migration, and D4H live activation) is preserved in the Assessment record table below.
 
 ### Assessment record
 
@@ -321,6 +344,8 @@ SDK migration) is preserved in the Assessment record table below.
 | 2026-05-01 | Phase 1.8 Slacker / `cc1bf8b` | Full audit covering Everbridge REST + Slack API + Cloud Tasks polling endpoints (`/poll-incident`, `/delete-template`, `/close-incident-polling`) + three-tier email resolution (PRs #328/#329) + Vertex AI SDK migration (PR #333) + Aikido CIS log-metrics (PR #358). 0 HIGH / 0 MEDIUM / 0 LOW. Six candidate findings raised and all rejected after per-finding code-verification (max confidence 3/10). Three defense-in-depth recommendations noted (CSP header, OIDC env-var startup guard, Slack `WebClient` singleton) — not blocking. See `research/security-assessment-2026-05-01.md` |
 | 2026-05-23 | Phase 1.8 Slacker / `4014697` | Closure of significant external security review (31 findings via external tracker, distinct from the 2026-05-01 internal static audit). All 31 findings disposed across 38 PRs merged 2026-05-19 → 2026-05-23. 0 open HIGH / MEDIUM / LOW at closure. Infra changes followed the staged personal-dev → sccssar-dev mirror pattern (Phase 1 / Phase 2 PR pairs for K/L/M/N/O/R). |
 | 2026-05-26 | Phase 1.8 Slacker / `05b585b` | Closure of external code-review batch 2 (28 findings across `backend/slack.py`, `backend/d4h.py`, `backend/everbridge.py` + their call sites in `backend/main.py`; same reviewer as the 2026-05-23 batch-1 closure, different scope). All 28 findings disposed across 6 PRs (#515 / #516 / #517 / #518 / #523 / #524) + 1 CLAUDE.md follow-up (#525) promoting two new patterns into Locked Decisions. Breakdown: 4 Critical/High orphan-after-EB hardening + 1 atomic double-dispatch guard + 3 side-effect-before-persistence + 9 D4H robustness + 6 EB robustness + 4 Slack polish. 0 open HIGH / MEDIUM / LOW. 4 pre-existing platform issues surfaced during testing filed for separate tracking (#519 OOM, #520 silent-500, #521 refresh-wipes-state, #522 cold-start Firestore expiry); cumulative build is gated on #522 before sccssar-dev promotion. Tests: 1188 → 1216 pytest. See `research/melanie-batch-2-resolution.md`. |
+| 2026-09-06 | 1.11.66 / `886934e` | Pre-publication scanning sweep ahead of making the repository public. Aikido full scan run against the migrated repository; secret-scanning and push protection enabled and confirmed (0 alerts on the code repository); a blob scan across the full commit history validated with a positive control before being trusted — the control itself contaminates a `--history` scan, so it is run against a throwaway clone. Dependabot open alerts taken **17 → 0** (11 of them high). No credential file (`terraform.tfvars`, service-account JSON, `.pem`) was ever committed in any of the ~1,360 commits; the one live key ever present in a test fixture had already been rotated and deleted. |
+| 2026-09-07 | 1.11.67 `a7d1f3a` → 1.11.69 `3edbcad` | Four-dimension backend security review (input handling, authentication, data exposure, outbound request construction). **1 HIGH** — `httpx` logged outbound geocoding URLs at INFO, placing the subject's residence, last-known position and coordinates into Cloud Run logs on every `/ocr`; measured at 42 / 7 / 12 lines over seven days. Notable because every `logger.*` call in the repository was clean and an existing test actually *asserted* the address survived redaction, so neither the AST guard nor the test suite could see it. Fixed by redacting the PII query-string values at the single root log handler, pinned by `backend/test_log_redaction.py`, and confirmed closed on both environments (18/18 sampled lines clean each). **1 MEDIUM** — intake free text reached Slack unescaped and could inject `mrkdwn` markup into a pinned incident message; fixed with `_mrkdwn_escape()` on every interpolated field. One further candidate (follow-up endpoint auth model) was reviewed and deliberately left as-is. |
 
 ---
 
@@ -364,7 +389,7 @@ The following security practices have been implemented and will be maintained.
 ### Response Security
 
 - Security headers on all responses: `X-Content-Type-Options: nosniff`,
-  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin`,
   `X-Permitted-Cross-Domain-Policies: none`. Server header suppressed.
 - `Cache-Control: no-cache` on `index.html` responses — prevents browsers from serving
   stale JavaScript to dispatchers after a deploy.
@@ -374,14 +399,24 @@ The following security practices have been implemented and will be maintained.
 - Third-party dependencies are scanned for known security vulnerabilities via
   **GitHub Dependabot** (weekly automated alerts) and **Aikido Security** (SCA, SAST,
   and infrastructure-as-code scanning). Alerts are reviewed and patched on a priority
-  basis relative to severity.
+  basis relative to severity. Every Dependabot PR is reviewed and merged by a human —
+  none are auto-merged. The open-alert backlog was taken to **zero** in September 2026.
+- **GitHub secret scanning and push protection are enabled on the repository.** Push
+  protection blocks a commit containing a recognised credential pattern at push time,
+  rather than reporting it after the fact. A dependency bump that cannot resolve is
+  dry-run in a scratch virtualenv and judged on the installer's **exit code** before
+  merge — a resolution failure otherwise surfaces only at `docker build`, after the
+  pre-flight test suite has already passed.
 - Aikido scans source code (SAST), third-party dependencies (SCA), Docker image contents,
   and Terraform/IaC configuration for misconfigurations on a **scheduled cadence of every
   3 days**. It is the primary source for infrastructure-level security findings
   (e.g. VPC firewall rules, audit logging gaps, overly permissive IAM).
-- **Aikido scope:** scans target the team environment's GCP project and this GitHub
-  repository. Findings are mirrored into the sandbox environment manually as part of
-  routine maintenance.
+- **Aikido scope:** scans target the team environment's GCP project and **both** SCCSSAR
+  repositories — this one and the private operations repository that holds the issue
+  tracker and withheld runbooks. The GitHub Apps are installed at the organization level
+  with access set to *All*, but **scanning is activated per repository inside Aikido's own
+  console** — an org-level install alone does not start scanning a new repo. Findings are
+  mirrored into the sandbox environment manually as part of routine maintenance.
 - **Build-host endpoint protection:** the build/deploy machine runs the Aikido endpoint
   agent, which monitors for anomalous CI/CD network traffic and tainted third-party
   packages reaching the build environment. This complements the SCA scan of the
