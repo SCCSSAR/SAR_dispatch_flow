@@ -505,6 +505,11 @@ async def extract_incident_summary(
             "supermarket": "Grocery store", "grocery": "Grocery store",
             "chemist": "Pharmacy", "place_of_worship": "Church/Place of Worship",
             "mall": "Shopping center",  # issue #669
+            # ops #839. community_centre carries OSM's British spelling — that is
+            # the canonical amenity vocabulary (see _GEOAPIFY_PRIORITY in main.py).
+            # fire_station/police reach this dict ONLY via the widened retry.
+            "community_centre": "Community center",
+            "fire_station": "Fire station", "police": "Police station",
         }
         lines = [
             "STAGING CANDIDATES — pre-fetched from OpenStreetMap (real nearby locations). "
@@ -813,6 +818,11 @@ async def extract_staging_and_koester(
             "supermarket": "Grocery store", "grocery": "Grocery store",
             "chemist": "Pharmacy", "place_of_worship": "Church/Place of Worship",
             "mall": "Shopping center",  # issue #669
+            # ops #839. community_centre carries OSM's British spelling — that is
+            # the canonical amenity vocabulary (see _GEOAPIFY_PRIORITY in main.py).
+            # fire_station/police reach this dict ONLY via the widened retry.
+            "community_centre": "Community center",
+            "fire_station": "Fire station", "police": "Police station",
         }
         lines = [
             "STAGING CANDIDATES — pre-fetched from OpenStreetMap (real nearby locations). "
