@@ -397,7 +397,7 @@ cadence bullets above.
 
 **Data flowing OUT to Aikido:**
 
-- **Full repository tree** — Aikido's GitHub App clones `billburns250/SAR_dispatch_flow`
+- **Full repository tree** — Aikido's GitHub App clones `SCCSSAR/SAR_dispatch_flow`
   on the every-3-days scheduled scan AND on every PR (a PR-time CheckRun named
   `Aikido Security: check code` runs for ~15–25 minutes per PR). Aikido sees every
   file the GitHub App's installation permissions allow: `backend/`, `frontend/`,
@@ -464,9 +464,13 @@ not just the check status.
 
 **Operator obligations (revocation path):**
 
-- The Aikido GitHub App installation is owned by the project owner. Revoking it
-  requires removing the App from the `billburns250/SAR_dispatch_flow` repository
-  settings.
+- The Aikido GitHub Apps (`aikido-security` and `aikido-pr-checks`) are installed
+  at the **SCCSSAR organization** level with repository access set to *All*, not
+  on this repository. There is no per-repository uninstall. Revoking them is an
+  org-owner action in the organization's installed-apps settings, and it removes
+  Aikido from every SCCSSAR repository at once. To withdraw only this repository,
+  change the installation's repository access from *All* to *Only select
+  repositories* and leave this one out.
 - The Aikido GCP integration uses a service account with read-only roles on the
   project — revoking is `gcloud projects remove-iam-policy-binding` against the Aikido
   service account.
