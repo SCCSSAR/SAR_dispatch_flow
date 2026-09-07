@@ -25,7 +25,7 @@ re-typing the same information into four separate systems by hand.
 
 ## The Problem
 
-Most SAR teams dispatch from a handwritten or printed paper form. That data then needs to
+For SAR teams that dispatch from a handwritten or printed paper form, that data needs to
 reach four or more downstream systems: an alert notification platform, a tactical mapping
 tool, an incident management system, and a team messaging app. Doing it manually means
 reading the same form, typing the same address, and copying the same subject description
@@ -36,24 +36,25 @@ is re-entering a date of birth into a third system.
 
 ---
 
-## What It Does
+## What Dispatch Turbo Does
 
-1. **Dispatcher photographs the paper call-out form** on any phone, tablet, or laptop camera.
-2. **Gemini AI reads the form** — extracts all fields (subject name/DOB/description, LKP
-   address, reporting agency, event log timestamps, LPB questionnaire answers) and corrects
+1. **Dispatcher photographs the paper call-out form** on any phone, tablet, or laptop camera; or sends the filled-out PDF form.
+2. **Gemini AI reads the form** — extracts the Subject's Data, the Planning Data and at-risk indicators (subject name/DOB/description, LKP
+   address, reporting agency, event log timestamps, LPB questionnaire answers) and corrects most 
    common handwriting ambiguities.
 3. **Backend geocodes the LKP address** using OpenStreetMap/Nominatim (Google Maps as a
    spelling-correction fallback) and queries nearby POIs via Geoapify — parks, schools,
-   shopping centres, fast food, pharmacies — to generate real, driveable staging
-   recommendations.
+   shopping centers, fast food, pharmacies — to generate real, driveable staging
+   recommendations that will hold a SAR team.
 4. **Dispatcher reviews and corrects** the extracted text in a browser textarea — takes
    about 30 seconds to scan.
-5. **One-click dispatch** to each downstream system:
+5. **Two-click dispatch** to each downstream system:
    - 🔔 **Everbridge** — automated notification (group selection + OCEAN# auto-fill + send); polls for confirmed-YES responders. Also the team's **source-of-truth for member SAR email addresses** — the join key D4H and Slack look up against when matching responders
-   - 💬 **Slack** — creates a private incident channel, posts welcome with MP info + CalTopo link, auto-invites confirmed-YES responders, maintains a live tally in `#active-incidents`
-   - 🗺 **Create Incident Map** — creates a CalTopo map with LKP marker, residence marker, staging markers (officer Command Post icon + alternates), and Koester LPB distances in the text
-   - 📋 **D4H** — auto-creates the incident, syncs per-YES attendance, attaches drone + K9 tabs (Phase 2 Selective mode)
-   - 🗺 **Google Maps** — opens a reference map centered on the LKP
+   - 💬 **Slack** — creates a private incident channel, posts welcome with MP info + CalTopo link, clickable staging links for Apple and Google Maps, auto-invites confirmed-YES responders, maintains a live tally in `#active-incidents`
+   - 🗺 **Create Incident Map** — creates a CalTopo map with LKP marker, residence marker, staging markers (Incident Command Post icon + alternates), and Koester LPB distances in the text
+   - 📋 **D4H** — auto-creates the incident record, syncs per-YES attendance, attaches drone + K9 tabs (Phase 2 Selective mode), Involved Person info
+   - 📋 **Google Docs** — (optional) opens a working document with above reference information, and shares with other dispatchers
+   - 🗺 **Google Maps** — (optional) opens a reference map centered on the LKP
 
 **Total elapsed time:** under 5 minutes from photo upload to all systems notified.
 
