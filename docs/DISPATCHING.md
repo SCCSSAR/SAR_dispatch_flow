@@ -87,6 +87,17 @@ area needs parking, room to brief, and somewhere to wait.
 Recommendations are ordered. Number one is the app's best answer, not a promotion of
 whatever the officer wrote.
 
+### When nothing is close enough
+
+That search runs about three quarters of a mile out. In hilly or rural areas it sometimes
+finds nothing at all, and the app then searches again out to three miles. Your Event Log
+says when this happened and names the wider radius.
+
+Those recommendations are real places. They also sit farther out than what you normally
+see, so weigh the travel time against the officer's own staging before you commit. If even the wider search comes up
+empty, the staging message your responders see carries an `⚠️ Unverified address` warning,
+and the list should be read as a starting point rather than an answer.
+
 **To override the staging location**, enter an address, a latitude and longitude pair, or a
 UTM coordinate. An override you enter is authoritative and is plotted as the command post.
 
