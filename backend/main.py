@@ -8891,8 +8891,15 @@ async def send_followup_notification(
     `dispatcher_email` would block precisely the backup dispatcher who is free to
     help during a shift handoff. Everyone reaching this handler is already on the
     allowlist and already trusted to originate a dispatch. The acting dispatcher
-    is logged. ⚠️ This is a judgement call made while Bill was offline — flagged
-    in the PR for confirmation.
+    is logged.
+
+    CONFIRMED by Bill 2026-09-06 (security review, row 6): leave allowlist-only.
+    Two reasons, the second decisive. (1) Gating on ownership would recreate the
+    2026-07-24 failure above. (2) There is NO UI in Dispatch Turbo through which
+    a non-owning dispatcher can reach this endpoint — every browser session is
+    ephemeral and holds only its own dispatch — so an ownership gate would block
+    nothing that is actually reachable while still costing the recovery path.
+    Do not re-raise this as a hardening item without a new UI path to point at.
 
     Request body (JSON):
         title: str  — composed by the dispatcher; "SOSAR - " enforced server-side
