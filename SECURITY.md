@@ -2,7 +2,13 @@
 
 ## Reporting a Vulnerability
 
-Report security vulnerabilities by email to **bill.burns@sccssar.org**.
+**Preferred: [open a private security advisory](https://github.com/SCCSSAR/SAR_dispatch_flow/security/advisories/new).**
+GitHub private vulnerability reporting is enabled on this repository. The report stays
+private to you and the maintainers, it keeps the discussion attached to the code, and it
+gives you a place to see the fix land.
+
+If you would rather not use GitHub, email **bill.burns@sccssar.org** instead. Either
+channel is fine; use whichever you are comfortable with.
 
 Please do not open a public GitHub issue for a security vulnerability.
 
@@ -36,7 +42,8 @@ the guarantees this project actually makes:
 
 ## No Published Advisories
 
-There are currently no published security advisories for this repository.
+There are currently no published security advisories for this repository. Advisories will
+be published here after a fix ships, crediting the reporter unless they ask otherwise.
 
 ---
 
