@@ -21,7 +21,7 @@ set -e
 # Project-specific settings — update PHASE when releasing a new phase
 # ---------------------------------------------------------------------------
 # Milestone string — number + theme name. Match the GitHub Milestone label at
-# https://github.com/billburns250/SAR_dispatch_flow/milestones (e.g. "1.6 Twin Peaks",
+# the repository's GitHub milestone labels (e.g. "1.6 Twin Peaks",
 # "1.7 Accountant", "1.8 Slacker"). UPDATE this once per milestone bump.
 PHASE="1.8 Slacker"
 

@@ -1,0 +1,21 @@
+# Build context is the repo root (backend/Dockerfile COPYs backend/*.py and
+# frontend/). Keep everything the image does not need OUT of the context.
+#
+# Tests: `COPY backend/*.py .` matched every test_*.py and shipped the whole
+# suite into the production image. Harmless while every fixture is synthetic,
+# but the verbatim-fixture pattern was the root cause of every Phase 1 PII
+# finding, so this is what would have DEPLOYED the next one. The build scripts
+# run pytest from the working tree in Step 0, not inside the image, so nothing
+# needs the tests in the context. (security review 2026-09-06)
+backend/test_*.py
+backend/__pycache__/
+backend/.pytest_cache/
+backend/migration_validation/
+
+# Local-only, gitignored, and secret-bearing. Never COPY'd, but never in the
+# context either.
+deploy.env
+terraform/**/terraform.tfvars
+research/
+experiments/
+.git/
