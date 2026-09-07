@@ -3848,7 +3848,7 @@ class TestApplyResponderDiffGroups:
         # When a second responder arrives, first responder's groups are preserved.
         prev = [{"contact_id": "c1", "name": "Burns, Bill", "groups": ["K9"], "emails": []}]
         cgm = {"c1": ["K9"], "c2": ["UAS"]}
-        ack2 = {"contact_id": "c2", "first_name": "Kris", "last_name": "Black", "emails": []}
+        ack2 = {"contact_id": "c2", "first_name": "Dana", "last_name": "Vance", "emails": []}
         full, arrivals = _apply_responder_diff_mirror(prev, [ack2], cgm)
         assert len(full) == 2
         assert full[0]["groups"] == ["K9"]
@@ -3930,21 +3930,21 @@ class TestApplyResponderDiffSafeListFallback:
     "unresolvable" and posted via the existing format_would_invite path).
     """
 
-    def test_kris_unit_leader_resolves_via_safe_list(self):
-        # Live test reference case: Kris Black, contact 700000000000038.
+    def test_dana_unit_leader_resolves_via_safe_list(self):
+        # Live test reference case: Dana Vance, contact 700000000000038.
         # EB contact has no email paths → cem empty for her cid.
         # Expected: name match against safe-list resolves her @sccssar.org
-        # email so shadow-mode posts "Would invite: Black, Kris" (not Cannot).
-        sle = ["bill.burns@sccssar.org", "kris.black@sccssar.org"]
+        # email so shadow-mode posts "Would invite: Vance, Dana" (not Cannot).
+        sle = ["bill.burns@sccssar.org", "dana.vance@sccssar.org"]
         ack = {
             "contact_id": "700000000000038",
-            "first_name": "Kris", "last_name": "Black", "emails": [],
+            "first_name": "Dana", "last_name": "Vance", "emails": [],
         }
         full, _ = _apply_responder_diff_mirror([], [ack], {}, {}, sle)
-        assert full[0]["emails"] == ["kris.black@sccssar.org"]
+        assert full[0]["emails"] == ["dana.vance@sccssar.org"]
 
     def test_bill_burns_resolves_via_safe_list(self):
-        sle = ["bill.burns@sccssar.org", "kris.black@sccssar.org"]
+        sle = ["bill.burns@sccssar.org", "dana.vance@sccssar.org"]
         ack = {
             "contact_id": "700000000000028",
             "first_name": "Bill", "last_name": "Burns", "emails": [],
@@ -3995,7 +3995,7 @@ class TestApplyResponderDiffSafeListFallback:
     def test_ambiguous_last_name_resolved_by_first(self):
         # Two Burnses on the safe-list (e.g., parent + child volunteer);
         # only one has matching first name → unique match.
-        sle = ["jen.burns@sccssar.org", "bill.burns@sccssar.org"]
+        sle = ["robin.burns@sccssar.org", "bill.burns@sccssar.org"]
         ack = {"contact_id": "c1", "first_name": "Bill", "last_name": "Burns", "emails": []}
         full, _ = _apply_responder_diff_mirror([], [ack], {}, {}, sle)
         assert full[0]["emails"] == ["bill.burns@sccssar.org"]
@@ -4010,7 +4010,7 @@ class TestApplyResponderDiffSafeListFallback:
     def test_no_match_returns_empty(self):
         # Responder not on safe-list → still "Cannot invite" (existing edge
         # case for SAR members without an @sccssar.org email yet).
-        sle = ["bill.burns@sccssar.org", "kris.black@sccssar.org"]
+        sle = ["bill.burns@sccssar.org", "dana.vance@sccssar.org"]
         ack = {
             "contact_id": "c-other",
             "first_name": "Sam", "last_name": "Stranger", "emails": [],
@@ -4049,13 +4049,13 @@ class TestApplyResponderDiffSafeListFallback:
         assert full[0]["emails"] == []
 
     def test_short_first_name_does_not_short_circuit_match(self):
-        # First name "Al" (2 chars) is a substring of many local-parts; the
+        # First name "Ed" (2 chars) is a substring of many local-parts; the
         # algorithm relies on uniqueness, not min-length. With a clean
         # safe-list this resolves correctly; with collisions it returns [].
-        sle = ["al.adams@sccssar.org"]
-        ack = {"contact_id": "c1", "first_name": "Al", "last_name": "Adams", "emails": []}
+        sle = ["ed.ochoa@sccssar.org"]
+        ack = {"contact_id": "c1", "first_name": "Ed", "last_name": "Ochoa", "emails": []}
         full, _ = _apply_responder_diff_mirror([], [ack], {}, {}, sle)
-        assert full[0]["emails"] == ["al.adams@sccssar.org"]
+        assert full[0]["emails"] == ["ed.ochoa@sccssar.org"]
 
 
 # ===========================================================================
@@ -4063,7 +4063,7 @@ class TestApplyResponderDiffSafeListFallback:
 # ===========================================================================
 # Source of truth: backend/everbridge.py::get_contact_emails().
 #
-# Phase 1 multi-recipient live test (2026-04-30 with Kris Black) surfaced a
+# Phase 1 multi-recipient live test (2026-04-30 with Dana Vance) surfaced a
 # silent failure on the contact-direct send path: get_contact_emails was
 # calling GET /contacts/{orgId}/{contactId} which returns HTTP 401
 # "User does not have API permissions for this method" for the SHO-SAR
@@ -4092,7 +4092,7 @@ class TestGetContactEmailsEndpoint:
     Dispatcher SA role. The list endpoint with `contactIds` filter is the
     only proven-working alternative. Confirmed empirically against the
     live SA on 2026-04-30; any drift back to the path-based form would
-    silently re-introduce the Kris-no-Slack-invite symptom.
+    silently re-introduce the Dana-no-Slack-invite symptom.
     """
 
     def test_uses_list_endpoint_not_path_based(self):
@@ -4197,7 +4197,7 @@ class TestSortEmailsSccssarFirstPolicy:
 # _partition_arrivals_for_shadow — three-way YES classification (2026-04-30)
 # ---------------------------------------------------------------------------
 #
-# Bug surfaced 2026-04-30 in live test (Bill safe-list + Miguel non-safe-list):
+# Bug surfaced 2026-04-30 in live test (Bill safe-list + Marco non-safe-list):
 # safe-list responder Bill got "Would invite: Burns, Bill" channel post even
 # though he was already a member from the send-time pre-invite. Misleading.
 #
@@ -4243,12 +4243,12 @@ class TestPartitionArrivalsForShadow:
     def test_email_no_safe_list_match_goes_to_resolvable(self):
         # Non-safe-list responder with email — would be invited under full
         # mode, gets "Would invite:" line under shadow.
-        arrivals = [{"name": "Mateos, Miguel", "emails": ["miguel@sccssar.org"]}]
+        arrivals = [{"name": "Delgado, Marco", "emails": ["marco@sccssar.org"]}]
         already, res, unres = _partition_arrivals_for_shadow_mirror(
             arrivals, ["bill.burns@sccssar.org"],
         )
         assert already == []
-        assert res == ["Mateos, Miguel"]
+        assert res == ["Delgado, Marco"]
         assert unres == []
 
     def test_no_emails_goes_to_unresolvable(self):
@@ -4262,18 +4262,18 @@ class TestPartitionArrivalsForShadow:
 
     def test_mixed_three_buckets(self):
         # The exact 2026-04-30 live-test scenario plus a synthetic third
-        # bucket: Bill (safe-list), Miguel (non-safe-list w/ email),
+        # bucket: Bill (safe-list), Marco (non-safe-list w/ email),
         # Hank (no email at all).
         arrivals = [
             {"name": "Burns, Bill",     "emails": ["bill.burns@sccssar.org"]},
-            {"name": "Mateos, Miguel",  "emails": ["miguel@sccssar.org"]},
+            {"name": "Delgado, Marco",  "emails": ["marco@sccssar.org"]},
             {"name": "Oliver, Hank",    "emails": []},
         ]
         already, res, unres = _partition_arrivals_for_shadow_mirror(
             arrivals, ["bill.burns@sccssar.org"],
         )
         assert already == ["Burns, Bill"]
-        assert res     == ["Mateos, Miguel"]
+        assert res     == ["Delgado, Marco"]
         assert unres   == ["Oliver, Hank"]
 
     def test_safe_list_match_is_case_insensitive(self):
@@ -4317,12 +4317,12 @@ class TestPartitionArrivalsForShadow:
         # responders fall into resolvable or unresolvable based on email.
         arrivals = [
             {"name": "Burns, Bill",    "emails": ["bill.burns@sccssar.org"]},
-            {"name": "Mateos, Miguel", "emails": []},
+            {"name": "Delgado, Marco", "emails": []},
         ]
         already, res, unres = _partition_arrivals_for_shadow_mirror(arrivals, [])
         assert already == []
         assert res     == ["Burns, Bill"]
-        assert unres   == ["Mateos, Miguel"]
+        assert unres   == ["Delgado, Marco"]
 
     def test_empty_arrivals_returns_three_empty_lists(self):
         # No new arrivals this cycle (idle poll, all responders previously
@@ -7790,7 +7790,7 @@ class TestD4HReferenceDescriptionStripsDate:
 
 
 class TestD4HEBGroupMappingIsStable:
-    """EB group -> D4H tag mapping cross-file pin (post-2026-05-19 Kris rebuild).
+    """EB group -> D4H tag mapping cross-file pin (post-2026-05-19 Dana rebuild).
 
     Source-of-truth references:
       - EB group names from `python3 experiments/everbridge_slack/discover.py groups`
@@ -7798,14 +7798,14 @@ class TestD4HEBGroupMappingIsStable:
       - Mapping logic in backend/d4h.py::_map_eb_groups_to_d4h_tags
       - Mirror in backend/test_d4h.py
 
-    Drift detection: if Kris renames an EB group (or adds a new one) and we
+    Drift detection: if Dana renames an EB group (or adds a new one) and we
     don't update _EB_TO_D4H_TAG, the new name appears in the `unmapped`
     return slot at dispatch time — silently emits "EB group X not in mapping"
     in the event log, and the D4H tag is not applied. These tests pin the
     expected behavior for the FIVE currently-dispatchable groups.
     """
-    # 2026-05-19 Kris rebuild — current EB dispatchable group names
-    # (verified via discover.py output 2026-05-19). When Kris adds or
+    # 2026-05-19 Dana rebuild — current EB dispatchable group names
+    # (verified via discover.py output 2026-05-19). When Dana adds or
     # renames a group, update this list AND _EB_TO_D4H_TAG in lockstep.
     _CURRENT_DISPATCHABLE_EB_GROUPS = (
         "ATV", "Canine", "Search Management", "Technical Rescue", "UAS",
@@ -7829,7 +7829,7 @@ class TestD4HEBGroupMappingIsStable:
         updated (or the rebuild was reverted)."""
         for name in self._CURRENT_DISPATCHABLE_EB_GROUPS:
             assert not name.endswith(" Team"), (
-                f"EB group {name!r} has stale ` Team` suffix — Kris's "
+                f"EB group {name!r} has stale ` Team` suffix — Dana's "
                 f"2026-05-19 rebuild dropped that pattern"
             )
 
@@ -7840,7 +7840,7 @@ class TestD4HEBGroupMappingIsStable:
         `_strip_eb_prefix` as dead code."""
         for name in self._CURRENT_DISPATCHABLE_EB_GROUPS:
             assert not name.startswith("SAR - "), (
-                f"EB group {name!r} has stale `SAR - ` prefix — Kris's "
+                f"EB group {name!r} has stale `SAR - ` prefix — Dana's "
                 f"2026-05-19 rebuild dropped that pattern"
             )
 
@@ -12029,7 +12029,7 @@ class TestTextareaLockIsDispatchOnly:
 class TestSubjectLastSeenEventLogEntry:
     """#755 — the subject's last-seen date/time as an Event Log chronology entry.
 
-    Kris (Ops, 2026-08-18) asked that D4H record both "when were we notified"
+    Dana (Ops, 2026-08-18) asked that D4H record both "when were we notified"
     and "when was the subject last seen". The first was already Event Log line 1
     on both intake paths; the second sat on the intake form, was parsed into
     `Last Seen At:`, and went nowhere.

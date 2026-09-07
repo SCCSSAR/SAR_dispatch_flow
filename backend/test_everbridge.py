@@ -607,17 +607,17 @@ class TestComposeNotificationBody:
             resource_types=["K9"],
             age=15,
             city="San Jose",
-            dispatcher_last_name="Black",
+            dispatcher_last_name="Vance",
         )
         assert "Need K9 teams for a missing 15 year old in San Jose" in body
-        assert body.endswith("-##, Black")
+        assert body.endswith("-##, Vance")
 
     def test_age_unknown(self):
         body = compose_notification_body(
             resource_types=["K9"],
             age=None,
             city="San Jose",
-            dispatcher_last_name="Black",
+            dispatcher_last_name="Vance",
         )
         # Body must still be valid even if age missing — fall through with
         # "unknown age person" so the dispatcher can edit before sending.
@@ -995,9 +995,9 @@ class TestExtractDispatcherOcean:
              "externalId": "1O305",
              "paths": [{"value": "bill@example.com"},
                        {"value": "bill.alt@example.com"}]},
-            {"id": "c2", "firstName": "Kris", "lastName": "Black",
+            {"id": "c2", "firstName": "Dana", "lastName": "Vance",
              "externalId": "1O185",
-             "paths": [{"value": "kris@example.com"}]},
+             "paths": [{"value": "dana@example.com"}]},
             {"id": "c3", "firstName": "Test", "lastName": "User",
              "externalId": "MALFORMED",
              "paths": [{"value": "test@example.com"}]},
@@ -1017,7 +1017,7 @@ class TestExtractDispatcherOcean:
         assert _extract_dispatcher_ocean(body, "bill.alt@example.com") == "305"
 
     def test_other_dispatcher_returns_their_ocean(self, body):
-        assert _extract_dispatcher_ocean(body, "kris@example.com") == "185"
+        assert _extract_dispatcher_ocean(body, "dana@example.com") == "185"
 
     def test_non_numeric_external_id_returns_none(self, body):
         # Match found, but parser rejects "MALFORMED" — never substitute
@@ -1106,7 +1106,7 @@ class TestParseGroupMembersResponse:
     def test_returns_contact_id_strings(self):
         body = {"page": {"data": [
             {"id": "c1", "firstName": "Bill", "lastName": "Burns"},
-            {"id": "c2", "firstName": "Kris", "lastName": "Black"},
+            {"id": "c2", "firstName": "Dana", "lastName": "Vance"},
         ]}}
         out = _parse_group_members_response(body)
         assert out == ["c1", "c2"]
@@ -1114,7 +1114,7 @@ class TestParseGroupMembersResponse:
     def test_skips_entries_without_id(self):
         body = {"page": {"data": [
             {"firstName": "NoId"},
-            {"id": "c2", "firstName": "Kris"},
+            {"id": "c2", "firstName": "Dana"},
         ]}}
         out = _parse_group_members_response(body)
         assert out == ["c2"]
@@ -1151,9 +1151,9 @@ class TestExtractPathsEmails:
         contact = {"paths": [
             {"value": "bill@example.com", "pathId": 1},
             {"value": "4085551234", "pathId": 2},        # phone — excluded
-            {"value": "kris@example.com", "pathId": 3},
+            {"value": "dana@example.com", "pathId": 3},
         ]}
-        assert _extract_paths_emails(contact) == ["bill@example.com", "kris@example.com"]
+        assert _extract_paths_emails(contact) == ["bill@example.com", "dana@example.com"]
 
     def test_excludes_non_email_paths(self):
         contact = {"paths": [{"value": "5551234567"}, {"value": "no-at-sign"}]}
@@ -1203,9 +1203,9 @@ class TestExtractPathsEmails:
 class TestSortEmailsSccssarFirst:
     def test_sccssar_promoted_to_index_0(self):
         out = _sort_emails_sccssar_first([
-            "personal@gmail.com", "kris.black@sccssar.org",
+            "personal@gmail.com", "dana.vance@sccssar.org",
         ])
-        assert out[0] == "kris.black@sccssar.org"
+        assert out[0] == "dana.vance@sccssar.org"
 
     def test_case_insensitive_match(self):
         # Bill's actual EB record uses mixed case "Bill.burns@sccssar.org".
@@ -1252,12 +1252,12 @@ class TestParseGroupMemberContactsResponse:
     def test_returns_contact_id_and_emails(self):
         body = {"page": {"data": [
             {"id": "c1", "paths": [{"value": "bill@example.com"}]},
-            {"id": "c2", "paths": [{"value": "kris@example.com"}, {"value": "5555555"}]},
+            {"id": "c2", "paths": [{"value": "dana@example.com"}, {"value": "5555555"}]},
         ]}}
         out = _parse_group_member_contacts_response(body)
         assert out == [
             {"contact_id": "c1", "emails": ["bill@example.com"]},
-            {"contact_id": "c2", "emails": ["kris@example.com"]},
+            {"contact_id": "c2", "emails": ["dana@example.com"]},
         ]
 
     def test_contact_with_no_email_paths(self):

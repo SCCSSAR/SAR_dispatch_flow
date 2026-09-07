@@ -112,7 +112,7 @@ class TestValidateConfirmDraftSentOwnership:
         # incident — same response as not-found so we don't disclose
         # whether the event_id even exists.
         result = _validate_confirm_draft_sent(
-            _doc(dispatcher_email="kris@sccssar.org"),
+            _doc(dispatcher_email="dana@sccssar.org"),
             "bill@sccssar.org",
         )
         assert result == (404, "Incident not found or not yours")

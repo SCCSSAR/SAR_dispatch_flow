@@ -700,7 +700,7 @@ class TestApplyResponderDiff:
     def test_mixed_existing_and_new(self):
         prev = [
             {"contact_id": "c1", "name": "Burns, Bill",  "groups": ["K9"], "emails": []},
-            {"contact_id": "c2", "name": "Black, Kris",  "groups": [],     "emails": []},
+            {"contact_id": "c2", "name": "Vance, Dana",  "groups": [],     "emails": []},
         ]
         new_acks = [
             # c1 already there — skip
@@ -765,18 +765,18 @@ class TestD4HPerYesEnqueueItems:
     """Selection logic for D4H per-YES enqueue in poll_incident."""
 
     def test_returns_email_and_groups_per_arrival(self):
-        """Group names reflect Kris's 2026-05-19 EB rebuild — `Canine`
+        """Group names reflect Dana's 2026-05-19 EB rebuild — `Canine`
         (was `SAR - Canine Team`, DOGS-* collapsed in), `UAS` (was
         `SAR - UAS Team`)."""
         doc = {"d4h_activity_id": 1616002}
         arrivals = [
             {"emails": ["bill@sccssar.org"], "groups": ["Canine"]},
-            {"emails": ["kris@sccssar.org"], "groups": ["Canine", "UAS"]},
+            {"emails": ["dana@sccssar.org"], "groups": ["Canine", "UAS"]},
         ]
         items = _d4h_yes_enqueue_items(doc, arrivals)
         assert items == [
             ("bill@sccssar.org", ["Canine"]),
-            ("kris@sccssar.org", ["Canine", "UAS"]),
+            ("dana@sccssar.org", ["Canine", "UAS"]),
         ]
 
     def test_graceful_degrade_when_no_activity_id(self):
