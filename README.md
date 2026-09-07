@@ -62,25 +62,52 @@ is re-entering a date of birth into a third system.
 
 ## Features
 
-### Currently Live (Phase 1.8 Slacker)
+Everything below is live and in use on the team environment.
 
-| Feature | Status |
-|---------|--------|
-| Gemini multimodal OCR — handwritten JPEG form → structured text | ✅ Live |
-| v2 PDF AcroForm extraction (100% deterministic, no OCR) | ✅ Live |
-| LKP address geocoding (Nominatim → Google Maps fallback) | ✅ Live |
-| Staging area recommendations (real POIs via Geoapify, tiered + quality-ranked) | ✅ Live |
-| Dispatcher staging-location override (address / lat-lng / UTM) | ✅ Live |
-| Koester LPB range ring analysis (25th/50th/75th percentile, text-only) | ✅ Live |
-| CalTopo incident map creation (LKP + residence + staging markers) | ✅ Live |
-| Everbridge automated dispatch + responder polling | ✅ Live (`full` on the team environment) |
-| Slack private incident channel + welcome + staging + responder tally | ✅ Live (`full` on the team environment) |
-| D4H incident auto-create + per-YES attendance sync (Phase 2 Selective mode) | ✅ Live |
-| Google Doc "Working Notes" via dispatcher OAuth (`drive.file`) | ✅ Live |
-| Google Sign-In auth with email allowlist | ✅ Live |
-| Per-user rate limiting (Firestore-backed) | ✅ Live |
-| Amber checkbox warning banner (dispatcher verifies Q1–Q12 on JPEG path) | ✅ Live |
-| Server-side post-processing to normalize known OCR errors | ✅ Live |
+**Intake and extraction**
+
+- Gemini multimodal OCR for a photographed handwritten form.
+- Deterministic AcroForm extraction for the fillable v2 PDF — that path runs no OCR at all.
+- Subject age recomputed from date of birth rather than trusted from the model.
+- Server-side normalization of known, recurring OCR misreads.
+- Amber verification banner on the JPEG path, prompting the dispatcher to confirm the
+  Q1–Q12 checkbox grid by eye.
+
+**Location and staging**
+
+- LKP and residence geocoding — Nominatim first, Google Maps as a spelling-correction
+  fallback — with guards that reject a result in the wrong country or on a different
+  house number than the officer wrote.
+- Staging recommendations built from live POI data (Geoapify): tier-ranked, and
+  deduplicated both by address and by proximity so the list offers genuinely different
+  places rather than seven doors on one block.
+- Automatic widened search when nothing navigable is found near the LKP, with a note to
+  the dispatcher that the options are farther out than usual.
+- Dispatcher staging override by address, lat/lng, or UTM.
+- Koester LPB range-ring analysis, rendered as text, miles first.
+
+**Dispatch**
+
+- **CalTopo** — incident map seeded with LKP, residence, an ICP marker and ranked
+  staging alternates.
+- **Everbridge** — notification with group selection and event-number auto-fill, then
+  polling for confirmed-YES responders.
+- **Slack** — private incident channel with a pinned welcome, a separately pinned staging
+  message carrying Apple and Google Maps links, the CalTopo map, auto-invite on YES, and
+  a live tally in `#active-incidents`.
+- **D4H** — incident record, per-YES attendance sync, involved-person details, and K9 and
+  drone tabs.
+- **Google Doc** — optional working document created in the dispatcher's own Drive via
+  OAuth (`drive.file`) and shared with the other dispatchers.
+
+**Safety and operations**
+
+- Google Sign-In with a server-verified email allowlist enforced on every endpoint.
+- Form images are never written to disk, and no subject PII reaches the logs — including
+  the query strings of outbound geocoding calls, which are redacted at the log handler.
+- Per-user and global rate limiting, backed by Firestore.
+- Independent Everbridge and Slack rollout flags, so a sandbox environment runs the same
+  code without paging anyone.
 
 ---
 
@@ -282,8 +309,7 @@ Highlights:
 
 ## Status
 
-**Version 1.11.63 — Phase 1.8 "Slacker."** In production and used by SCCSSAR for real
-callouts.
+**Version 1.11.70.** In production and used by SCCSSAR for real callouts.
 
 All four downstream integrations are live on the team environment: Everbridge and Slack
 both run in `full` mode, D4H Phase 2 attendance sync is validated end to end, and CalTopo
