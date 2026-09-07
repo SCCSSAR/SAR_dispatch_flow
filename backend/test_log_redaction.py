@@ -30,10 +30,16 @@ _SECRET_QS_RE = re.compile(
 )
 
 
+_PII_QS_RE = re.compile(
+    r"(?i)([?&](?:q|address|filter|bias)=)"
+    r"[^&\s\"'\\]+"
+)
+
+
 def _redact_secrets(text):
     """Mirror of main.py::_redact_secrets()."""
     try:
-        return _SECRET_QS_RE.sub(r"\1REDACTED", text)
+        return _PII_QS_RE.sub(r"\1REDACTED", _SECRET_QS_RE.sub(r"\1REDACTED", text))
     except Exception:  # pragma: no cover
         return text
 
@@ -64,19 +70,58 @@ class TestRedactSecrets:
         assert "aGVsbG8rd29ybGQ" not in out
         assert "signature=REDACTED" in out
 
-    def test_the_useful_part_of_the_line_survives(self):
-        """Redaction must not destroy the diagnostic value of the log line.
+    def test_the_provider_survives_but_the_address_does_not(self):
+        """Host, path and status stay readable; the subject's address does not.
 
-        The request lines are how the 2026-07-25 wrong-city investigation was
-        resolved — host, path, and the address being geocoded all have to
-        remain readable, or the next investigation loses its evidence.
+        Until 2026-09-06 this test asserted the OPPOSITE — that
+        `address=447+Great+Mall+Dr` survived — because the request lines had
+        resolved the 2026-07-25 wrong-city investigation. That pinned a PII
+        leak as a requirement: on every /ocr the subject's residence and LKP
+        reached Cloud Logging through httpx's INFO line, 42 times in one week
+        on the production-facing environment. The provider and status still
+        say which call was made and how it went; the value is the subject's.
         """
         raw = ('HTTP Request: GET https://maps.googleapis.com/maps/api/geocode/json'
                '?address=447+Great+Mall+Dr&key=SECRETVALUE "HTTP/1.1 200 OK"')
         out = _redact_secrets(raw)
         assert "maps.googleapis.com/maps/api/geocode/json" in out
-        assert "address=447+Great+Mall+Dr" in out
+        assert "Great+Mall" not in out
+        assert "address=REDACTED" in out
+        assert "key=REDACTED" in out
         assert "HTTP/1.1 200 OK" in out
+
+    def test_the_2026_09_06_nominatim_line(self):
+        """The line shape measured live: subject address in `q=`, LKP and
+        residence both. Everything after it is a fixed option and survives."""
+        raw = ('HTTP Request: GET https://nominatim.openstreetmap.org/search'
+               '?q=1020+Diadem+Dr%2C+San+Jose%2C+CA&format=json&limit=1'
+               '&addressdetails=1&countrycodes=us "HTTP/1.1 200 OK"')
+        out = _redact_secrets(raw)
+        assert "Diadem" not in out
+        assert "q=REDACTED" in out
+        assert "nominatim.openstreetmap.org/search" in out
+        assert "countrycodes=us" in out and "format=json" in out
+
+    def test_the_2026_09_06_geoapify_line(self):
+        """LKP coordinates at full precision in BOTH `filter=` and `bias=`.
+        The category list is not PII and survives — it is how the shopping-
+        mall gap (#669) was diagnosed."""
+        raw = ('HTTP Request: GET https://api.geoapify.com/v2/places'
+               '?categories=leisure.park%2Ceducation.school'
+               '&filter=circle%3A-121.8874383%2C37.33969%2C1200&limit=100'
+               '&bias=proximity%3A-121.8874383%2C37.33969 "HTTP/1.1 200 OK"')
+        out = _redact_secrets(raw)
+        assert "121.88" not in out and "37.33" not in out
+        assert "filter=REDACTED" in out and "bias=REDACTED" in out
+        assert "categories=leisure.park" in out and "limit=100" in out
+
+    def test_pii_param_names_are_not_over_matched(self):
+        """`q=` must not eat `query=` or `quality=`, and `address=` in a PATH
+        segment is not a query parameter. The same substring trap the secret
+        pattern already guards against."""
+        raw = ("GET https://x.example/address/lookup?query=abc&quality=high"
+               "&qty=2&addr=1 \"200\"")
+        assert _redact_secrets(raw) == raw
 
     def test_parameter_name_is_kept(self):
         """Keeping the name tells a reader the call WAS authenticated."""
@@ -183,6 +228,28 @@ class TestMirrorParity:
             "_redact_secrets in test_log_redaction.py has drifted from "
             "backend/main.py (source of truth) — the tests above are "
             "exercising the stale copy"
+        )
+
+    def test_pii_pattern_matches_production(self):
+        """The PII regex is the whole 2026-09-06 fix; pin its TEXT against
+        production, not just its presence. A pattern that exists but names
+        different parameters is the leak with extra steps."""
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        start = src.find("_PII_QS_RE = re.compile(")
+        assert start != -1, "_PII_QS_RE not found in main.py"
+        end = src.find("\n)\n", start)
+        assert end != -1 and end > start, "could not bound the _PII_QS_RE assignment"
+        prod = src[start:end]
+        for name in ("q", "address", "filter", "bias"):
+            assert f"{name}|" in prod or f"{name})=" in prod, (
+                f"`{name}=` is no longer redacted in production — that is the "
+                f"parameter carrying the subject's address or coordinates"
+            )
+        # The mirror's alternation must appear VERBATIM in production. The
+        # pattern is split across two r"" literals there, so compare the first
+        # literal's text (the parameter alternation), which is contiguous.
+        assert _PII_QS_RE.pattern.split(")=")[0] in prod, (
+            "_PII_QS_RE in test_log_redaction.py has drifted from backend/main.py"
         )
 
     def test_pattern_matches_production(self):
