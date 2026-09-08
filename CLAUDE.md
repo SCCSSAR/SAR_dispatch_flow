@@ -95,6 +95,31 @@ files it references, so the parts you can run are clear.
    **`curl -s` hides a failed request and `shasum` of an empty body is a fixed value**
    (`e3b0c442…`). Use `curl -sS`, and refuse to hash a body under ~1 KB — otherwise every
    variant "matches" and the check silently passes against nothing.
+
+   **Write the body to a FILE and take the size from the file — never hash a shell
+   variable.** These two halves of this Rule are in tension, and following one naively
+   breaks the other: the size guard above pushes you to capture the body first, and
+   `BODY=$(curl …)` **strips the trailing newline**, which changes the sha256 of a
+   perfectly correct deploy. Measured 2026-09-08 on the 1.11.72 roll: served-as-file
+   `49c0b918…` **PASS**, byte-identical served-as-`$(…)` `5d91ce5a…` **FAIL**, a
+   one-byte difference on 283 KB. It reported a good build as a lying one, which is the
+   exact failure this Rule exists to prevent, arrived at by obeying this Rule. The shape
+   that works:
+   ```bash
+   curl -sS --max-time 60 "$URL/" -o /tmp/served.html
+   [ "$(wc -c < /tmp/served.html)" -lt 1024 ] && { echo "ABORT: body too small"; exit 1; }
+   sed -e '<the two normalizations>' /tmp/served.html | shasum -a 256
+   git show "HEAD:frontend/index.html" | shasum -a 256      # must match
+   ```
+   **Brace every `git show "${ref}:path"`.** Unbraced, zsh eats `:f` as a history
+   modifier — `$c:frontend/index.html` becomes `<sha>ontend/index.html`, `git show`
+   errors, and the pipeline hands `shasum` an empty stream, i.e. `e3b0c442…` again.
+
+   **Re-derive `HEAD`'s hash in the SAME call that uses it.** The harness can reset HEAD
+   between Bash calls (Rule #14), and on this same roll a control captured one call
+   earlier had silently hashed the PREVIOUS release's `index.html` — it looked like a
+   plausible baseline and was not. If a control and its comparison are in different
+   calls, the control is unverified.
    **Verify by the check that CAN fail on this release — and every release class retires the previous class's check.** Measured across four consecutive rolls on 2026-09-06/07: a *frontend* change is proven by the served `index.html` sha256 above; a *backend-only* change (1.11.67) makes that hash a CONSTANT, so hash `/app/main.py` out of the digest Cloud Run **serves** instead (read it off the REVISION — `docker push` printed a different digest on every build so far); a *dependency-only* change (1.11.68) makes the `main.py` hash a constant too, so `docker run --rm --entrypoint pip <served-digest> freeze` is the check; a *build-context* change like `.dockerignore` (1.11.69) is proven by `ls /app` inside the image, not by any hash. Before building, name the check that can fail, take its **pre-build negative control from the outgoing image**, and refuse to call a matching constant a PASS. A pin that cannot fail is the same as no pin.
 9. **Everbridge/Slack work builds to `bash build-dev.sh` (personal dev) only.** Never `build-sccssar-dev.sh` for EB/Slack — that environment has real dispatchers who can be paged.
 10. **Empirically verify third-party API assumptions before writing integration code.** Use Swagger or a spike script to confirm endpoint path, HTTP verb, body shape, and auth BEFORE coding. Prior sessions lost hours to wrong assumptions (DELETE-that-doesn't-exist, `groupId` vs `groupIds`, outer envelope vs inner body). Applies to: Everbridge, Slack, CalTopo, D4H, Google Maps. Skip only if the exact endpoint shape is already confirmed in shipped code.
