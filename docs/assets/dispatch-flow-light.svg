@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 780" width="1240" height="780" role="img" aria-labelledby="ti de" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">
 <title id="ti">Dispatch Turbo: initial response timeline</title>
-<desc id="de">The call-out form arrives as a photo or fillable PDF. Dispatch Turbo extracts every field with Gemini, geocodes the last known position, ranks real staging locations, and the dispatcher reviews and corrects it in about thirty seconds. Two clicks then dispatch that same reviewed data: the first creates the CalTopo incident map, the second notifies Everbridge, opens the Slack incident channel and creates the D4H record together. An optional further click creates a pre-filled Google Doc for teams who work the incident in Docs. The manual process entered the same data into each of those systems in turn.</desc>
+<desc id="de">The call-out form arrives as a photo or fillable PDF. Dispatch Turbo extracts every field with Gemini, geocodes the last known position, ranks real staging locations, and the dispatcher reviews and corrects it in about thirty seconds. Two clicks then dispatch that same reviewed data: the first creates the CalTopo incident map, the second notifies Everbridge, opens the Slack incident channel and creates the D4H record together. An optional further click creates a pre-filled Google Docs incident log for teams who run their incident log there. The manual process entered the same data into each of those systems in turn.</desc>
 <rect width="1240" height="780" fill="#FFFFFF"/>
 <rect x="0" y="0" width="1240" height="48" fill="#F1592A"/>
 <text x="24" y="32" font-size="21" font-weight="700" fill="#FFFFFF">Dispatch Turbo: Initial Response Timeline</text>
@@ -69,15 +69,15 @@
 <text x="708" y="548" font-size="12.5" fill="#22312A">Automatically sync with attendees, specialty teams, MP info, map</text>
 <rect x="660" y="596" width="560" height="132" rx="12" fill="#EDF1EF" stroke="#CBD5D0" stroke-width="1.5" stroke-dasharray="6 5"/>
 <text x="676" y="614" font-size="11.5" font-weight="700" fill="#5F6E64" letter-spacing="0.6">OPTIONAL</text>
-<text x="748" y="614" font-size="11.5" fill="#5F6E64">· Google Doc</text>
+<text x="748" y="614" font-size="11.5" fill="#5F6E64">· Google Incident Log</text>
 <rect x="676" y="622" width="528" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5D0" stroke-width="1.5"/>
 <path d="M676 631 A9 9 0 0 1 685 622 H1195 A9 9 0 0 1 1204 631 V652 H676 Z" fill="#6B7869"/>
-<text x="690" y="642" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">GOOGLE DOC</text>
+<text x="690" y="642" font-size="14" font-weight="700" fill="#FFFFFF" letter-spacing="0.4">GOOGLE INCIDENT LOG</text>
 <text x="1190" y="642" text-anchor="end" font-size="12.5" fill="#FFFFFF" opacity="0.9">Working Document</text>
 <circle cx="694" cy="670" r="3" fill="#6B7869"/>
-<text x="708" y="674" font-size="12.5" fill="#22312A">Create pre-filled working document</text>
+<text x="708" y="674" font-size="12.5" fill="#22312A">Create pre-filled incident log in Google Docs</text>
 <circle cx="694" cy="694" r="3" fill="#6B7869"/>
-<text x="708" y="698" font-size="12.5" fill="#22312A">Share with every dispatcher — for teams who work the incident in Docs</text>
+<text x="708" y="698" font-size="12.5" fill="#22312A">Share with every dispatcher — for teams who run the incident log in Docs</text>
 <path d="M586 399.0 H620" stroke="#9AA9A1" stroke-width="3" stroke-linecap="round"/>
 <path d="M620 136.0 V662.0" stroke="#9AA9A1" stroke-width="3" stroke-linecap="round"/>
 <path d="M620 136.0 H650" stroke="#9AA9A1" stroke-width="2.5" stroke-linecap="round"/>

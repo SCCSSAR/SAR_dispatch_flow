@@ -16,7 +16,7 @@ re-typing the same information into four separate systems by hand.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/dispatch-flow-dark.svg">
-  <img src="docs/assets/dispatch-flow-light.svg" alt="Dispatch Turbo initial response timeline: the call-out form arrives as a photo or fillable PDF; Dispatch Turbo extracts every field with Gemini, geocodes the LKP and ranks real staging, and the dispatcher reviews and corrects it in about 30 seconds. Two clicks then dispatch that reviewed data — the first creates the CalTopo incident map, the second notifies Everbridge, opens the Slack incident channel and creates the D4H record together — in under 5 minutes. An optional further click creates a pre-filled Google Doc.">
+  <img src="docs/assets/dispatch-flow-light.svg" alt="Dispatch Turbo initial response timeline: the call-out form arrives as a photo or fillable PDF; Dispatch Turbo extracts every field with Gemini, geocodes the LKP and ranks real staging, and the dispatcher reviews and corrects it in about 30 seconds. Two clicks then dispatch that reviewed data — the first creates the CalTopo incident map, the second notifies Everbridge, opens the Slack incident channel and creates the D4H record together — in under 5 minutes. An optional further click creates a pre-filled Google Docs incident log.">
 </picture>
 
 > Built for SCCSSAR. Designed to be adapted for any team with a paper-based SAR dispatch process.
@@ -309,7 +309,7 @@ Highlights:
 
 ## Status
 
-**Version 1.11.70.** In production and used by SCCSSAR for real callouts.
+**Version 1.11.71.** In production and used by SCCSSAR for real callouts.
 
 All four downstream integrations are live on the team environment: Everbridge and Slack
 both run in `full` mode, D4H Phase 2 attendance sync is validated end to end, and CalTopo
