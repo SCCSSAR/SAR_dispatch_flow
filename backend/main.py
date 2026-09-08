@@ -292,8 +292,32 @@ _OVERPASS_MIRRORS = [
 _STAGING_TIER = {
     "park": 1, "fast_food": 1, "pharmacy": 1, "hotel": 1, "motel": 1,
     "supermarket": 1, "grocery": 1, "school": 1, "college": 1, "mall": 1,
-    "convenience": 2, "chemist": 2, "place_of_worship": 2,
-    "fuel": 3,
+    # ops #839. Tier 2, NOT tier 1, and this is measured — do not "fix" it up to
+    # match the parks/schools/malls lot-quality argument that put it in the main
+    # pass. OSM's amenity=community_centre does not reliably mean a big lot:
+    # measured 2026-09-07 at downtown SJ (1200 m, identical 8/2/1 counts from
+    # Overpass and Geoapify), 3 of the 5 NAVIGABLE hits are SJSU club rooms and a
+    # bike clinic — "Computer Science Club SJSU" and "Software & Computer
+    # Engineering Society", both at house number 1 on a campus paseo, so the
+    # PASS 2 leading-digit predicate passes them and nothing downstream filters
+    # them. Ranking is (tier, distance) then a 7-slot cap, so tier 1 would let
+    # those displace real parks and schools in exactly the dense anchors that
+    # have good staging — the commercial.department_store flooding failure in a
+    # new costume. Tier 2 keeps the genuine ones (Diadem returns "Mayfair
+    # Community Center") surfacing at sparse anchors, where thin competition
+    # clears the cap anyway, and that is where Bill wanted them. Bill 2026-09-07.
+    "convenience": 2, "chemist": 2, "place_of_worship": 2, "community_centre": 2,
+    # Ops #839. fire_station/police are WIDE-PASS ONLY (see
+    # _GEOAPIFY_WIDE_ONLY_CATEGORIES) and tier 3 on purpose: Bill 2026-09-07,
+    # "we don't want to stage at a PD or FD". Tier 3 means they never outrank a
+    # real option, so they surface only where little else exists — which is the
+    # case they were added for. Measured at Grant County Park, 4828 m: the whole
+    # production category bundle returns 0 navigable candidates and
+    # service.fire_station returns 1, i.e. the difference between one real
+    # address and the zero that flips Gemini into fabricating a list.
+    # An amenity ABSENT from this table sorts at the .get(..., 2) default, so
+    # omitting a row here silently ranks a police station above a gas station.
+    "fuel": 3, "fire_station": 3, "police": 3,
 }
 
 # Geoapify Places category taxonomy — the staging POI source (Overpass→Geoapify
@@ -309,6 +333,27 @@ _GEOAPIFY_CIVIC_CATEGORIES = [
     "education.college",
     "education.university",
     "religion.place_of_worship",
+    # Ops #839, Bill 2026-09-07: community centres go in the MAIN pass ("those
+    # tend to have large parking lots") — the same lot-quality argument that
+    # puts parks/schools/malls at tier 1. This does NOT repeat the
+    # commercial.department_store exclusion: that one was held because its hits
+    # were four TENANTS of a site already listed, all competing for the same 7
+    # slots. Community centres are distinct sites. Measured downtown SJ at
+    # 1200 m: 8 features / 5 navigable added to a pool of 82 navigable.
+    "activity.community_center",
+]
+
+# Ops #839 — appended to the CIVIC list on the WIDENED retry ONLY (see
+# _STAGING_FALLBACK_RADIUS_M). Deliberately absent from the 1200 m pass: Bill
+# 2026-09-07, "we don't want to stage at a PD or FD". They earn their place only
+# in the zero-candidate case, where the alternative is not a better location but
+# Gemini inventing one. Verified to exist by spike 2026-09-07
+# (experiments/staging_places/spike_06_civic_wide.py) — Geoapify 400s on an
+# unknown category, and "emergency.ambulance_station" / "service.ambulance_station"
+# are NOT real names despite appearing in the docs (spike 2026-09-06).
+_GEOAPIFY_WIDE_ONLY_CATEGORIES = [
+    "service.fire_station",
+    "service.police",
 ]
 _GEOAPIFY_COMMERCIAL_CATEGORIES = [
     # Issue #669. Verified to exist by spike 2026-08-01 (experiments/geoapify/):
@@ -342,6 +387,15 @@ _GEOAPIFY_PRIORITY = [
     ("education.kindergarten", "school"),
     ("education.college", "college"),
     ("education.university", "college"),
+    # Ops #839. Ahead of religion.place_of_worship (tier 2) so a hall tagged as
+    # both resolves to the tier-1 community centre; BELOW the education entries
+    # so a school with a community-hall tag stays a school. NOTE the spelling:
+    # the canonical amenity vocabulary here is OSM's, and OSM spells it
+    # "community_centre" while Geoapify's category is "community_center". The
+    # Overpass leg lifts the raw OSM tag value straight into `amenity`, so
+    # canonicalising the American spelling would leave every Overpass-sourced
+    # centre missing from _STAGING_TIER and silently sorted at the default 2.
+    ("activity.community_center", "community_centre"),
     # Issue #669 — ahead of every tenant category on purpose. The spike found
     # no mall/tenant co-tagging at either anchor (the mall and its anchor
     # stores are separate features), so this ordering is defensive rather than
@@ -357,7 +411,23 @@ _GEOAPIFY_PRIORITY = [
     ("commercial.convenience", "convenience"),
     ("religion.place_of_worship", "place_of_worship"),
     ("commercial.gas", "fuel"),
+    # Ops #839 — reachable only via _GEOAPIFY_WIDE_ONLY_CATEGORIES. Last, so a
+    # feature carrying any other known category resolves to that instead.
+    ("service.fire_station", "fire_station"),
+    ("service.police", "police"),
 ]
+
+# Overpass leg of the same vocabulary — the `amenity=` alternation, split so the
+# widened retry can add to it (ops #839). These are raw OSM tag VALUES: the
+# element parser lifts tags.get("amenity") straight into `amenity`, so each string
+# here must match a _STAGING_TIER key exactly. Hence "community_centre" (OSM's
+# British spelling), NOT the "community_center" of Geoapify's category name.
+# shop= and leisure= stay inline in the query — nothing wide-only is added there.
+_OVERPASS_AMENITIES = [
+    "fast_food", "fuel", "pharmacy", "hotel", "motel",
+    "school", "college", "place_of_worship", "community_centre",
+]
+_OVERPASS_AMENITIES_WIDE_ONLY = ["fire_station", "police"]
 
 # Agency abbreviation → "City, CA" — used when LKP field has no comma-separated city.
 # Prevents wrong-country geocodes (e.g. "SAN FELIPE" resolving to Costa Rica).
@@ -2428,7 +2498,7 @@ def _rank_dedupe_cap_staging(
 # ---------------------------------------------------------------------------
 
 async def _query_overpass_staging(
-    lat: float, lng: float, radius_m: int = 1200
+    lat: float, lng: float, radius_m: int = 1200, wide: bool = False
 ) -> tuple[list[dict], int, int, bool]:
     """
     Query OpenStreetMap Overpass API for staging-suitable POIs within radius_m meters
@@ -2456,10 +2526,16 @@ async def _query_overpass_staging(
     # were all 'way' elements, none appeared in the production candidate list, and the
     # school/church time-of-day exclusion note never fired.  The element parser already
     # handles center coords for non-node elements (lines below), so no parser change needed.
+    # Ops #839. The wide-only amenities are appended for the widened retry ONLY,
+    # mirroring _GEOAPIFY_WIDE_ONLY_CATEGORIES. Keeping the two provider legs in
+    # step is not optional: Overpass is the outage fallback, so a Geoapify-only
+    # category change goes blind exactly when the fallback is carrying the load,
+    # and it also fabricates a shadow-compare diff on every affected dispatch.
+    _amenities = "|".join(_OVERPASS_AMENITIES + (_OVERPASS_AMENITIES_WIDE_ONLY if wide else []))
     query = f"""
 [out:json][timeout:15];
 (
-  nwr(around:{radius_m},{lat},{lng})[amenity~"^(fast_food|fuel|pharmacy|hotel|motel|school|college|place_of_worship)$"];
+  nwr(around:{radius_m},{lat},{lng})[amenity~"^({_amenities})$"];
   nwr(around:{radius_m},{lat},{lng})[shop~"^(convenience|supermarket|grocery|chemist|mall)$"];
   nwr(around:{radius_m},{lat},{lng})[leisure=park][name];
 );
@@ -2660,7 +2736,7 @@ async def _geoapify_places_call(
 
 
 async def _query_geoapify_staging(
-    lat: float, lng: float, radius_m: int = 1200
+    lat: float, lng: float, radius_m: int = 1200, wide: bool = False
 ) -> tuple[list[dict], int, int, bool]:
     """
     Geoapify Places staging lookup. SAME 4-tuple contract as _query_overpass_staging:
@@ -2679,11 +2755,17 @@ async def _query_geoapify_staging(
     """
     if not _GEOAPIFY_API_KEY:
         return [], 0, 0, False
+    # Ops #839: fire_station/police ride on the CIVIC call (unbiased, complete)
+    # and only on the widened retry. They are appended rather than sent as a
+    # third call so the wide pass still costs exactly two requests.
+    _civic_cats = _GEOAPIFY_CIVIC_CATEGORIES + (
+        _GEOAPIFY_WIDE_ONLY_CATEGORIES if wide else []
+    )
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             (civic_feats, civic_ok), (comm_feats, comm_ok) = await asyncio.gather(
                 _geoapify_places_call(
-                    client, lat, lng, radius_m, _GEOAPIFY_CIVIC_CATEGORIES, use_bias=False
+                    client, lat, lng, radius_m, _civic_cats, use_bias=False
                 ),
                 _geoapify_places_call(
                     client, lat, lng, radius_m, _GEOAPIFY_COMMERCIAL_CATEGORIES, use_bias=True
@@ -2934,7 +3016,8 @@ async def _timed(coro) -> tuple:
 
 
 async def _query_staging_pois(
-    lat: float, lng: float, radius_m: int = 1200, log_compare: bool = True
+    lat: float, lng: float, radius_m: int = 1200, log_compare: bool = True,
+    wide: bool = False,
 ) -> tuple[list[dict], int, int, bool]:
     """Staging POI lookup. STAGING_SHADOW="on" (default) runs a symmetric always-on
     shadow: BOTH the Overpass and Geoapify sources concurrently, returning the ACTIVE
@@ -2965,7 +3048,7 @@ async def _query_staging_pois(
             # Avoids re-imposing the slower source's latency on every /ocr once the
             # shadow A/B is done (sccssar-dev after the flip).
             if _STAGING_SOURCE == "geoapify":
-                geoapify_res, g_ms = await _timed(_query_geoapify_staging(lat, lng, radius_m))
+                geoapify_res, g_ms = await _timed(_query_geoapify_staging(lat, lng, radius_m, wide=wide))
                 if geoapify_res[3]:  # geoapify source_ok
                     # Sequential mode emits no compare line, so this is the ONLY
                     # per-dispatch Geoapify latency signal on a flipped env
@@ -2977,18 +3060,18 @@ async def _query_staging_pois(
                         len(geoapify_res[0]), g_ms, radius_m,
                     )
                     return geoapify_res
-                overpass_res, o_ms = await _timed(_query_overpass_staging(lat, lng, radius_m))
+                overpass_res, o_ms = await _timed(_query_overpass_staging(lat, lng, radius_m, wide=wide))
                 logger.warning(
                     "Staging fallback | primary=geoapify backup=overpass "
                     "overpass_ok=%s geoapify_ms=%d overpass_ms=%d (sequential)",
                     overpass_res[3], g_ms, o_ms,
                 )
                 return overpass_res
-            return await _query_overpass_staging(lat, lng, radius_m)
+            return await _query_overpass_staging(lat, lng, radius_m, wide=wide)
 
         (overpass_res, o_ms), (geoapify_res, g_ms) = await asyncio.gather(
-            _timed(_query_overpass_staging(lat, lng, radius_m)),
-            _timed(_query_geoapify_staging(lat, lng, radius_m)),
+            _timed(_query_overpass_staging(lat, lng, radius_m, wide=wide)),
+            _timed(_query_geoapify_staging(lat, lng, radius_m, wide=wide)),
         )
         if log_compare:
             o_cands, _o_sc, _o_cc, o_ok = overpass_res
@@ -4102,8 +4185,13 @@ async def ocr(
             # are false (claimed <=0.75 mi, actual median 4.3 mi). #838
             _staging_searched_m = 1200
             if _overpass_ok and not staging_candidates:
+                # wide=True also widens the CATEGORY list, not just the radius
+                # (ops #839): fire stations and PDs join the search here and
+                # nowhere else. Bill 2026-09-07 — we do not want to stage at a
+                # PD or FD, but at this point the alternative is not a better
+                # location, it is Gemini inventing one.
                 _wide_cands, _wide_sc, _wide_cc, _wide_ok = await _query_staging_pois(
-                    lat, lng, radius_m=_STAGING_FALLBACK_RADIUS_M
+                    lat, lng, radius_m=_STAGING_FALLBACK_RADIUS_M, wide=True
                 )
                 logger.info(
                     "Staging widened retry | radius_m=%d count=%d source_ok=%s",

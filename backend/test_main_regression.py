@@ -30,8 +30,11 @@ import pytest
 _STAGING_TIER = {
     "park": 1, "fast_food": 1, "pharmacy": 1, "hotel": 1, "motel": 1,
     "supermarket": 1, "grocery": 1, "school": 1, "college": 1, "mall": 1,
-    "convenience": 2, "chemist": 2, "place_of_worship": 2,
-    "fuel": 3,
+    "convenience": 2, "chemist": 2, "place_of_worship": 2, "community_centre": 2,
+    # ops #839 — fire_station/police are wide-pass only and tier 3 so they never
+    # outrank a real option. OSM spelling for the community centre; see
+    # TestWidePassCivicCategories.
+    "fuel": 3, "fire_station": 3, "police": 3,
 }
 
 # gemini.py — type_labels dict used in both JPEG and PDF candidate blocks (PR #266)
@@ -43,6 +46,8 @@ _GEMINI_TYPE_LABELS = {
     "supermarket": "Grocery store", "grocery": "Grocery store",
     "chemist": "Pharmacy", "place_of_worship": "Church/Place of Worship",
     "mall": "Shopping center",
+    "community_centre": "Community center",  # ops #839
+    "fire_station": "Fire station", "police": "Police station",
 }
 
 # main.py — _AGENCY_DISPLAY dict (defined inside event-name handler, PR #256)
@@ -321,6 +326,11 @@ class TestStagingTier:
             "supermarket", "grocery", "school", "college",
             "convenience", "chemist", "place_of_worship", "fuel",
             "mall",  # issue #669
+            # ops #839. community_centre is main-pass; fire_station/police are
+            # reachable ONLY through the widened retry, but they still need rows
+            # here because _STAGING_TIER.get(amenity, 2) would otherwise sort
+            # them mid-table instead of last.
+            "community_centre", "fire_station", "police",
         }
         assert set(_STAGING_TIER.keys()) == expected
 
@@ -12612,3 +12622,229 @@ class TestStagingWidenedRetry:
         code = self._nocomment(self._block(self._src()))
         assert "_overpass_ok =" not in code
 
+
+
+class TestWidePassCivicCategories:
+    """Pin the ops #839 civic categories and, above all, WHERE each one applies.
+
+    Bill 2026-09-07: fire stations and police stations go in the WIDENED pass
+    ONLY — "we don't want to stage at a PD or FD" — while community centres join
+    the MAIN pass regardless, because they tend to have large parking lots.
+
+    That split is the whole feature. Measured 2026-09-07
+    (experiments/staging_places/spike_06_civic_wide.py), all four anchors, both
+    radii:
+      - Grant County Park, 4828 m: the ENTIRE production category bundle returns
+        0 navigable candidates; service.fire_station returns 1. In the wilderness
+        case a fire station is not competing with better staging, it is the
+        difference between one real address and the zero that flips Gemini into
+        fabricating a list.
+      - 3101 Alexis Dr, 4828 m: production bundle 17 navigable, +2 fire +1 police
+        +1 community centre = +4. This is the count gap #839 was filed on.
+      - downtown SJ, 1200 m: community centres add 8 features / 5 navigable to a
+        pool of 82 navigable — additive, not the commercial.department_store
+        case, whose four hits were TENANTS of a site already in the list and so
+        merely crowded the 7-slot cap.
+
+    Two traps this class exists to hold shut:
+      1. SPELLING. The canonical amenity vocabulary is OSM's, and the Overpass
+         parser lifts tags.get("amenity") straight into `amenity`. OSM spells it
+         "community_centre"; Geoapify's CATEGORY is "activity.community_center".
+         Canonicalising the American spelling leaves every Overpass-sourced
+         centre missing from _STAGING_TIER.
+      2. THE DEFAULT TIER. main.py sorts on _STAGING_TIER.get(amenity, 2), so an
+         amenity with no row does not raise — it silently sorts mid-table, which
+         would rank a police station above a gas station.
+    """
+
+    # --- source access (the suite deliberately does not import main) ---------
+
+    @staticmethod
+    def _src(name="main.py"):
+        return (Path(__file__).parent / name).read_text(encoding="utf-8")
+
+    @classmethod
+    def _const(cls, name, src=None):
+        """Evaluate a module-level literal assignment out of main.py by AST.
+
+        Stronger than a substring match: it reads the real data structure, so a
+        pin cannot pass on a mention of the name inside a comment or docstring.
+        """
+        tree = ast.parse(src if src is not None else cls._src())
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets
+            ):
+                return ast.literal_eval(node.value)
+        raise AssertionError(f"{name} is not a module-level constant in main.py")
+
+    @staticmethod
+    def _nocomment(block):
+        return "\n".join(l.split("#")[0] for l in block.splitlines())
+
+    # --- the split: wide-only really is wide-only ---------------------------
+
+    def test_fire_and_police_are_not_in_the_main_geoapify_pass(self):
+        """The 1200 m pass must never offer a PD or FD."""
+        civic = self._const("_GEOAPIFY_CIVIC_CATEGORIES")
+        commercial = self._const("_GEOAPIFY_COMMERCIAL_CATEGORIES")
+        for cat in ("service.fire_station", "service.police"):
+            assert cat not in civic, f"{cat} leaked into the main civic pass"
+            assert cat not in commercial, f"{cat} leaked into the main commercial pass"
+
+    def test_fire_and_police_are_not_in_the_main_overpass_pass(self):
+        base = self._const("_OVERPASS_AMENITIES")
+        for amenity in ("fire_station", "police"):
+            assert amenity not in base, f"{amenity} leaked into the main Overpass pass"
+
+    def test_wide_only_lists_carry_exactly_fire_and_police(self):
+        assert self._const("_GEOAPIFY_WIDE_ONLY_CATEGORIES") == [
+            "service.fire_station", "service.police",
+        ]
+        assert self._const("_OVERPASS_AMENITIES_WIDE_ONLY") == ["fire_station", "police"]
+
+    def test_the_two_provider_legs_are_in_step(self):
+        """A Geoapify-only category change goes blind exactly when the Overpass
+        outage fallback is carrying the load — and fabricates a shadow-compare
+        diff on every affected dispatch. Same rule the #669 mall row states."""
+        priority = dict(self._const("_GEOAPIFY_PRIORITY"))
+        geo_wide = {priority[c] for c in self._const("_GEOAPIFY_WIDE_ONLY_CATEGORIES")}
+        assert geo_wide == set(self._const("_OVERPASS_AMENITIES_WIDE_ONLY")), (
+            "the wide-only amenity set differs between the Geoapify and Overpass legs"
+        )
+
+    # --- community centres are main-pass, both legs -------------------------
+
+    def test_community_centre_is_in_the_main_pass_on_both_legs(self):
+        assert "activity.community_center" in self._const("_GEOAPIFY_CIVIC_CATEGORIES")
+        assert "community_centre" in self._const("_OVERPASS_AMENITIES")
+
+    # --- the spelling trap --------------------------------------------------
+
+    def test_the_amenity_vocabulary_uses_the_osm_spelling(self):
+        """"community_center" is a Geoapify CATEGORY name and must never appear
+        as an amenity: the Overpass parser cannot produce it, so a tier row under
+        that key would apply to Geoapify hits only."""
+        tier = self._const("_STAGING_TIER")
+        assert "community_centre" in tier
+        assert "community_center" not in tier, (
+            "the American spelling is a category name, never an amenity"
+        )
+        priority = dict(self._const("_GEOAPIFY_PRIORITY"))
+        assert priority["activity.community_center"] == "community_centre"
+
+    # --- the silent default-tier trap ---------------------------------------
+
+    def test_every_reachable_amenity_has_an_explicit_tier(self):
+        """main.py sorts on _STAGING_TIER.get(amenity, 2). An amenity with no row
+        does not raise — it silently sorts mid-table."""
+        tier = self._const("_STAGING_TIER")
+        reachable = set(dict(self._const("_GEOAPIFY_PRIORITY")).values())
+        reachable |= set(self._const("_OVERPASS_AMENITIES"))
+        reachable |= set(self._const("_OVERPASS_AMENITIES_WIDE_ONLY"))
+        missing = sorted(reachable - set(tier))
+        assert not missing, (
+            f"these amenities are reachable but have no _STAGING_TIER row, so they "
+            f"would silently sort at the default tier 2: {missing}"
+        )
+
+    def test_fire_and_police_never_outrank_a_real_option(self):
+        """Tier 3, with fuel. They surface only where little else exists, which
+        is the case they were added for."""
+        tier = self._const("_STAGING_TIER")
+        assert tier["fire_station"] == 3, "a PD/FD must never outrank real staging"
+        assert tier["police"] == 3, "a PD/FD must never outrank real staging"
+
+    def test_community_centre_is_tier_two_not_one(self):
+        """Tier 2 is the MEASURED choice, not a conservative default.
+
+        The lot-quality argument is what put community centres in the main pass;
+        it is NOT what sets their tier. Measured 2026-09-07 at downtown SJ,
+        1200 m, with Overpass and Geoapify returning identical 8/2/1 counts:
+        3 of the 5 navigable hits are SJSU club rooms and a bike clinic, at
+        house number 1 on a campus paseo, so PASS 2 passes them. Ranking is
+        (tier, distance) then a 7-slot cap — at tier 1 those displace real parks
+        and schools precisely where good staging exists. At tier 2 the genuine
+        ones (Diadem: "Mayfair Community Center") still clear the cap at sparse
+        anchors, which is where they were wanted. Bill 2026-09-07.
+        """
+        assert self._const("_STAGING_TIER")["community_centre"] == 2, (
+            "a community centre must not outrank a park or school: OSM tags "
+            "student club rooms with this amenity"
+        )
+
+    # --- wiring: the flag reaches the right call, and only it ---------------
+
+    def test_only_the_widened_retry_asks_for_the_wide_categories(self):
+        """The narrow 1200 m lookup must not pass wide=True, or the split is a
+        no-op and PDs enter the common path."""
+        src = self._src()
+        start = src.index("staging_candidates, _overpass_school_count")
+        end = src.index("if not _overpass_ok:", start)
+        block = self._nocomment(src[start:end])
+        assert "radius_m=1200)" in block.replace("\n", "").replace(" ", "") or (
+            "radius_m=1200" in block
+        ), "the narrow lookup call moved; re-derive this pin"
+        narrow = block[: block.index("_wide_cands")]
+        assert "wide=" not in narrow, "the 1200 m lookup asked for the wide categories"
+        assert "wide=True" in block[block.index("_wide_cands"):], (
+            "the widened retry no longer asks for the wide-only categories"
+        )
+
+    def test_the_wide_flag_reaches_both_sources(self):
+        """_query_staging_pois must forward it, or the flag dies at the dispatcher
+        and the retry silently runs the narrow category list at 3 mi."""
+        src = self._src()
+        start = src.index("async def _query_staging_pois(")
+        end = src.index("\nasync def ", start + 1)
+        body = self._nocomment(src[start:end])
+        assert "wide: bool = False" in body, "_query_staging_pois lost the wide param"
+        for call in ("_query_overpass_staging(", "_query_geoapify_staging("):
+            occurrences = [
+                seg for seg in body.split(call)[1:]
+            ]
+            assert occurrences, f"{call} is no longer called from _query_staging_pois"
+            for seg in occurrences:
+                assert "wide=wide" in seg[: seg.index(")")], (
+                    f"a {call} call in _query_staging_pois drops the wide flag"
+                )
+
+    def test_geoapify_appends_the_wide_categories_to_the_civic_call(self):
+        src = self._src()
+        start = src.index("async def _query_geoapify_staging(")
+        end = src.index("\nasync def ", start + 1)
+        body = self._nocomment(src[start:end])
+        assert "_GEOAPIFY_WIDE_ONLY_CATEGORIES if wide else []" in body, (
+            "the wide-only categories are no longer conditionally appended"
+        )
+        assert "_civic_cats" in body.split("use_bias=False")[0].rsplit("(", 2)[-1] or (
+            "_civic_cats, use_bias=False" in body
+        ), "the civic call no longer sends the widened list"
+
+    def test_overpass_builds_its_alternation_from_the_constants(self):
+        src = self._src()
+        start = src.index("async def _query_overpass_staging(")
+        end = src.index("\nasync def ", start + 1)
+        body = self._nocomment(src[start:end])
+        assert "_OVERPASS_AMENITIES_WIDE_ONLY if wide else []" in body, (
+            "the Overpass leg no longer widens its amenity alternation"
+        )
+        assert '[amenity~"^({_amenities})$"]' in body, (
+            "the Overpass query no longer interpolates the built alternation — a "
+            "hardcoded alternation would ignore the constants entirely"
+        )
+
+    # --- gemini.py labels, BOTH copies --------------------------------------
+
+    def test_both_gemini_label_maps_carry_the_new_amenities(self):
+        """type_labels is duplicated in gemini.py; the #669 mall row requires all
+        layers to match. An unlabelled amenity falls back to a Title Case guess,
+        which is survivable — but it drifts silently between the two copies."""
+        src = self._src("gemini.py")
+        assert src.count("type_labels = {") == 2, (
+            "the number of type_labels copies changed; re-derive this pin"
+        )
+        for amenity in ("community_centre", "fire_station", "police"):
+            assert src.count(f'"{amenity}":') == 2, (
+                f"{amenity} is missing from one of the two type_labels copies"
+            )
