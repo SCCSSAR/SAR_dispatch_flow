@@ -699,7 +699,7 @@
     }
     .btn-dispatch-stub:hover { background: #3a3010; }
 
-    /* Helper apps: optional sidekicks (Google Maps, Google Doc). Outlined,
+    /* Helper apps: optional sidekicks (Google Maps, Google Incident Log). Outlined,
        muted color, smaller weight — visually de-emphasized vs the workflow
        row above so they read as "if you need them" not "next step." */
     .btn-dispatch-helper {
@@ -1062,7 +1062,7 @@
           📋 View in D4H
         </button>
       </div>
-      <!-- Helper-app row — Google Maps + Google Doc are optional sidekicks
+      <!-- Helper-app row — Google Maps + Google Incident Log are optional sidekicks
            (organic search, dispatcher reference doc), styled with the
            btn-dispatch-helper modifier so they read as secondary. -->
       <div class="dispatch-buttons dispatch-helpers" style="margin-top:0.5rem;">
@@ -1070,8 +1070,8 @@
         <button id="googlemaps-btn" class="btn-dispatch btn-dispatch-helper" title="Opens Google Maps centered on the Last Known Position — use for organic searching, Street View, traffic">
           🌐 Google Maps
         </button>
-        <button id="gdoc-btn" class="btn-dispatch btn-dispatch-helper" title="Create a Google Doc pre-filled with incident data, shared with all dispatchers">
-          📄 Google Doc
+        <button id="gdoc-btn" class="btn-dispatch btn-dispatch-helper" title="Create the incident log in Google Docs — pre-filled with incident data, shared with all dispatchers">
+          📄 Google Incident Log
         </button>
       </div>
 
@@ -3895,7 +3895,7 @@
     incidentMapBtn.textContent = "🗺 Create Incident Map";   // Reset label for next form
     incidentMapBtn.disabled = false;
     const gdocBtn = document.getElementById("gdoc-btn");
-    gdocBtn.textContent = "📄 Google Doc";                   // Reset label for next form
+    gdocBtn.textContent = "📄 Google Incident Log";           // Reset label for next form
     gdocBtn.disabled = false;
     _docUrl = null;
     _rawOcrText = "";
@@ -4245,12 +4245,12 @@
       stopDocTimer();
       // Write URL back to textarea — replace existing line if present, else append.
       const ta = document.getElementById('result-text');
-      const existing = ta.value.replace(/\nGoogle Doc:.*$/im, '');
-      ta.value = existing + `\nGoogle Doc: ${doc_url}`;
+      const existing = ta.value.replace(/\nIncident Log:.*$/im, '');
+      ta.value = existing + `\nIncident Log: ${doc_url}`;
       // Store doc URL for "View" state; open doc in a new tab.
       _docUrl = doc_url;
       safeOpen(doc_url);
-      btn.textContent = '📄 View Google Doc';
+      btn.textContent = '📄 View Incident Log';
       btn.disabled = false;
       lockTextarea();
     } catch (err) {
