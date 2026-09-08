@@ -92,6 +92,46 @@ mixes a fix with a reformat hides the fix.
 
 ---
 
+## Before you start
+
+**To run the test suite you need Python 3.11 or later and `pytest`. That is the whole list.**
+
+**Do not `pip install -r backend/requirements.txt` just to run the tests.** That file is the
+*runtime* dependency set for the deployed container, and the suite is deliberately built to run
+without it. On a clean machine `httpx`, `slack_sdk`, `google-cloud-*` and `fastapi` are all
+absent and the suite still runs in a few seconds. Installing them does not get you a better run
+— it starts a handful of tests that currently skip, some of which expect credentials you do not
+have.
+
+Two consequences worth knowing before a test result confuses you:
+
+- **Most backend modules cannot be imported locally.** Six of the seven — `main`, `slack`,
+  `d4h`, `caltopo`, `everbridge`, `rate_limit` — need cloud libraries that are not installed.
+  Only `pdf_extract` imports cleanly. This is why so many tests read production source **as
+  text** and assert on its structure: it is the only way to pin behaviour in a module the test
+  cannot import. Rename a function and expect a failure on a string, not on behaviour.
+- **A dozen or so tests skip, and that is a healthy run.** The causes are all "a library or a
+  file is not here": `google-genai`, `httpx`, `utm`, `google.api_core`, and two dispatcher
+  documents that are not shipped in this repository. A run of roughly 2,300 passing with about
+  a dozen skipped is what success looks like.
+
+### What you will not be able to run
+
+- **A deployment.** That needs your own Google Cloud project — see
+  [`docs/DEPLOYING.md`](docs/DEPLOYING.md) for the full setup, including the `gcloud`, Docker
+  and Terraform prerequisites.
+- **Corpus validation of an OCR change.** The corpus is real call-out forms and cannot be
+  published. `backend/migration_validation/apply_helpers.py` is shipped and takes a
+  `--corpus-root`, so point it at your own forms. If you are changing OCR or a text helper,
+  validating against *some* real corpus is still the expectation — synthetic cases do not
+  represent handwriting.
+- **The spikes.** `experiments/` is intentionally never committed. Where a design note cites a
+  spike, it is recording what evidence produced a number, not handing you a script.
+
+`CLAUDE.md` opens with a fuller version of this for anyone running an AI coding agent against
+the repository, including which of its instructions name tools that are not part of this
+project.
+
 ## Running the tests
 
 ```bash

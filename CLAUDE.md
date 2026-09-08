@@ -1,5 +1,45 @@
 # SAR Dispatch Flow — Claude Code Context
 
+## What This File Assumes
+
+This file is written for **Claude Code**, working in the maintainer's checkout. Most of it is
+plain engineering discipline that transfers anywhere, but some instructions name an agent, a
+skill, or a path that will not exist in your clone. They are listed here so you can tell the
+difference between "a rule I should follow" and "a tool I do not have."
+
+**Nothing below is required to contribute.** Every entry has a fallback that needs no plugin.
+
+### Things this file names that you may not have
+
+| Named here | What it is | Without it |
+|---|---|---|
+| `feature-dev:code-reviewer` agent (Git/PR Workflow) | A Claude Code plugin agent, dispatched against a diff before opening a backend-handler PR | Work the [Failure-mode Discipline](#failure-mode-discipline) six questions against your own diff by hand. That rubric **is** the prompt we give the agent — nothing is withheld. The built-in `/code-review` command is a closer substitute and ships with Claude Code |
+| `dispatch-after-action` skill (Rule #15) | Shipped in this repo at `.claude/skills/dispatch-after-action/SKILL.md` | Read it as a checklist and work it manually. It writes its report to `research/`, which is local-only (below) |
+| `experiments/…` paths, cited throughout | Throwaway spikes against live third-party APIs, deliberately never committed — see the "Spikes stay OUT of git" Locked Decision | **These are provenance, not instructions you can execute.** A row saying "re-run `experiments/geoapify/03_proximity_calibration.py` before changing this" is telling you *what evidence produced the number* and that you owe an equivalent measurement — not that a script is waiting in your clone. Re-derive it with your own probe against the same API |
+| `research/…` | Security assessments, after-action reports, planning notes | Local-only. Absent by design, not by oversight |
+| [docs/design-decisions.md](docs/design-decisions.md) | Overflow rationale for a handful of Locked Decision rows | Local-only. Each row that links it is self-contained without it |
+| `experiments/test_forms/` (the OCR corpus) | Real call-out forms used to validate OCR and text helpers | Not shipped, and it cannot be — the forms carry real subject data. `backend/migration_validation/apply_helpers.py` **is** shipped: point it at your own forms with `--corpus-root`. The Locked Decision requiring corpus validation before an OCR change still applies; the corpus has to be yours |
+
+### Practices this file demands, and how we actually run them
+
+The discipline is the requirement. The tooling below is how the maintainer gets it done, named
+so you are not left guessing — but the manual column is what the rule actually asks for.
+
+| The rule | Skill we use | Without it |
+|---|---|---|
+| Write the failing test before the fix | `superpowers:test-driven-development` | Write the test, watch it fail, then write the code. The order is the whole point |
+| Debug from evidence, never from a guess | `superpowers:systematic-debugging` | Reproduce first, form one hypothesis, test that hypothesis before changing anything |
+| **Prove a pin can fail** (the "A pin must READ production and SURVIVE MUTATION" row) | *None — this one is hand work* | Reintroduce the bug the pin exists to catch, confirm the test goes red, restore. Do it for every new pin. Eight pins in this repo asserted nothing and passed; only mutation caught them |
+| Verify before claiming something is done | `superpowers:verification-before-completion` | Re-read the thing you just wrote to. A 2xx is not a result |
+| Review before opening a PR | `feature-dev:code-reviewer`, or built-in `/code-review` | The six-question rubric above |
+| Security sweep on a security-touching change | Built-in `/security-review`; the maintainer also runs **Aikido**, a paid third-party SaaS | `/security-review` ships with Claude Code and needs no subscription. Aikido findings are informative, not a gate |
+| Keep this file current when a decision changes | `claude-md-management:revise-claude-md` | Edit it. A Locked Decision row that no longer matches the code is worse than no row |
+
+Skill and agent names above are Claude Code plugins from the maintainer's own setup; they are
+not published by this project and this project does not depend on them.
+
+---
+
 ## ⚠️ Session Rules — Read Before Every Session
 
 1. **Read this file AND run `git log --oneline -3`** before any code changes.

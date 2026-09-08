@@ -19,3 +19,13 @@ terraform/**/terraform.tfvars
 research/
 experiments/
 .git/
+
+# Claude Code session data, and any git worktree created under it. Nothing here
+# can reach the IMAGE -- the Dockerfile's only COPY lines are
+# backend/requirements.txt, backend/*.py and frontend/ -- and builds are local
+# `docker build`, so the context never leaves the machine today. This is the
+# guard for the day that changes: `gcloud builds submit` uploads the whole
+# context to GCS, and a worktree under .claude/ can hold a symlinked corpus of
+# real call-out forms (CLAUDE.md Rule #16 tells you to put worktrees OUTSIDE
+# the repo for a related reason -- this covers the times that is forgotten).
+.claude/

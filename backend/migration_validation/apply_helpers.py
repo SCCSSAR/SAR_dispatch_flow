@@ -24,7 +24,7 @@ Usage:
     # running from a worktree that doesn't have the cached outputs)
     python3 -m backend.migration_validation.apply_helpers \\
         --label genai --helper age_from_dob \\
-        --corpus-root /Users/billburns/src/SAR_dispatch_flow/.claude/worktrees/distracted-goldstine-6c8da4/experiments
+        --corpus-root /path/to/your/experiments
 
 PRIVACY: cached outputs contain real OCR data. Diffs printed to stdout
 include MP names, ages, addresses. Do not redirect stdout into a tracked
