@@ -309,7 +309,7 @@ Highlights:
 
 ## Status
 
-**Version 1.11.70.** In production and used by SCCSSAR for real callouts.
+**Version 1.11.71.** In production and used by SCCSSAR for real callouts.
 
 All four downstream integrations are live on the team environment: Everbridge and Slack
 both run in `full` mode, D4H Phase 2 attendance sync is validated end to end, and CalTopo

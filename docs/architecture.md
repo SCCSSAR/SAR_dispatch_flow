@@ -1,6 +1,6 @@
 # SCCSSAR Dispatch Console — Architecture Reference
 
-**Version 1.11.70** | September 2026 | [GitHub](https://github.com/SCCSSAR/SAR_dispatch_flow) | [SCCSSAR Dev](https://dispatch-console-1010784158087.us-central1.run.app) | [Personal Dev](https://dispatch-console-970461953836.us-central1.run.app)
+**Version 1.11.71** | September 2026 | [GitHub](https://github.com/SCCSSAR/SAR_dispatch_flow) | [SCCSSAR Dev](https://dispatch-console-1010784158087.us-central1.run.app) | [Personal Dev](https://dispatch-console-970461953836.us-central1.run.app)
 
 ---
 
@@ -12,7 +12,7 @@ manual copy-paste across four separate systems down to approximately 2–3 minut
 
 A dispatcher uploads a photo of a handwritten call-out form **or a digitally-filled PDF** (v2 form). For JPEG photos, Gemini AI extracts all structured fields via OCR. For PDFs, AcroForm field values are read directly — no OCR, 100% deterministic questionnaire accuracy. The dispatcher reviews and corrects the extracted text, then uses two separate button clicks to (a) create a CalTopo incident map, and (b) create an Everbridge mass notification + a per-incident Slack channel + a D4H incident record (a single combined dispatch). Separate helper buttons open a Google Map centered on the LKP, create a pre-filled draft Google Doc for incident note-taking, or open D4H to view all incidents.
 
-**Current status:** version **1.11.70** is the current build, deployed to SCCSSAR dev (`sar-dispatch-sccssar-dev`). Everbridge automated dispatch (`/send-notification`, `/poll-incident`, `/close-incident-polling` endpoints, `backend/everbridge.py`) is live with **full-mode** — unconditional live send, no draft confirm step. Slack incident channels (`backend/slack.py`) are created automatically with **full-mode** — real invites sent to all confirmed responders. **Dispatch Turbo VIP-breakthrough DMs** (`_send_dm_and_persist` in `main.py`, `send_incident_dm` in `backend/slack.py`) are sent at dispatch time to the safe-list pilot cohort via the `SCCSSAR Dispatch Turbo Bot` (`U0XXXXXXXXX`) — designed to break through locked-phone Do-Not-Disturb / notification-schedule silences (see §8 Slack Integration). D4H incident records (`backend/d4h.py`) are also created automatically on each Everbridge send, pre-filled with intake form information and attendees, K9s, and UAS if requested by the dispatcher. Cloud Tasks drives polling cycles via the `everbridge-poll` and `d4h-per-yes-sync` queues. CalTopo incident map creation (`/create-map`, `backend/caltopo.py`) and Google Doc creation (`/create-doc`, `backend/gdocs.py`) remain live from Phase 1.5z. Slack is the official incident coordination channel; the WhatsApp `wa.me` deep link was retired in #614 and no longer exists in the UI.
+**Current status:** version **1.11.71** is the current build, deployed to SCCSSAR dev (`sar-dispatch-sccssar-dev`). Everbridge automated dispatch (`/send-notification`, `/poll-incident`, `/close-incident-polling` endpoints, `backend/everbridge.py`) is live with **full-mode** — unconditional live send, no draft confirm step. Slack incident channels (`backend/slack.py`) are created automatically with **full-mode** — real invites sent to all confirmed responders. **Dispatch Turbo VIP-breakthrough DMs** (`_send_dm_and_persist` in `main.py`, `send_incident_dm` in `backend/slack.py`) are sent at dispatch time to the safe-list pilot cohort via the `SCCSSAR Dispatch Turbo Bot` (`U0XXXXXXXXX`) — designed to break through locked-phone Do-Not-Disturb / notification-schedule silences (see §8 Slack Integration). D4H incident records (`backend/d4h.py`) are also created automatically on each Everbridge send, pre-filled with intake form information and attendees, K9s, and UAS if requested by the dispatcher. Cloud Tasks drives polling cycles via the `everbridge-poll` and `d4h-per-yes-sync` queues. CalTopo incident map creation (`/create-map`, `backend/caltopo.py`) and Google Doc creation (`/create-doc`, `backend/gdocs.py`) remain live from Phase 1.5z. Slack is the official incident coordination channel; the WhatsApp `wa.me` deep link was retired in #614 and no longer exists in the UI.
 
 ---
 
@@ -1394,4 +1394,4 @@ Cloud Run monitors container health via the liveness probe (`period=60s, timeout
 
 ---
 
-*Last updated: September 2026 — version 1.11.70. Per-change history lives in `git log` + [CHANGELOG.md](../CHANGELOG.md).*
+*Last updated: September 2026 — version 1.11.71. Per-change history lives in `git log` + [CHANGELOG.md](../CHANGELOG.md).*
