@@ -35,8 +35,16 @@ so you are not left guessing — but the manual column is what the rule actually
 | Security sweep on a security-touching change | Built-in `/security-review`; the maintainer also runs **Aikido**, a paid third-party SaaS | `/security-review` ships with Claude Code and needs no subscription. Aikido findings are informative, not a gate |
 | Keep this file current when a decision changes | `claude-md-management:revise-claude-md` | Edit it. A Locked Decision row that no longer matches the code is worse than no row |
 
-Skill and agent names above are Claude Code plugins from the maintainer's own setup; they are
-not published by this project and this project does not depend on them.
+Skill and agent names above are Claude Code plugins from the maintainer's own setup. They are
+**named but deliberately not vendored into this repository**, and that is a decision rather than
+an omission: they are not this project's work to redistribute, and a copy checked in here would
+be a fork that never receives its author's fixes. Install them from their own source so updates
+reach you directly. **Please do not open a PR adding a copy of a third-party skill or agent under
+`.claude/`** — it will be declined for those reasons, not on quality.
+
+The one skill this repository does ship is its own: `dispatch-after-action`, the guided call-out
+review at `.claude/skills/dispatch-after-action/SKILL.md`. It states up front which maintainer-only
+files it references, so the parts you can run are clear.
 
 ---
 

@@ -213,6 +213,7 @@ Registry all stay within free tier at this usage level.
 | [`docs/DEPLOYING.md`](docs/DEPLOYING.md) | Ops / Developers | Zero-to-running setup: GCP project, APIs, secrets, Terraform, first deploy |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Ops / Team lead | Day-to-day running: reading logs, rate limits, cost signals, verifying a deploy |
 | [`docs/DISPATCHING.md`](docs/DISPATCHING.md) | Dispatchers | Step-by-step use of the app, and what to do when it misbehaves |
+| [`.claude/skills/dispatch-after-action/`](.claude/skills/dispatch-after-action/SKILL.md) | Dispatchers / Team leads | Guided after-action review of a call-out: pull the incident's logs first, then a structured debrief across intake, staging, and every downstream system |
 | [`docs/FORMS.md`](docs/FORMS.md) | Ops / Developers | The call-out form: what it contains, what to change for your agency, what not to touch |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contributors | How changes get reviewed and merged, the no-real-data rule, and how to run the tests |
 | [`CLAUDE.md`](CLAUDE.md) | Contributors | Locked design decisions — what was tried, what failed, and why the current approach is what it is |
