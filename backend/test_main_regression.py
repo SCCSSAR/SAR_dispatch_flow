@@ -11878,7 +11878,7 @@ class TestSandboxEnvBanner:
         )
         assert m, "the inline banner script was not found"
         prog = """
-        var _t = "SCCSSAR Dispatch Console", _kids = [];
+        var _t = "SCCSSAR Dispatch Turbo", _kids = [];
         var document = {
           get title() { return _t; }, set title(v) { _t = v; },
           body: { getAttribute: function (n) {
@@ -11897,7 +11897,7 @@ class TestSandboxEnvBanner:
     def test_empty_label_renders_nothing(self):
         got = self._run("")
         assert got["banners"] == [], "an unlabelled environment rendered a banner"
-        assert got["title"] == "SCCSSAR Dispatch Console", "the title was altered"
+        assert got["title"] == "SCCSSAR Dispatch Turbo", "the title was altered"
 
     def test_label_renders_banner_and_prefixes_the_title(self):
         got = self._run("SANDBOX — personal-dev")
@@ -11909,7 +11909,7 @@ class TestSandboxEnvBanner:
         """A build arg set to spaces is a mis-set arg, not an environment."""
         got = self._run("   ")
         assert got["banners"] == []
-        assert got["title"] == "SCCSSAR Dispatch Console"
+        assert got["title"] == "SCCSSAR Dispatch Turbo"
 
 
 class TestTextareaLockIsDispatchOnly:

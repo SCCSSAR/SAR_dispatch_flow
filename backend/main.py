@@ -1,5 +1,5 @@
 """
-main.py — SCCSSAR Dispatch Console backend API.
+main.py — SCCSSAR Dispatch Turbo backend API.
 
 Endpoints:
   GET  /health   — unauthenticated health check (Cloud Run startup probe)
@@ -3495,7 +3495,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SCCSSAR Dispatch Console",
+    title="SCCSSAR Dispatch Turbo",
     version="1.0.0-phase1",
     docs_url=None,   # Disable Swagger UI in production
     redoc_url=None,  # Disable ReDoc in production

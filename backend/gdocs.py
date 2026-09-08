@@ -1,5 +1,5 @@
 """
-gdocs.py — Google Docs + Drive API integration for SCCSSAR Dispatch Console.
+gdocs.py — Google Docs + Drive API integration for SCCSSAR Dispatch Turbo.
 
 Creates a Google Doc pre-populated with incident data using the dispatcher's
 own Google OAuth access token (drive.file scope), then shares it as 'writer'
@@ -101,7 +101,7 @@ def create_incident_doc(
     by_line = f" for {dispatcher_name}" if dispatcher_name else ""
     header = (
         f"{title}\n"
-        f"Created by SCCSSAR Dispatch Console{by_line} \u2014 {now_str}\n"
+        f"Created by SCCSSAR Dispatch Turbo{by_line} \u2014 {now_str}\n"
         f"---\n\n"
     )
     body_text = header + content
