@@ -8,6 +8,9 @@ The grouping mirrors the actual buttons in frontend/index.html and must stay hon
   #incident-map-btn      "Create Incident Map"       -> CalTopo               (click 1)
   #everbridge-slack-btn  "Everbridge + Slack + D4H"  -> those three together  (click 2)
   #gdoc-btn              "Google Doc"                -> optional helper
+The Google card is deliberately named "GOOGLE INCIDENT LOG", which is NOT the button label.
+Kris (Ops) asked for the purpose rather than the mechanism -- the team runs the incident log
+in it. The bullet keeps "Google Docs" so the reader can still find the button.
 If a button is split, merged or renamed, this diagram is wrong until it is regenerated.
 
 Two rendering constraints worth knowing before editing:
@@ -59,10 +62,10 @@ GROUPS = [
         ("D4H", "Incident Documentation", "d4h",
          ["Create incident record",
           "Automatically sync with attendees, specialty teams, MP info, map"])]),
-    dict(label="OPTIONAL", action="Google Doc", optional=True, cards=[
-        ("GOOGLE DOC", "Working Document", "gdoc",
-         ["Create pre-filled working document",
-          "Share with every dispatcher — for teams who work the incident in Docs"])]),
+    dict(label="OPTIONAL", action="Google Incident Log", optional=True, cards=[
+        ("GOOGLE INCIDENT LOG", "Working Document", "gdoc",
+         ["Create pre-filled incident log in Google Docs",
+          "Share with every dispatcher — for teams who run the incident log in Docs"])]),
 ]
 
 W, H = 1240, 780
@@ -116,7 +119,8 @@ def build(t):
       'the dispatcher reviews and corrects it in about thirty seconds. Two clicks then dispatch that '
       'same reviewed data: the first creates the CalTopo incident map, the second notifies Everbridge, '
       'opens the Slack incident channel and creates the D4H record together. An optional further click '
-      'creates a pre-filled Google Doc for teams who work the incident in Docs. The manual process '
+      'creates a pre-filled Google Docs incident log for teams who run their incident log there. '
+      'The manual process '
       'entered the same data into each of those systems in turn.</desc>')
     a(f'<rect width="{W}" height="{H}" fill="{t["page"]}"/>')
 
