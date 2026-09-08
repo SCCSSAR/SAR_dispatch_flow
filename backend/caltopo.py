@@ -1,5 +1,5 @@
 """
-caltopo.py — CalTopo Team API integration for SCCSSAR Dispatch Console.
+caltopo.py — CalTopo Team API integration for SCCSSAR Dispatch Turbo.
 
 Creates SAR-mode incident maps with markers (LKP, Residence, Staging).
 
@@ -604,7 +604,7 @@ def build_incident_map(map_data: dict, dispatcher_name: str = "") -> str:
     rings      = map_data.get("rings", [])
 
     title       = _make_map_title(event_name)
-    map_desc    = f"Created by SCCSSAR Dispatch Console for {dispatcher_name}" if dispatcher_name else "Created by SCCSSAR Dispatch Console"
+    map_desc    = f"Created by SCCSSAR Dispatch Turbo for {dispatcher_name}" if dispatcher_name else "Created by SCCSSAR Dispatch Turbo"
 
     # Pick the seed feature (LKP preferred; Residence then first staging as fallback
     # when LKP geocoding failed). Raises if nothing is geocoded — we never want a
