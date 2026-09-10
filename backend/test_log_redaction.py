@@ -31,7 +31,7 @@ _SECRET_QS_RE = re.compile(
 
 
 _PII_QS_RE = re.compile(
-    r"(?i)([?&](?:q|address|filter|bias)=)"
+    r"(?i)([?&](?:q|address|filter|bias|x|y|latitude|longitude)=)"
     r"[^&\s\"'\\]+"
 )
 
@@ -69,6 +69,21 @@ class TestRedactSecrets:
         out = _redact_secrets(raw)
         assert "aGVsbG8rd29ybGQ" not in out
         assert "signature=REDACTED" in out
+
+    def test_environment_classifier_coordinates(self):
+        """The LPB environment classifier sends the (rounded) LKP to two new
+        providers: Census puts it in x/y, Open-Meteo in latitude/longitude.
+        Synthetic values; the line shapes are httpx's INFO format."""
+        census = ('HTTP Request: GET https://geocoding.geo.census.gov/geocoder/geographies/'
+                  'coordinates?x=-121.123&y=37.456&benchmark=Public_AR_Current&layers=2020+Census+Blocks'
+                  ' "HTTP/1.1 200 OK"')
+        meteo = ('HTTP Request: GET https://api.open-meteo.com/v1/elevation'
+                 '?latitude=37.456%2C37.465&longitude=-121.123%2C-121.132 "HTTP/1.1 200 OK"')
+        for raw in (census, meteo):
+            out = _redact_secrets(raw)
+            assert "37.456" not in out and "121.123" not in out, out
+        assert "geocoding.geo.census.gov" in _redact_secrets(census)
+        assert "layers=2020+Census+Blocks" in _redact_secrets(census)
 
     def test_the_provider_survives_but_the_address_does_not(self):
         """Host, path and status stay readable; the subject's address does not.
@@ -240,7 +255,7 @@ class TestMirrorParity:
         end = src.find("\n)\n", start)
         assert end != -1 and end > start, "could not bound the _PII_QS_RE assignment"
         prod = src[start:end]
-        for name in ("q", "address", "filter", "bias"):
+        for name in ("q", "address", "filter", "bias", "x", "y", "latitude", "longitude"):
             assert f"{name}|" in prod or f"{name})=" in prod, (
                 f"`{name}=` is no longer redacted in production — that is the "
                 f"parameter carrying the subject's address or coordinates"

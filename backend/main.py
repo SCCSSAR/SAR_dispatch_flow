@@ -2144,6 +2144,207 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# ── BEGIN LPB environment classifier ─────────────────────────────────────────
+# Is the LKP urban or rural/wilderness, and (rural only) flat or hilly? ISRID's
+# distance tables are cut that way: Urban (terrain ignored) vs Temperate/Dry x
+# Mountainous/Flat. This release prints the answer as ONE line under the LPB
+# header, as a suggestion for D4H's Lost Behavior tab; rings are unchanged.
+#
+# Rule v1 — calibrated 2026-09-10 against Bill's labels for Alviso, Coyote
+# Valley, Rancho San Antonio, Stanford Dish, Bonny Doon and one real callout
+# (experiments/environment/spike_01_env_classify.py, local-only):
+#   * urban vs not: the 2020 Census block's UR flag at the LKP, 6/6. D4H's Urban
+#     AND Suburban both map to ISRID's Urban cut (Bill).
+#   * terrain, rural only: elevation relief within 2 km >= 100 m -> ISRID
+#     Mountainous. D4H "Hilly" maps there too (Bill; the NASAR flipbook groups
+#     "Hilly or Mountainous"). 1 km is too tight: Coyote Valley's floor reads
+#     18 m while the hills Bill labelled start beyond it. The flat side rests on
+#     ONE rural label, so err toward hilly — calling gentle hills flat sizes the
+#     rings for pavement.
+#   * the 1 km ring is NOT a classifier (Rancho is 62% urban around a rural
+#     point, and is wilderness) — it only raises an edge warning.
+#
+# Both sources are keyless public APIs, verified 2026-09-10. Coordinates are
+# rounded to 3 dp (~110 m) before they leave; their query parameters are in
+# _PII_QS_RE. Best-effort throughout: any failure prints "not determined".
+_ENV_CENSUS_URL = "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"
+# By NAME: layer id "10" returns block GROUPS, which carry no UR flag (verified).
+_ENV_CENSUS_LAYER = "2020 Census Blocks"
+_ENV_ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
+_ENV_COORD_DP = 3
+_ENV_BEARINGS = tuple(range(0, 360, 45))
+_ENV_URBAN_RING_KM = 1.0
+_ENV_RELIEF_RINGS_KM = (0.5, 1.0, 2.0)     # 1 + 3x8 = 25 points, one call
+_ENV_RELIEF_CUTOFF_M = 100
+_ENV_INTERFACE_FRAC = 0.5
+_ENV_ECO_REGION = "Temperate"              # Bailey: CA Mediterranean = Humid Temperate (Bill)
+_ENV_HTTP_TIMEOUT_S = 3.0
+_ENV_BUDGET_S = 4.0                        # concurrent with staging: /ocr waits max(0, env - staging), never past this
+_ENV_LPB_HEADER_RE = re.compile(r"^LPB Range Ring Analysis[^\n]*\n", re.MULTILINE)
+
+
+def _env_destination(lat: float, lng: float, km: float, bearing_deg: float) -> tuple:
+    """Great-circle destination point — no flat degrees-per-km offset (#847)."""
+    R = 6371.0088
+    d, t = km / R, math.radians(bearing_deg)
+    p1, l1 = math.radians(lat), math.radians(lng)
+    p2 = math.asin(math.sin(p1) * math.cos(d) + math.cos(p1) * math.sin(d) * math.cos(t))
+    l2 = l1 + math.atan2(math.sin(t) * math.sin(d) * math.cos(p1),
+                         math.cos(d) - math.sin(p1) * math.sin(p2))
+    return round(math.degrees(p2), _ENV_COORD_DP), round(math.degrees(l2), _ENV_COORD_DP)
+
+
+def _env_from_signals(ur_point, ring_urs, relief_m) -> dict:
+    """Rule v1 on already-fetched signals. Pure; never raises.
+
+    ``ur_point`` is "U", "R", "" (the lookup worked and found NO block: the LKP
+    is outside the US, almost always a bad geocode) or None (the lookup
+    failed). ``ring_urs`` is the 8 ring answers; the edge warning needs ALL 8,
+    so a partial ring never asserts one. ``relief_m`` is only meaningful for a
+    rural point and is ignored for an urban one.
+    """
+    population = {"U": "urban", "R": "rural"}.get(ur_point)
+    ring = list(ring_urs or [])
+    complete = len(ring) == len(_ENV_BEARINGS) and all(u in ("U", "R") for u in ring)
+    urban_frac = sum(u == "U" for u in ring) / len(ring) if complete else None
+    interface = bool(
+        urban_frac is not None and (
+            (population == "urban" and urban_frac < _ENV_INTERFACE_FRAC)
+            or (population == "rural" and urban_frac >= _ENV_INTERFACE_FRAC)
+        )
+    )
+    terrain = None
+    if population == "rural" and relief_m is not None:
+        terrain = "mountainous" if relief_m >= _ENV_RELIEF_CUTOFF_M else "flat"
+    return {
+        "status": "ok" if population else ("no_census_block" if ur_point == "" else "not_determined"),
+        "population": population,
+        "terrain": terrain,
+        "relief_m": int(round(relief_m)) if (population == "rural" and relief_m is not None) else None,
+        "urban_frac": urban_frac,
+        "interface": interface,
+    }
+
+
+def _format_environment_line(env, from_residence: bool = False) -> str:
+    """The LPB-section line. Never empty: an unknown is stated, not omitted.
+
+    The Census flag cannot separate Urban from Suburban or Rural from
+    Wilderness, so the line names both D4H options and leaves the choice to the
+    person entering the Lost Behavior tab. No line may start with a digit, `-`
+    or `Q#` — the ring parser and the D4H LPB-line regex key on those.
+    """
+    if not env or not env.get("population"):
+        if not env:
+            why = "LKP location unavailable"
+        elif env.get("status") == "no_census_block":
+            why = "no US Census block at the LKP; check the LKP geocode"
+        else:
+            why = "lookup unavailable"
+        return (f"Environment: not determined ({why}). "
+                "Set Population Density and Terrain in D4H by hand.")
+    src = " (from Residence; LKP not recorded)" if from_residence else ""
+    if env["population"] == "urban":
+        line = (f"Environment: Urban or Suburban (Census 2020){src} · "
+                f"Eco-region: {_ENV_ECO_REGION} · Terrain: not used for urban areas")
+    else:
+        if env.get("terrain") == "mountainous":
+            terrain = "Hilly or Mountainous"
+        elif env.get("terrain") == "flat":
+            terrain = "Flat"
+        else:
+            terrain = "not determined (elevation lookup unavailable)"
+        relief = f" ({env['relief_m']} m relief within 2 km)" if env.get("relief_m") is not None else ""
+        line = (f"Environment: Rural or Wilderness (Census 2020){src} · "
+                f"Eco-region: {_ENV_ECO_REGION} · Terrain: {terrain}{relief}")
+    if env.get("interface"):
+        pct = int(round(env["urban_frac"] * 100))
+        line += (f"\n⚠️ Urban–wilderness edge: {pct}% of the area within 1 km is urban. "
+                 "Confirm the environment.")
+    return line
+
+
+def _insert_environment_line(summary: str, line: str) -> str:
+    """Put ``line`` directly under the LPB header. Idempotent; a summary with
+    no LPB section is returned unchanged."""
+    if not summary or not line:
+        return summary
+    m = _ENV_LPB_HEADER_RE.search(summary)
+    if not m:
+        return summary
+    if summary[m.end():].lstrip("\n").startswith("Environment:"):
+        return summary
+    return summary[:m.end()] + line + "\n" + summary[m.end():]
+
+
+async def _env_census_ur(client, lat: float, lng: float):
+    """UR flag of the 2020 block at (lat, lng); "" when the lookup succeeded
+    but found no block (outside the US); None when it failed. Never raises."""
+    try:
+        r = await client.get(_ENV_CENSUS_URL, params={
+            "x": f"{lng:.{_ENV_COORD_DP}f}", "y": f"{lat:.{_ENV_COORD_DP}f}",
+            "benchmark": "Public_AR_Current", "vintage": "Current_Current",
+            "layers": _ENV_CENSUS_LAYER, "format": "json",
+        })
+        if r.status_code != 200:
+            return None
+        blocks = r.json()["result"]["geographies"].get(_ENV_CENSUS_LAYER) or []
+        if not blocks:
+            return ""
+        ur = blocks[0].get("UR")
+        return ur if ur in ("U", "R") else None
+    except Exception:
+        return None
+
+
+async def _env_relief_m(client, lat: float, lng: float):
+    """Max minus min elevation over 25 points within 2 km, or None. Never raises."""
+    pts = [(lat, lng)] + [_env_destination(lat, lng, km, b)
+                          for km in _ENV_RELIEF_RINGS_KM for b in _ENV_BEARINGS]
+    try:
+        r = await client.get(_ENV_ELEVATION_URL, params={
+            "latitude": ",".join(f"{p[0]:.{_ENV_COORD_DP}f}" for p in pts),
+            "longitude": ",".join(f"{p[1]:.{_ENV_COORD_DP}f}" for p in pts),
+        })
+        if r.status_code != 200:
+            return None
+        elev = [e for e in r.json().get("elevation", []) if isinstance(e, (int, float))]
+        return (max(elev) - min(elev)) if len(elev) == len(pts) else None
+    except Exception:
+        return None
+
+
+async def _env_classify_inner(lat: float, lng: float) -> dict:
+    clat, clng = round(lat, _ENV_COORD_DP), round(lng, _ENV_COORD_DP)
+    ring = [_env_destination(clat, clng, _ENV_URBAN_RING_KM, b) for b in _ENV_BEARINGS]
+    async with httpx.AsyncClient(timeout=_ENV_HTTP_TIMEOUT_S) as client:
+        urs = await asyncio.gather(*(_env_census_ur(client, a, b) for a, b in [(clat, clng)] + ring))
+        # Terrain only matters off the Urban cut, so most dispatches (urban)
+        # never send the LKP to the elevation provider at all.
+        relief = await _env_relief_m(client, clat, clng) if urs[0] == "R" else None
+    return _env_from_signals(urs[0], urs[1:], relief)
+
+
+async def _classify_environment(lat: float, lng: float) -> dict:
+    """Classify the LKP's environment within _ENV_BUDGET_S. Never raises.
+
+    Logs the classification and timing only — never a coordinate.
+    """
+    t0 = time.monotonic()
+    try:
+        env = await asyncio.wait_for(_env_classify_inner(lat, lng), timeout=_ENV_BUDGET_S)
+    except Exception as exc:  # timeout included: an unknown beats a slow /ocr
+        logger.warning("Environment classification unavailable | type=%s ms=%d",
+                       type(exc).__name__, int((time.monotonic() - t0) * 1000))
+        return {"status": "unavailable", "population": None, "terrain": None,
+                "relief_m": None, "urban_frac": None, "interface": False}
+    logger.info("Environment classified | population=%s terrain=%s relief_m=%s interface=%s ms=%d",
+                env["population"], env["terrain"], env["relief_m"], env["interface"],
+                int((time.monotonic() - t0) * 1000))
+    return env
+# ── END LPB environment classifier ───────────────────────────────────────────
+
+
 # ---------------------------------------------------------------------------
 # Staging distance sanity guard
 # ---------------------------------------------------------------------------
@@ -3055,8 +3256,11 @@ _SECRET_QS_RE = re.compile(
 # guard (test_pii_log_patterns.py) cannot see. Host and path survive so the
 # line still says WHICH provider answered; the value does not. Pinned by
 # test_log_redaction.py, which until this change asserted the address SURVIVED.
+# x|y (Census Geocoder, x = longitude) and latitude|longitude (Open-Meteo) carry
+# the LKP for the LPB environment classifier — rounded to ~110 m, still the
+# subject's location.
 _PII_QS_RE = re.compile(
-    r"(?i)([?&](?:q|address|filter|bias)=)"
+    r"(?i)([?&](?:q|address|filter|bias|x|y|latitude|longitude)=)"
     r"[^&\s\"'\\]+"
 )
 
@@ -3999,6 +4203,7 @@ async def ocr(
     # the policy is in force even when the Overpass count is unavailable).
     _overpass_ok: bool = True
     _lkp_from_residence = False  # True when Residence used as LKP geocode fallback (LKP not provided)
+    _env_result = None           # LPB environment classification; stays None when there is no geo
 
     try:
         if not is_pdf_upload:
@@ -4348,8 +4553,14 @@ async def ocr(
         # the ACTIVE source's result; the WARNING semantics below are unchanged.
         if geo:
             lat, lng, neighborhood, _ = geo
-            staging_candidates, _overpass_school_count, _overpass_church_count, _overpass_ok = (
-                await _query_staging_pois(lat, lng, radius_m=1200)
+            # The environment lookup runs concurrently with staging, so /ocr only
+            # waits for the part that outlasts staging (at most _ENV_BUDGET_S).
+            # _classify_environment never raises, so gather cannot fail on its account.
+            (staging_candidates, _overpass_school_count, _overpass_church_count, _overpass_ok), _env_result = (
+                await asyncio.gather(
+                    _query_staging_pois(lat, lng, radius_m=1200),
+                    _classify_environment(lat, lng),
+                )
             )
             # Zero candidates at 1200 m is a RENDERING outcome, not necessarily a
             # remote LKP — see _STAGING_FALLBACK_RADIUS_M. Retry once, wider, ONLY
@@ -5801,6 +6012,10 @@ async def ocr(
         # (and a 50 KB-ceiling question) beyond this issue's scope. The blast
         # radius is small — rings are hidden by default and advisory — but it is
         # real, so it is stated here rather than implied. Tracked as ops#855.
+        # LPB environment line (spec 2026-09-10): directly under the LPB header,
+        # never in the Event Log or Slack. Inserted BEFORE the ring parse, which
+        # ignores it by construction (no leading digit, "-" or "Q#").
+        summary = _insert_environment_line(summary, _format_environment_line(_env_result, from_residence=_lkp_from_residence))
         map_data["rings"] = _parse_lpb_range_rings(summary)
 
         # Carried forward for the #605 stale-locality gate at dispatch time.
