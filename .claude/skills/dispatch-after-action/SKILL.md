@@ -1,6 +1,6 @@
 ---
 name: dispatch-after-action
-description: Guided after-action review of ONE Dispatch Turbo callout or live dispatch test. Reads Cloud Run logs first (latency, memory, staging provider, geocode sanity, warnings), then interviews the dispatcher in three rounds across intake/OCR, staging, Slack, D4H, CalTopo, process, corrections, and feature asks — then writes a findings report to gitignored research/ and drafts (never auto-files) GitHub issues. Trigger on "after action", "AAR", "post-callout review", "debrief the dispatch", "lessons learned", "we had a callout", "we had a real dispatch", "post-mortem the dispatch". Scope is the Dispatch Turbo SOFTWARE only — not incident management, search tactics, or field operations.
+description: Guided after-action review of ONE Dispatch Turbo callout or live dispatch test. Reads Cloud Run logs first (latency, memory, staging provider, geocode sanity, warnings), then interviews the dispatcher in three rounds across intake/OCR, staging, Slack, D4H, CalTopo, process, corrections, and feature asks — then writes a findings report to gitignored research/ and drafts (never auto-files) GitHub issues. On a real callout that ended in a find, it also reads the incident map for the find location and produces the values for D4H's Lost Behavior (LPB) tab. Trigger on "after action", "AAR", "post-callout review", "debrief the dispatch", "lessons learned", "we had a callout", "we had a real dispatch", "post-mortem the dispatch". Scope is the Dispatch Turbo SOFTWARE only — not incident management, search tactics, or field operations.
 ---
 
 # Dispatch Turbo — After-Action Review
@@ -22,6 +22,8 @@ checkout, which is now the ops/tracker repo `SCCSSAR/SAR_dispatch_flow-ops`.)
 This review covers **the Dispatch Turbo software and its integrations only**: the intake form, OCR, the staging pipeline, Everbridge, Slack, D4H, CalTopo, geocoding, and the dispatch console UI.
 
 It does **not** cover incident management, search strategy, team assignments, field tactics, subject outcome, or agency coordination. If the dispatcher raises one of those, acknowledge it, note it in a single "Out of scope — passed along" line in the report, and steer back. A SAR unit has its own operational debrief process; this is not it, and blurring the two makes the report useless to both audiences.
+
+**One exception: find data (Step 2.5).** Where and when the subject was found is recorded as *data*, because it is what the team's Lost Person Behavior (LPB) statistics are built from. That means distance, bearing, find feature and times, entered in D4H's Lost Behavior tab (which feeds ISRID and the Cal OES equivalent) and logged locally so our own finds can sit beside ISRID's. It does not open a review of search tactics, assignment choices, or why the find took as long as it did. Those stay out.
 
 **One dispatch per run.** If several callouts happened since the last review, run the skill once per dispatch — the log windows, the metrics, and the findings are all per-incident. Ask which one first.
 
@@ -280,6 +282,106 @@ Lead each round with what the logs already showed, then ask. Keep it conversatio
 - **What worked? Did anyone praise anything, or say something was better than before?** Ask this explicitly — every other question in this skill is failure-shaped, so positives go unrecorded unless invited, and that quietly distorts prioritization. On 2026-07-24 responders volunteered that the instant Slack invite plus real information on replying YES was great, and that it bought tolerance for a staging change mid-dispatch. Losing that would have made a correctness fix look strictly more important than the feedback loop it depends on.
 - **Any new features requested or mentioned** — by you, another dispatcher, search management, a responder, or an outside agency? Capture who asked and the underlying need, not just the proposed solution.
 
+## Step 2.5 — Find data for the LPB tab (real callouts that ended in a find)
+
+Skip for tests, and for searches that ended without a find (record the outcome in one line and move on). Otherwise this step has two outputs:
+
+1. **An entry sheet for D4H's Lost Behavior tab.** D4H is the system of record, and its LPB tab is what feeds ISRID and the Cal OES equivalent. The tab is **not reachable through the D4H API** (the Involved Person record has no location fields), so today someone enters it by hand. The sheet turns that into a copy job.
+2. **One row in the local finds log**, `research/lpb-local/finds.csv`, so our first-hand finds can be shown beside ISRID's statistics, which are thin for several categories (e.g. 8 records for Hiker in urban areas).
+
+### 2.5a Which map
+
+Start from the CalTopo map id in the report header, then **ask whether the field worked on that map or on a copy or a new one.** Plans sometimes copy the Turbo map. Read the map the field actually used.
+
+### 2.5b Read it (read-only)
+
+One signed GET. CalTopo is **one team across both environments**, so either project's `caltopo-*` secrets work; use whichever environment's gcloud auth is current. The raw response contains the find location, so it is saved into the report directory, never printed.
+
+```bash
+G=/opt/homebrew/share/google-cloud-sdk/bin/gcloud; P=<project>
+export CALTOPO_TEAM_ID="$($G secrets versions access latest --secret caltopo-team-id --project $P)" \
+       CALTOPO_CREDENTIAL_ID="$($G secrets versions access latest --secret caltopo-credential-id --project $P)" \
+       CALTOPO_CREDENTIAL_SECRET="$($G secrets versions access latest --secret caltopo-credential-secret --project $P)"
+python3 - <MAP_ID> <REPORT_DIR> <<'EOF'
+import ast, base64, datetime as dt, hashlib, hmac, json, math, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+map_id, out_dir = sys.argv[1], sys.argv[2]
+consts = {t.id: n.value.value for n in ast.parse(open("backend/caltopo.py").read()).body
+          if isinstance(n, ast.Assign) for t in n.targets
+          if isinstance(t, ast.Name) and isinstance(n.value, ast.Constant)}
+path = f"/api/v1/map/{map_id}/since/0"
+for attempt in range(3):   # CalTopo returns transient 5xx (#706); retry those only
+    exp = int(time.time() * 1000) + 120_000
+    sig = base64.b64encode(hmac.new(base64.b64decode(os.environ["CALTOPO_CREDENTIAL_SECRET"]),
+          f"GET {path}\n{exp}\n".encode(), hashlib.sha256).digest()).decode()
+    q = urllib.parse.urlencode({"id": os.environ["CALTOPO_CREDENTIAL_ID"], "expires": exp, "signature": sig})
+    try:
+        body = json.load(urllib.request.urlopen(consts["CALTOPO_BASE_URL"] + path + "?" + q, timeout=30))
+        break
+    except urllib.error.HTTPError as e:
+        if e.code < 500 or attempt == 2:
+            raise
+        time.sleep(1.5 * (attempt + 1))
+json.dump(body, open(os.path.join(out_dir, f"caltopo-{map_id}.json"), "w"), indent=2)
+feats = body["result"]["state"]["features"]
+markers = [f for f in feats if f["properties"].get("class") == "Marker"]
+from zoneinfo import ZoneInfo
+PT = ZoneInfo("America/Los_Angeles")   # same as Step 1; a fixed -7 is wrong half the year
+def when(p):
+    ms = p.get("-originally-created-on") or p.get("-created-on")
+    return dt.datetime.fromtimestamp(ms / 1000, PT).strftime("%Y-%m-%d %H:%M") if ms else "?"
+for f in markers:
+    p = f["properties"]
+    tag = "FIND" if re.search(r"\b(subject|mp)\s+found\b", p.get("title", ""), re.I) else \
+          "LKP " if p.get("marker-symbol") == consts["SYMBOL_LKP"] else "    "
+    print(tag, repr(p.get("title", ""))[:48], p.get("marker-symbol"), when(p))
+finds = [f for f in markers if re.search(r"\b(subject|mp)\s+found\b", f["properties"].get("title", ""), re.I)]
+lkps = [f for f in markers if f["properties"].get("marker-symbol") == consts["SYMBOL_LKP"]]
+if len(finds) == 1 and len(lkps) == 1:   # anything else: ask the human (2.5c)
+    (lng1, lat1), (lng2, lat2) = lkps[0]["geometry"]["coordinates"][:2], finds[0]["geometry"]["coordinates"][:2]
+    p1, p2, dl = math.radians(lat1), math.radians(lat2), math.radians(lng2 - lng1)
+    km = 2 * 6371.0088 * math.asin(math.sqrt(math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2))
+    brg = (math.degrees(math.atan2(math.sin(dl) * math.cos(p2),
+           math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl))) + 360) % 360
+    print(f"LKP -> find: {km / 1.609344:.2f} mi ({km:.2f} km), bearing {brg:.0f} deg")
+EOF
+```
+
+The FIND pattern matches a marker titled **"Subject Found" or "MP Found"** (the team convention; either can mean alive or deceased). Timestamps use `-originally-created-on`, which survives a map copy; the plain `-created-on` resets to the copy time.
+
+### 2.5c Confirm with the human
+
+- **Exactly one FIND:** confirm it is the find. **None or several:** show the marker list and ask. Never pick one yourself: a clue, a sighting or a second subject all look like a find to a regex.
+- **Measure from the IPP Plans actually used.** That is usually Turbo's LKP marker, but ask. If Plans moved the IPP, measure from theirs and record which.
+- The snippet prints distance (great-circle) and initial compass bearing from Turbo's LKP marker to the find, **only when there is exactly one of each**. If Plans used a different IPP, recompute from the saved JSON. Report miles first, then km.
+
+### 2.5d The entry sheet (goes in the report)
+
+One line per D4H Lost Behavior field, in D4H's order, with the value and where it came from:
+
+| D4H field | Source |
+|---|---|
+| Initial Planning Point | IPP marker, decimal degrees (D4H's map widget accepts D.DD°) |
+| Population Density / Terrain / Eco-Region Domain | Ask. Santa Clara County's eco-region is **Temperate**: Bailey places California's Mediterranean division in the Humid Temperate domain |
+| Subject Category, Fitness, Experience, Equipment | Category from the intake's LPB section; ask for the rest |
+| Total Time Lost | Intake `Last Seen At` → find. Needs a date on the last-seen value; ask if it is time-only |
+| Total Search Time | Everbridge send → find |
+| Find Location | FIND marker, decimal degrees |
+| Find Elevation, Find Feature, Mobility | Ask. Find Feature is a D4H dropdown: record D4H's own term, never a guessed one |
+
+**Marker time is a proxy for find time.** The FIND marker's creation time is when someone *placed* it, which can lag the find. Present it as a suggestion, and take the human's time when they have one.
+
+**If the LPB tab is already filled in, compare.** Compute IPP → find from D4H's own coordinates and compare with the map. On 2026-09-09 they disagreed by 0.11 mi (1.13 mi in D4H, 1.24 mi on the map) because D4H's find location had resolved to a street name with no house number while the map marker was placed in the field. Recommend the map coordinates, and say which record should be corrected.
+
+### 2.5e Append to the local finds log
+
+`research/lpb-local/finds.csv`, gitignored. Create it with this header if absent, and skip the append if the D4H incident number is already present:
+
+```
+d4h_incident,month,category,population_density,terrain,eco_region,dist_mi,dist_km,bearing_deg,find_feature,time_lost_h,search_time_h,outcome
+```
+
+**No coordinates, names, or addresses in this file.** Those stay in the report directory with the rest of the PII (Hard rule 2). The month is enough to order the rows; the D4H number joins back to the full record when needed.
+
 ## Step 3 — Log findings the dispatcher didn't mention
 
 State plainly anything the logs surfaced that didn't come up — a fallback they didn't feel, a warning that never reached the UI, a latency spike, a wrong coordinate they interpreted as "no results nearby." These are the most valuable findings in the review, because they're invisible from the dispatcher's seat and they grow silently until they bite during a real search.
@@ -359,6 +461,9 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 ### Feature asks
 
 ## Log findings not seen by the dispatcher
+
+## Find data (LPB)
+<Step 2.5: map read (id, copy or original), IPP used, distance/bearing, the D4H entry sheet, any D4H-vs-map disagreement, and whether the finds.csv row was appended. "Not found" or "test" in one line when skipped.>
 
 ## Could not measure
 
