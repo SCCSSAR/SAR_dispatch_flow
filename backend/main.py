@@ -285,6 +285,110 @@ def _subject_last_seen_wearing_value(summary: str) -> str:
     return value
 
 
+# Issue #847 — parse the Koester distance lines out of the LPB Range Ring
+# Analysis section so they can be DRAWN, inside a hidden "Planning" folder.
+#
+# The analysis has always existed as TEXT (gemini.py produces it; it renders in
+# the textarea). What never existed is the structured form: caltopo.py has read
+# `map_data["rings"]` since the schema was written and NOTHING has ever
+# populated it, so the ring branch was unreachable. This is the missing half.
+#
+# Format, verified against real cached Gemini output rather than the prompt
+# template (36 of 37 corpus forms emit exactly three lines; one emits none):
+#
+#   2. Koester Statistics for this category:
+#   - 0.2 miles (0.3 km) — 25th percentile distance
+#   - 0.3 miles (0.5 km) — 50th percentile distance (median)
+#   - 0.6 miles (1.0 km) — 75th percentile distance
+#
+# Do NOT hardcode three. The count is Gemini's and a category with more or
+# fewer percentiles must not silently lose a ring or fabricate one.
+_LPB_SECTION_RE = re.compile(r"^LPB Range Ring Analysis\b", re.MULTILINE)
+_KOESTER_STATS_RE = re.compile(r"^\d+\.\s*Koester Statistics\b", re.MULTILINE)
+_NEXT_NUMBERED_HEADING_RE = re.compile(r"^\d+\.\s", re.MULTILINE)
+_RING_LINE_RE = re.compile(
+    r"^-\s*([\d.]+)\s*miles?\s*\(\s*([\d.]+)\s*km\s*\)\s*[—-]\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+
+# A parse slip that reads a wrong number must not draw an authoritative-looking
+# circle. Koester's largest published percentile distances are well under this;
+# anything beyond it is a mis-parse, not a category.
+_MAX_RING_RADIUS_MI = 50.0
+
+
+def _shorten_percentile(descriptor: str) -> str:
+    """"25th percentile distance" -> "25th percentile", for a map ring label.
+
+    Drops only the redundant trailing noun — the ring IS a distance — and keeps
+    everything else the officer-facing text said, including a "(median)"
+    qualifier, which is the one annotation Plans actually looks for.
+    """
+    return re.sub(r"\s+distance\b", "", descriptor).strip()
+
+
+def _parse_lpb_range_rings(summary: str) -> list:
+    """Structured range rings from the summary's LPB section.
+
+    Returns ``[{"radius_miles": float, "label": str}, ...]`` ordered as written
+    (ascending percentile), or ``[]`` when the section is absent, empty, or
+    unparseable. Never raises — a malformed LPB section must cost the rings, not
+    the dispatch.
+
+    Scoped to the Koester Statistics BLOCK, not the whole summary, and bounded
+    at the next numbered heading. An unscoped search for "N miles (N km)" would
+    also match the Local Modifiers prose below it and the exclusion note, both of
+    which quote distances that are not rings.
+
+    Labels keep the summary's own wording and are MILES-FIRST, per the "Koester
+    distances" Locked Decision — this string is what Plans reads on the map, and
+    it should match what they read in the textarea.
+    """
+    if not summary:
+        return []
+    sec = _LPB_SECTION_RE.search(summary)
+    if not sec:
+        return []
+    body = summary[sec.end():]
+    stats = _KOESTER_STATS_RE.search(body)
+    if not stats:
+        return []
+    block = body[stats.end():]
+    nxt = _NEXT_NUMBERED_HEADING_RE.search(block)
+    if nxt:
+        block = block[:nxt.start()]
+
+    rings, seen = [], set()
+    for m in _RING_LINE_RE.finditer(block):
+        try:
+            miles = float(m.group(1))
+        except ValueError:
+            continue
+        if not (0 < miles <= _MAX_RING_RADIUS_MI):
+            continue
+        if miles in seen:
+            # Two percentiles can legitimately round to the same distance in a
+            # tight category. Drawing the same circle twice adds nothing and
+            # doubles the CalTopo calls, so keep the first (lower percentile).
+            continue
+        seen.add(miles)
+        rings.append({
+            "radius_miles": miles,
+            # Compact, because CalTopo renders a Shape's title REPEATEDLY along
+            # the ring line — the full summary sentence would tile the circle
+            # with text. "0.2mi" (no space) is CalTopo's own range-ring
+            # convention, read off a saved ring; the percentile is appended
+            # because unlike a hand-drawn ring these three are only useful if
+            # Plans can tell which is which without clicking.
+            #
+            # Miles-only here does NOT contradict the "Koester distances"
+            # Locked Decision: that governs the summary text, which still shows
+            # "X.X mi (X.X km)". This is a map label with one unit and no room.
+            "label": f"{m.group(1)}mi — {_shorten_percentile(m.group(3))}",
+        })
+    return rings
+
+
 def _insert_subject_last_seen_entry(summary: str) -> str:
     """Insert "<last seen> - Subject last seen" as the SECOND Event Log entry.
 
@@ -5681,6 +5785,23 @@ async def ocr(
         # --- Event name (map title) ---
         event_name_match = re.search(r"^Event Name:\s*(.+)", summary, re.MULTILINE)
         map_data["event_name"] = event_name_match.group(1).strip() if event_name_match else "SAR Incident"
+
+        # #847 — structured Koester rings for the hidden "Planning" folder on
+        # the CalTopo map. caltopo.py has read this key since the schema was
+        # written and nothing ever set it, so the ring branch was unreachable.
+        #
+        # THESE ARE OCR-TIME FACTS, NOT LIVE-EDITED ONES, exactly like
+        # map_data["lkp"] and the staging coordinates beside them. /create-map
+        # receives `map_data` verbatim from the POST body and no summary text,
+        # and the frontend sends the `_rawMapData` captured from this /ocr
+        # response — so a dispatcher who edits the Koester Statistics lines in
+        # the textarea before clicking Create Map gets rings drawn from the
+        # PRE-EDIT radii. Documented rather than fixed: closing it needs the
+        # live textarea in the /create-map payload, which is a payload change
+        # (and a 50 KB-ceiling question) beyond this issue's scope. The blast
+        # radius is small — rings are hidden by default and advisory — but it is
+        # real, so it is stated here rather than implied. Tracked as ops#855.
+        map_data["rings"] = _parse_lpb_range_rings(summary)
 
         # Carried forward for the #605 stale-locality gate at dispatch time.
         # `lkp_locality` is what the LKP actually resolved to ("Milpitas" on

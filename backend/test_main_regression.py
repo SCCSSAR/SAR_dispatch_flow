@@ -12636,6 +12636,164 @@ class TestLastSeenWearingWiring:
             assert rule in slack_stanza, f"slack.py stopped rejecting {why}"
 
 
+class TestParseLpbRangeRings:
+    """#847 — the missing half of the range-ring feature.
+
+    caltopo.py has read `map_data["rings"]` since the schema was written and
+    NOTHING ever populated it, so the ring branch was unreachable code. The
+    Koester analysis existed only as text in the summary. This helper is the
+    structured form.
+
+    Format verified against REAL cached Gemini output, not the prompt template:
+    35 of 40 corpus forms yield exactly three rings, five yield none.
+    """
+
+    _SECTION = (
+        "---\n"
+        "LPB Range Ring Analysis (Robert Koester — \"Lost Person Behavior\"):\n"
+        "1. Subject Category: Dementia. Key factors: Dementia, Alone.\n"
+        "2. Koester Statistics for this category:\n"
+        "- 0.2 miles (0.3 km) — 25th percentile distance\n"
+        "- 0.3 miles (0.5 km) — 50th percentile distance (median)\n"
+        "- 0.6 miles (1.0 km) — 75th percentile distance\n"
+        "3. Local Modifiers: Urban grid constrains travel to street corridors.\n"
+    )
+
+    @staticmethod
+    def _parse(summary):
+        """Executes the PRODUCTION helper and its regexes, lifted out of
+        main.py — not a hand-written mirror. main.py is not importable here, but
+        this block is pure text and has no GCP dependency, so the real code can
+        be run directly rather than copied."""
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        start = src.index("_LPB_SECTION_RE = re.compile")
+        end = src.index("def _insert_subject_last_seen_entry")
+        ns = {"re": re}
+        exec(src[start:end], ns)          # noqa: S102 - production source, not input
+        return ns["_parse_lpb_range_rings"](summary)
+
+    def test_parses_the_three_standard_rings(self):
+        rings = self._parse(self._SECTION)
+        assert [r["radius_miles"] for r in rings] == [0.2, 0.3, 0.6]
+
+    def test_label_matches_caltopos_own_ring_convention(self):
+        """CalTopo renders a Shape title REPEATEDLY along the ring, so the full
+        summary sentence would tile the circle with text. "0.2mi" (no space) is
+        read off a range ring CalTopo itself saved. Miles-only does NOT
+        contradict the "Koester distances" Locked Decision — that governs the
+        summary text, which still carries "X.X mi (X.X km)"."""
+        rings = self._parse(self._SECTION)
+        assert rings[0]["label"] == "0.2mi — 25th percentile"
+        assert rings[2]["label"] == "0.6mi — 75th percentile"
+
+    def test_median_qualifier_survives(self):
+        """The one annotation Plans actually looks for. _shorten_percentile
+        drops only the redundant trailing noun, never a qualifier."""
+        assert self._parse(self._SECTION)[1]["label"] == "0.3mi — 50th percentile (median)"
+
+    def test_count_is_not_hardcoded_to_three(self):
+        """The count is Gemini's. A four-percentile category must not lose its
+        95th ring, and a two-ring one must not fabricate a third."""
+        four = self._SECTION.replace(
+            "3. Local Modifiers",
+            "- 1.4 miles (2.3 km) — 95th percentile distance\n3. Local Modifiers",
+        )
+        assert [r["radius_miles"] for r in self._parse(four)] == [0.2, 0.3, 0.6, 1.4]
+
+    def test_stops_at_the_next_numbered_heading(self):
+        """Local Modifiers prose quotes distances that are NOT rings. An
+        unscoped search for "N miles (N km)" would draw them."""
+        polluted = self._SECTION.replace(
+            "3. Local Modifiers: Urban grid constrains travel to street corridors.",
+            "3. Local Modifiers: subject may travel 9.9 miles (15.9 km) along the creek.",
+        )
+        assert [r["radius_miles"] for r in self._parse(polluted)] == [0.2, 0.3, 0.6]
+
+    def test_ignores_distances_elsewhere_in_the_summary(self):
+        """Staging lines and the exclusion note both quote distances."""
+        noisy = (
+            "Staging Area Recommendations:\n"
+            "1. 600 B St — 0.4 miles (0.6 km) from LKP\n" + self._SECTION
+        )
+        assert [r["radius_miles"] for r in self._parse(noisy)] == [0.2, 0.3, 0.6]
+
+    def test_duplicate_radii_collapse(self):
+        """Two percentiles can round to the same distance in a tight category.
+        Drawing the same circle twice adds nothing and costs a CalTopo call."""
+        dup = self._SECTION.replace(
+            "- 0.3 miles (0.5 km) — 50th percentile distance (median)",
+            "- 0.2 miles (0.3 km) — 50th percentile distance (median)",
+        )
+        assert [r["radius_miles"] for r in self._parse(dup)] == [0.2, 0.6]
+
+    @pytest.mark.parametrize("bad", ["0.0", "0", "51.0", "999"])
+    def test_implausible_radii_are_dropped(self, bad):
+        """A mis-parse must not draw an authoritative-looking circle. Zero is
+        not a ring; 50+ miles is not a Koester percentile."""
+        s = self._SECTION.replace("- 0.2 miles", f"- {bad} miles")
+        assert 0.2 not in [r["radius_miles"] for r in self._parse(s)]
+
+    def test_absent_section_yields_no_rings(self):
+        assert self._parse("Initial Incident Summary:\nEvent Name: X\n") == []
+
+    def test_section_without_statistics_block_yields_no_rings(self):
+        only_header = "LPB Range Ring Analysis (Robert Koester):\n1. Subject Category: Hiker.\n"
+        assert self._parse(only_header) == []
+
+    @pytest.mark.parametrize("value", ["", None])
+    def test_empty_summary_is_safe(self, value):
+        assert self._parse(value) == []
+
+    def test_never_raises_on_malformed_input(self):
+        """A malformed LPB section must cost the rings, not the dispatch."""
+        junk = self._SECTION.replace("- 0.2 miles (0.3 km)", "- miles (km)")
+        assert [r["radius_miles"] for r in self._parse(junk)] == [0.3, 0.6]
+
+
+class TestRangeRingWiring:
+    """#847 — pin the seam. A correct parser nobody calls draws nothing, and
+    that failure is silent: the map simply has no rings, which is exactly the
+    state this issue was filed to end.
+    """
+
+    @staticmethod
+    def _main():
+        return (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _code_only(text):
+        return "\n".join(l.split("#")[0] for l in text.splitlines())
+
+    def test_map_data_carries_rings(self):
+        assert 'map_data["rings"] = _parse_lpb_range_rings(summary)' in self._code_only(self._main()), (
+            "map_data no longer carries rings — caltopo.py reads the key and "
+            "would silently draw nothing, the pre-#847 state"
+        )
+
+    def test_rings_are_parsed_from_the_assembled_summary(self):
+        """Parsed from the assembled `summary`, which is the OCR-time text.
+
+        NOT a claim that rings track dispatcher edits — they do not, and an
+        earlier version of this docstring said otherwise. /create-map receives
+        map_data verbatim and no summary, and the frontend replays the
+        _rawMapData captured from /ocr, so edited Koester lines do not reach the
+        rings. Rings are OCR-time facts like map_data["lkp"]. Pinned here only
+        so the parse keeps reading the full assembled summary rather than some
+        earlier fragment.
+        """
+        code = self._code_only(self._main())
+        line = [l for l in code.splitlines() if 'map_data["rings"]' in l][0]
+        assert "(summary)" in line, (
+            "rings are no longer parsed from the assembled summary text"
+        )
+
+    def test_max_radius_guard_exists(self):
+        assert "_MAX_RING_RADIUS_MI = 50.0" in self._main(), (
+            "the implausible-radius guard is gone; a mis-parse would draw an "
+            "authoritative-looking circle at an invented distance"
+        )
+
+
 class TestGeminiProjectHasNoDeploymentDefault:
     """`gemini.py` must not carry a deployment-specific GCP project default.
 
