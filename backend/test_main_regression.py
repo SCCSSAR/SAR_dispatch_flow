@@ -12391,6 +12391,251 @@ class TestSubjectLastSeenEventLogEntry:
         )
 
 
+class TestSubjectLastSeenWearingValue:
+    """#845 — main._subject_last_seen_wearing_value, the single source of truth
+    for "did the officer record what the subject was wearing".
+
+    Mirrors production (main.py is not importable here) and is tied to it by
+    TestLastSeenWearingWiring below.
+    """
+
+    _RE = re.compile(r"^Last Seen Wearing:[^\S\n]*(.+)$", re.MULTILINE)
+
+    @classmethod
+    def _value(cls, summary: str) -> str:
+        m = cls._RE.search(summary or "")
+        if not m:
+            return ""
+        value = m.group(1).strip()
+        if not value or value.startswith("["):
+            return ""
+        if value.casefold() in ("not recorded", "unknown", "n/a"):
+            return ""
+        return value
+
+    def test_reads_the_officers_value(self):
+        s = "Missing Person: Jane Doe\nLast Seen Wearing: blue parka, jeans\nContact: Ofc. Lee\n"
+        assert self._value(s) == "blue parka, jeans"
+
+    def test_value_is_verbatim_not_normalized(self):
+        s = "Last Seen Wearing: BLU JKT/blk pants, NO shoes\n"
+        assert self._value(s) == "BLU JKT/blk pants, NO shoes"
+
+    @pytest.mark.parametrize("value", [
+        "Not recorded", "not recorded", "NOT RECORDED", "Unknown", "unknown",
+        "N/A", "n/a",
+    ])
+    def test_unbracketed_not_recorded_is_absent(self, value):
+        """Both intake paths emit this UNBRACKETED for a blank box —
+        pdf_extract's `_f("mp_wearing") or "Not recorded"` and gemini.py's
+        `else "Not recorded"`. This is the rejection that Last Seen At does not
+        need, and the one most likely to be dropped by a copy-paste."""
+        assert self._value(f"Last Seen Wearing: {value}\n") == ""
+
+    @pytest.mark.parametrize("value", [
+        "[not recorded]",
+        '[if present on form, else "Not recorded"]',
+        "[describe clothing]",
+    ])
+    def test_bracketed_template_leak_is_absent(self, value):
+        assert self._value(f"Last Seen Wearing: {value}\n") == ""
+
+    def test_sentinel_match_is_exact_equality_not_a_prefix(self):
+        """Corpus-discovered near-miss (2026-09-09). One real form yields
+        "UNKNOWN, WHITE, 5\'2, 110 LBS" — it BEGINS with a sentinel word but is
+        genuine physical description, the only place that form records height
+        and weight. Exact casefold equality keeps it; the obvious
+        "improvement" to `startswith("unknown")` would silently destroy it."""
+        raw = "UNKNOWN, WHITE, 5'2, 110 LBS"
+        assert self._value(f"Last Seen Wearing: {raw}\n") == raw
+
+    def test_a_leading_bracket_only_is_the_sentinel(self):
+        """An officer's mid-string parenthetical is data, not a sentinel."""
+        s = "Last Seen Wearing: blue jacket [dark], jeans\n"
+        assert self._value(s) == "blue jacket [dark], jeans"
+
+    def test_blank_line_does_not_capture_the_next_field(self):
+        """The #735 defect class, written immune. `\\s*` matches newlines even
+        under re.MULTILINE — which rebinds ^ and $, NOT \\s — so a blank field
+        would run the match on and publish the NEXT line to responders as
+        clothing. This is the case that caught it while building #755."""
+        s = "Last Seen Wearing:\nContact: Ofc. Lee; 408-555-0100\n"
+        assert self._value(s) == ""
+
+    def test_trailing_spaces_only_is_absent(self):
+        s = "Last Seen Wearing:   \nContact: Ofc. Lee\n"
+        assert self._value(s) == ""
+
+    def test_missing_line_is_absent(self):
+        assert self._value("Missing Person: Jane Doe\n") == ""
+
+    def test_empty_summary_is_absent(self):
+        assert self._value("") == ""
+        assert self._value(None) == ""
+
+    def test_only_matches_at_line_start(self):
+        """Guards against a re.MULTILINE removal that would let the label match
+        mid-line inside prose."""
+        s = "Event Log:\n2026-09-09 10:00 - see Last Seen Wearing: nothing\n"
+        assert self._value(s) == ""
+
+
+class TestLastSeenWearingWiring:
+    """#845 — pin the four seams no other test file can see.
+
+    slack.py's renderer is pinned in test_slack.py and d4h.py's paragraph in
+    test_d4h.py. Neither can see main.py or index.html, and a correct renderer
+    fed nothing renders nothing — completely silently. That is precisely the
+    state this issue was filed for: `lsw` was parsed at index.html:4112 and
+    appeared exactly once in the repository, a reader written for a consumer
+    that never landed.
+    """
+
+    @staticmethod
+    def _main():
+        return (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _slack():
+        return (Path(__file__).parent / "slack.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _index():
+        return (Path(__file__).parent.parent / "frontend" / "index.html").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _code_only(text):
+        return "\n".join(l.split("#")[0] for l in text.splitlines())
+
+    def _welcome_call(self):
+        """The format_pinned_welcome(...) call site, bounded at BOTH ends on
+        real markers — never start + N characters."""
+        src = self._main()
+        start = src.index("format_pinned_welcome(")
+        end = src.index("format_staging_message(", start)
+        return self._code_only(src[start:end])
+
+    def _helper(self):
+        """The helper body, bounded on the next def — anchored PAST the
+        docstring, which names every literal asserted below."""
+        src = self._main()
+        start = src.index("def _subject_last_seen_wearing_value(")
+        end = src.index("\ndef ", start + 1)
+        body = re.sub(r'""".*?"""', "", src[start:end], flags=re.DOTALL)
+        return self._code_only(body)
+
+    # -- seam 1: the frontend puts the parsed value in the payload ------------
+
+    def test_frontend_still_parses_the_lsw_field(self):
+        code = "\n".join(l.split("//")[0] for l in self._index().splitlines())
+        assert "lsw:          get('Last Seen Wearing')," in code, (
+            "index.html no longer parses the Last Seen Wearing line out of the "
+            "LIVE textarea, so a dispatcher's correction never reaches Slack"
+        )
+
+    def test_frontend_forwards_lsw_in_the_dispatch_payload(self):
+        """The hop that did not exist. Without it every surface below is
+        correct and permanently receives an empty string."""
+        code = "\n".join(l.split("//")[0] for l in self._index().splitlines())
+        assert "mp_lsw:              parsed.lsw      || ''," in code, (
+            "index.html no longer forwards mp_lsw — the welcome renderer is "
+            "intact but never sees the clothing description"
+        )
+
+    # -- seam 2: main forwards it to the welcome ------------------------------
+
+    def test_main_passes_worn_to_the_welcome(self):
+        assert 'wearing=body.get("mp_lsw") or ""' in self._welcome_call(), (
+            "main.py no longer forwards mp_lsw to format_pinned_welcome"
+        )
+
+    def test_main_still_passes_the_sibling_slack_only_kwargs(self):
+        """Four sibling kwargs, all required. Adding one must not displace
+        another — they render adjacent lines and a typo in any is silent."""
+        call = self._welcome_call()
+        for kwarg in ('notes=body.get("mp_notes") or ""',
+                      'last_seen=body.get("mp_last_seen") or ""',
+                      'request=body.get("mp_request") or ""'):
+            assert kwarg in call, f"{kwarg} was displaced from the welcome call"
+
+    # -- seam 3: main feeds the D4H involved-person record --------------------
+
+    def test_main_emits_last_seen_wearing_for_d4h(self):
+        """Bounded on the dict that _build_ocr_data_for_d4h returns, so this
+        cannot be satisfied by the identifier appearing anywhere else in a
+        9,000-line module."""
+        src = self._main()
+        start = src.index('"last_seen_at":')
+        end = src.index('"full_summary":', start)
+        stanza = self._code_only(src[start:end])
+        assert '"last_seen_wearing":           _subject_last_seen_wearing_value(ocr_text)' in stanza, (
+            "the D4H ocr_data dict no longer carries last_seen_wearing — "
+            "d4h.py's paragraph is intact but permanently receives nothing"
+        )
+
+    def test_d4h_value_comes_from_the_helper_not_the_payload(self):
+        """D4H re-parses the LIVE textarea rather than trusting the frontend's
+        parse, the same rule #755 states: a dispatcher's correction must reach
+        the archival record."""
+        src = self._main()
+        start = src.index('"last_seen_wearing":')
+        end = src.index("\n", start)
+        assert "body.get" not in src[start:end], (
+            "the D4H record now reads the frontend payload instead of "
+            "re-parsing the textarea"
+        )
+
+    # -- seam 4: the two statements of the sentinel rule must agree -----------
+
+    def test_helper_rejects_the_unbracketed_sentinel(self):
+        assert 'casefold() in ("not recorded", "unknown", "n/a")' in self._helper(), (
+            "main._subject_last_seen_wearing_value stopped rejecting the "
+            "UNBRACKETED 'Not recorded' both intake paths emit for a blank box"
+        )
+
+    def test_helper_rejects_the_bracketed_leak(self):
+        assert 'value.startswith("[")' in self._helper(), (
+            "main._subject_last_seen_wearing_value stopped rejecting Gemini's "
+            "bracketed template leak"
+        )
+
+    def test_helper_regex_is_immune_to_the_735_defect(self):
+        """Horizontal whitespace only. A `\\s*` rewrite is invisible until a
+        form leaves the box blank."""
+        src = self._code_only(self._main())
+        assert r'_LAST_SEEN_WEARING_RE = re.compile(r"^Last Seen Wearing:[^\S\n]*(.+)$", re.MULTILINE)' in src, (
+            "the Last Seen Wearing regex changed shape; `\\s*` would capture "
+            "the NEXT field's content when the box is blank"
+        )
+
+    def test_slack_and_main_state_the_same_sentinel_rule(self):
+        """The #755 split, inherited: Slack reads this field through the
+        frontend payload while D4H reads it through the helper, so the rule is
+        necessarily stated twice. The one time those two drifted, a Gemini
+        template leak reached responders on the pinned welcome while the Event
+        Log and the D4H record correctly omitted it. Pinned in BOTH directions
+        so neither can be relaxed alone.
+        """
+        slack_src = re.search(
+            r"^def format_pinned_welcome\(.*?(?=\n\n(?:def |async def |# -{10,}))",
+            self._slack(), re.DOTALL | re.MULTILINE,
+        )
+        assert slack_src, "format_pinned_welcome not found in slack.py"
+        slack_body = re.sub(r'""".*?"""', "", slack_src.group(0), flags=re.DOTALL)
+        slack_stanza = self._code_only(slack_body)
+        slack_stanza = slack_stanza[slack_stanza.index("wearing_clean = wearing.strip()"):
+                                    slack_stanza.index('lines.append(f"Wearing:')]
+        helper = self._helper()
+        for rule, why in (
+            ('"not recorded"', "the unbracketed blank-box sentinel"),
+            ('"unknown"',      "the measured 'UNKNOWN' clothing value"),
+            ('"n/a"',          "the measured 'N/A' clothing value"),
+            ('startswith("[")', "Gemini's bracketed template leak"),
+        ):
+            assert rule in helper, f"main.py stopped rejecting {why}"
+            assert rule in slack_stanza, f"slack.py stopped rejecting {why}"
+
+
 class TestGeminiProjectHasNoDeploymentDefault:
     """`gemini.py` must not carry a deployment-specific GCP project default.
 

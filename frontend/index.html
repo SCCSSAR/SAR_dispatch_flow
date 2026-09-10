@@ -4641,6 +4641,13 @@
         mp_age:              _ebParseAgeFromDob(parsed.dob),
         mp_gender:           '',
         mp_at_risk:          parsed.atRisk   || '',
+        // #845 — what the subject was last seen wearing. Slack welcome only,
+        // same rule as the three below; the Everbridge body is deliberately
+        // untouched. Parsed since v1 at `lsw` and dropped on the floor until
+        // now — the reader was written for a consumer that never landed. The
+        // D4H involved-person record gets this from the server-side textarea
+        // re-parse, not from here.
+        mp_lsw:              parsed.lsw      || '',
         // #670 — Slack welcome only; the Everbridge body is deliberately
         // untouched (length-constrained, read on a locked phone).
         mp_notes:            parsed.mpNotes  || '',

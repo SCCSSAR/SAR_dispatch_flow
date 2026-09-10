@@ -213,6 +213,51 @@ def _apply_staging_dedup(text, today):
     return text[:start + 1] + "\n".join(out) + text[end:], tuple(dropped)
 
 
+# Mirror of main.py::_LAST_SEEN_WEARING_RE + _subject_last_seen_wearing_value
+# (issue #845). Horizontal whitespace only — `\s*` would cross the newline on a
+# blank field and capture the NEXT line as clothing.
+_LAST_SEEN_WEARING_RE = re.compile(r"^Last Seen Wearing:[^\S\n]*(.+)$", re.MULTILINE)
+_WEARING_SENTINELS = ("not recorded", "unknown", "n/a")
+
+
+def _apply_last_seen_wearing(text, today):
+    """Detector for #845 — what _subject_last_seen_wearing_value extracts.
+
+    NEVER rewrites the summary. Reports the classification so the real
+    distribution of officer-written clothing values can be read off the corpus
+    rather than guessed.
+
+    ⚠️ READ THE JPEG HALF ONLY — the PDF half CANNOT answer this question, and
+    it fails LOUDLY as "ABSENT" on every v2 FILLABLE form, which reads like a
+    regression and is not one. This is a THIRD invisible generator property of
+    this corpus, on top of `staging_candidates=[]` and the synthetic
+    `lkp_coords` constant: `_run_pdf` caches Gemini's PASS 2 output (staging +
+    Koester) only, while the "Last Seen Wearing:" line lives in the synthetic
+    summary that main.py composes AROUND that output. Production is unaffected —
+    pdf_extract.py emits the line at build_synthetic_summary — but it is absent
+    from the cached artefact. Finding one generator property is not clearance to
+    trust the rest.
+
+    The JPEG half IS valid: there the line is transcribed by Gemini from the
+    form's own text and is untouched by either injected value. Measured
+    2026-09-09 across 87 JPEG-path values: 44 sentinels (51%) — "Not recorded"
+    34, "UNKNOWN" 6, "N/A" 4 — and 43 KEPT, every one a genuine clothing
+    description with no false drop. One KEPT value, "UNKNOWN, WHITE, 5\'2,
+    110 LBS", is why the production guard tests exact equality and not a prefix.
+    """
+    m = _LAST_SEEN_WEARING_RE.search(text or "")
+    if not m:
+        return text, ("ABSENT :: no Last Seen Wearing line",)
+    raw = m.group(1).strip()
+    if not raw:
+        return text, ("BLANK :: empty value",)
+    if raw.startswith("["):
+        return text, (f"DROPPED-BRACKET :: {raw[:90]}",)
+    if raw.casefold() in _WEARING_SENTINELS:
+        return text, (f"DROPPED-SENTINEL :: {raw[:90]}",)
+    return text, (f"KEPT :: {raw[:90]}",)
+
+
 HELPERS = {
     "staging_dedup": {
         "fn": _apply_staging_dedup,
@@ -225,6 +270,12 @@ HELPERS = {
         "fn": _apply_age_from_dob,
         "desc": "Recompute Gemini's parenthesized age hint on the DOB line "
                 "(PR #402, _rewrite_dob_age_hint).",
+    },
+    "last_seen_wearing": {
+        "fn": _apply_last_seen_wearing,
+        "desc": "Classify the Last Seen Wearing line as KEPT / DROPPED-SENTINEL / "
+                "DROPPED-BRACKET / BLANK / ABSENT (issue #845, "
+                "_subject_last_seen_wearing_value). Detector — never rewrites.",
     },
     "unanswered_lpb": {
         "fn": _apply_unanswered_lpb,

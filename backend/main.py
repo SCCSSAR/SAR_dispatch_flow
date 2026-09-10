@@ -213,6 +213,78 @@ def _subject_last_seen_value(summary: str) -> str:
     return value
 
 
+# Issue #845 — what the subject was last seen wearing. Extracted correctly since
+# v1 and reaching the D4H *Description* only by accident (post-#614 the FULL
+# INCIDENT SUMMARY marker is gone, so _extract_iis_body_for_d4h takes its
+# no-marker fallback and the whole textarea lands there), while the surface every
+# responder actually reads carried nothing. On the 2026-09-09 SJPD callout the
+# dispatcher pasted the clothing description into the channel by hand.
+#
+# [^\S\n]* is horizontal whitespace ONLY, for the same reason as
+# _LAST_SEEN_AT_RE above: `\s*` crosses newlines even under re.MULTILINE, so a
+# blank "Last Seen Wearing:" line would capture the NEXT field's content and
+# publish it to responders as clothing. Written immune rather than joining the
+# eight field-line regexes tracked by #735.
+_LAST_SEEN_WEARING_RE = re.compile(r"^Last Seen Wearing:[^\S\n]*(.+)$", re.MULTILINE)
+
+
+def _subject_last_seen_wearing_value(summary: str) -> str:
+    """The subject's clothing description, or "" when the form recorded none.
+
+    Reads the summary's ``Last Seen Wearing:`` line, so both intake paths are
+    served by one call site: pdf_extract renders the AcroForm field, and the
+    JPEG path renders Gemini's extraction of it.
+
+    THE SENTINEL SET IS WIDER THAN ``_subject_last_seen_value`` NEEDS, and that
+    difference is the whole trap. Last Seen At renders a blank as the BRACKETED
+    "[not recorded]", so a leading-"[" test covers it. Last Seen Wearing renders
+    a blank as the UNBRACKETED literal "Not recorded" on BOTH paths —
+    pdf_extract's ``_f("mp_wearing") or "Not recorded"`` and gemini.py's
+    ``else "Not recorded"`` prompt clause — so a guard copied from the last-seen
+    shape would publish "Wearing: Not recorded" to every responder on every
+    blank-clothing dispatch. The bracket test is still required on top of it: the
+    JPEG path echoes Gemini's own bracketed instruction text when it extracts
+    nothing, the documented leak that already reached responders once on the
+    pinned welcome (#755).
+
+    The sentinel set is MEASURED, not chosen, on both corpora. Across the 20 v2
+    AcroForm PDFs the box is populated on 7 (len min 3 / median 25 / max 77) and
+    2 of those 7 are contentless. Across the cached Gemini corpus\'s JPEG half,
+    44 of 87 values — 51% — are sentinels, and all three literals appear in real
+    output: "Not recorded" (34), "UNKNOWN" (6), "N/A" (4). Without this rejection
+    roughly half of all dispatches would publish "Wearing: Not recorded" to every
+    responder. Add a literal only after observing it on a real form.
+
+    THE MATCH IS EXACT CASEFOLD EQUALITY, NOT A PREFIX TEST, and that is
+    corpus-discovered rather than stylistic: one real form yields
+    "UNKNOWN, WHITE, 5\'2, 110 LBS", which begins with a sentinel word but is
+    genuine physical description — the only place that form records height and
+    weight. A `startswith` rewrite would silently destroy it.
+
+    Rendered verbatim otherwise. An officer's shorthand is not tidied, expanded
+    or re-cased ("BLU JKT/blk pants, NO shoes" ships as written): this is the
+    description responders call out against, and the 77-char maximum measured
+    above is why there is no length cap — the distinctive detail is commonly
+    the last thing written.
+
+    ``slack.format_pinned_welcome`` states the SAME rule independently, because
+    the Slack welcome reads this field by a different route — the frontend parses
+    the textarea into the dispatch payload — rather than through this helper.
+    That split is inherited from #755 and is pinned in BOTH directions, because
+    the one time the two rules drifted a template leak reached responders while
+    the other surfaces correctly omitted it.
+    """
+    m = _LAST_SEEN_WEARING_RE.search(summary or "")
+    if not m:
+        return ""
+    value = m.group(1).strip()
+    if not value or value.startswith("["):
+        return ""
+    if value.casefold() in ("not recorded", "unknown", "n/a"):
+        return ""
+    return value
+
+
 def _insert_subject_last_seen_entry(summary: str) -> str:
     """Insert "<last seen> - Subject last seen" as the SECOND Event Log entry.
 
@@ -7660,6 +7732,12 @@ def _build_ocr_data_for_d4h(*, ocr_text: str, map_data: dict,
         # answer the same way on all three surfaces, or a dispatcher who sees the
         # line in Slack cannot tell why D4H lacks it.
         "last_seen_at":                _subject_last_seen_value(ocr_text),
+        # #845 — what the subject was last seen wearing. Same reasoning as
+        # last_seen_at above: no native involved-person field exists, so it
+        # rides involvementNotes. Shares its helper with the Slack welcome's
+        # sentinel rule so "did the officer record this" answers the same way
+        # on both surfaces.
+        "last_seen_wearing":           _subject_last_seen_wearing_value(ocr_text),
         # Canonical IIS body for the D4H description field — the FULL INCIDENT
         # SUMMARY block stripped of section markers and the "Initial Incident
         # Summary:" header, starting at "Event Name:". WhatsApp Dispatch block
@@ -8172,6 +8250,15 @@ async def send_notification(
         age=body.get("mp_age"),
         gender=body.get("mp_gender") or "",
         at_risk=body.get("mp_at_risk") or "",
+        # #845 — what the subject was last seen wearing. Directly below the MP
+        # line (Bill, 2026-09-09): it is the most searchable physical fact about
+        # the subject and reads as part of the description — a responder scanning
+        # the pin learns who they are looking for, then what they look like.
+        # Slack ONLY, same rule as notes/request below. Arrives by the frontend
+        # parse rather than _subject_last_seen_wearing_value, which is why
+        # format_pinned_welcome restates the sentinel rule; both directions are
+        # pinned by TestLastSeenWearingWiring.
+        wearing=body.get("mp_lsw") or "",
         # #670 — intake free text written beside a risk-factor question. Slack
         # ONLY; the Everbridge body is deliberately untouched (Bill, 2026-08-01)
         # because it is length-constrained and read on a locked phone.
