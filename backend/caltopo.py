@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import secrets
 import time
@@ -467,6 +468,172 @@ def _add_marker(
 
 
 # ---------------------------------------------------------------------------
+# LPB range rings (issue #847) — restored INSIDE a hidden "Planning" folder.
+#
+# Amends the "Range rings removed (issue #244)" Locked Decision, approved by
+# Bill 2026-09-09. The amendment RESOLVES the original objection rather than
+# overriding it: the 2026 complaint was that rings distracted searchers and were
+# useful only to Plans. A folder with visibility off satisfies both halves —
+# searchers see nothing on load, Plans toggles the analysis on.
+#
+# Everything below was confirmed against the live API by
+# experiments/caltopo/spike_01_folder_api.py (2026-09-09), not guessed:
+#
+#   * Folder is a first-class object: POST /api/v1/map/{id}/Folder.
+#   * `properties.visible` is a BOOLEAN with POSITIVE polarity — false hides on
+#     load. Verified by an A/B on map 3F9B3L2 and by round-tripping a create.
+#   * Features join a folder via `properties.folderId`. A fabricated `parentId`
+#     ALSO returned 200 and persisted on read-back, and was ignored at render
+#     time — so the read-back proves storage, not semantics.
+#   * `marker-visibility` is NOT honoured (stored verbatim, rendered visible),
+#     so per-feature hiding is not an alternative to the folder.
+#
+# CALTOPO HAS NO PERSISTED RANGE-RING OBJECT. Its "Add > Range Ring" dialog
+# (centre point + comma-separated radii + units) is a CLIENT-SIDE convenience:
+# it expands into N ordinary Shape circles at save time. Confirmed 2026-09-10 by
+# having Bill save a ".25,.5" range ring on map 3F9B3L2 and reading it back —
+# two Shape features titled "0.25mi" and "0.5mi". No radius is stored anywhere;
+# a sweep of 60 team maps found no ring/radius property on ANY class.
+#
+# So we build the circles ourselves, and match CalTopo's own output shape:
+#   * geometry LineString (NOT Polygon) — that is how it achieves outline-only,
+#     and it is why its rings carry no fill keys at all.
+#   * 72 segments + a closing vertex = 73 coordinates.
+#   * stroke #000000, width 2, opacity 1. No fill keys.
+#
+# One deliberate deviation: CalTopo's own circles are a projected approximation
+# (its nominal 0.25 mi ring measures 0.2497 with a ~36 ft spread). Ours are
+# great-circle exact. Matching its imprecision would buy nothing.
+_PLANNING_FOLDER_TITLE = "Planning"
+
+# Shape colours carry a LEADING "#", and marker colours do NOT — see the
+# COLOR_RED/COLOR_BLUE comment above, whose "no leading #" note is true for
+# markers only. Read off 400 live Shape objects, every one "#RRGGBB". Reusing a
+# marker constant here would ship a malformed colour.
+COLOR_RING = "#000000"          # black — matches CalTopo's own range-ring output
+
+# Read off CalTopo's own saved range rings — not chosen. Note there are NO fill
+# keys: a LineString has no interior, which is how CalTopo keeps nested rings
+# from stacking into a muddy overlay that hides the terrain beneath them.
+_RING_STROKE_WIDTH   = 2
+_RING_STROKE_OPACITY = 1
+
+# 72 segments + 1 closing vertex = the 73 coordinates CalTopo itself emits.
+_RING_VERTICES = 72
+
+_EARTH_RADIUS_MI = 3958.7613    # mean radius, miles
+
+
+def _ring_coordinates(lat: float, lng: float, radius_miles: float,
+                      vertices: int = _RING_VERTICES) -> list:
+    """Closed LineString ring approximating a circle of `radius_miles`.
+
+    Great-circle destination formula, NOT a flat degrees-per-mile offset. The
+    naive version needs a cos(latitude) correction on longitude that is easy to
+    omit, and omitting it yields an ellipse squashed east-west — at SCC's ~37°N
+    that is a 20% error on the long axis, which on a 0.6 mi ring is ~600 ft of
+    lie in a figure Plans uses to size a search area.
+
+    Returns [[lng, lat], ...] — GeoJSON is longitude-FIRST, the same trap
+    _add_marker's comment calls out. The ring is explicitly closed (last vertex
+    == first): CalTopo's own range rings close their LineString, and without it
+    a circle renders with a visible gap at bearing 0.
+    """
+    phi1 = math.radians(lat)
+    lam1 = math.radians(lng)
+    delta = radius_miles / _EARTH_RADIUS_MI     # angular distance, radians
+    coords = []
+    for i in range(vertices):
+        theta = 2.0 * math.pi * i / vertices    # bearing, radians
+        phi2 = math.asin(
+            math.sin(phi1) * math.cos(delta)
+            + math.cos(phi1) * math.sin(delta) * math.cos(theta)
+        )
+        lam2 = lam1 + math.atan2(
+            math.sin(theta) * math.sin(delta) * math.cos(phi1),
+            math.cos(delta) - math.sin(phi1) * math.sin(phi2),
+        )
+        coords.append([math.degrees(lam2), math.degrees(phi2)])
+    coords.append(coords[0])                    # close the ring
+    return coords
+
+
+def _add_folder(client: httpx.Client, map_id: str, title: str,
+                visible: bool = False) -> str:
+    """Create a folder on the map and return ITS SERVER-ASSIGNED ID.
+
+    The id is the whole point: it is what `folderId` on each ring references,
+    and CalTopo assigns it (we cannot choose it, same as marker ids). A caller
+    that does not get an id back MUST NOT go on to create rings — see the
+    fail-closed guard in build_incident_map.
+
+    `visible=False` is the default ON PURPOSE. This helper exists to hide
+    things; a caller that forgets the argument should get the safe behaviour,
+    not put range rings in front of every searcher.
+    """
+    payload = {
+        "type": "Feature",
+        "geometry": None,
+        "properties": {
+            "class":        "Folder",
+            "title":        title,
+            "visible":      visible,
+            "labelVisible": True,
+        },
+    }
+    result = _post(client, f"/api/v1/map/{map_id}/Folder", payload)
+    folder_id = (result.get("result") or {}).get("id") or result.get("id") or ""
+    logger.info(
+        "CalTopo folder created | map_id=%s visible=%s got_id=%s",
+        map_id, visible, bool(folder_id),
+    )
+    return folder_id
+
+
+def _add_ring(client: httpx.Client, map_id: str, lat: float, lng: float,
+              radius_miles: float, title: str, folder_id: str) -> None:
+    """Draw one LPB range ring as a closed LineString inside `folder_id`.
+
+    LineString, NOT Polygon, and the distinction is load-bearing rather than
+    stylistic: it is how CalTopo's own range rings achieve outline-only, and it
+    is why they carry no `fill` keys at all. A Polygon rewrite reintroduces the
+    fill question and three nested filled circles stack into an overlay that
+    hides the terrain Plans reads them against.
+
+    `folder_id` is REQUIRED and is validated, not defaulted. A ring outside the
+    hidden folder is the exact #244 failure this feature was designed around —
+    rings in front of searchers — so an empty id raises rather than quietly
+    creating a root-level ring.
+    """
+    if not folder_id:
+        raise ValueError(
+            "_add_ring requires a folder_id — a root-level ring would be "
+            "visible to every responder, which is the #244 regression"
+        )
+    payload = {
+        "type": "Feature",
+        "geometry": {
+            "type":        "LineString",
+            "coordinates": _ring_coordinates(lat, lng, radius_miles),
+        },
+        "properties": {
+            "class":          "Shape",
+            "title":          title,
+            "folderId":       folder_id,
+            "stroke":         COLOR_RING,
+            "stroke-width":   _RING_STROKE_WIDTH,
+            "stroke-opacity": _RING_STROKE_OPACITY,
+        },
+    }
+    _post(client, f"/api/v1/map/{map_id}/Shape", payload)
+    # Radius is not PII (it is a Koester statistic, not a location) but the
+    # centre coordinates are — log neither the coords nor the title.
+    logger.info(
+        "CalTopo range ring added | map_id=%s radius_mi=%.2f", map_id, radius_miles,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Seed feature picker — pure helper (no httpx) so it's directly testable.
 # ---------------------------------------------------------------------------
 
@@ -828,6 +995,60 @@ def build_incident_map(map_data: dict, dispatcher_name: str = "") -> str:
                 markers_intended=markers_intended,
                 failure_step=failure_step,
             ) from exc
+
+        # 5. LPB range rings, inside a hidden "Planning" folder (issue #847).
+        #
+        # OUTSIDE the try/except above ON PURPOSE. That block converts any
+        # failure into CalTopoOrphanMapError, which /create-map turns into a 502
+        # the dispatcher must retry. Rings are a PLANNING layer that is hidden
+        # on load — losing them must never fail a dispatch that already has its
+        # map, markers and command post. So this block is best-effort in the
+        # Failure-mode Q2 sense: every call past the point of no return degrades
+        # rather than raising.
+        #
+        # FAIL CLOSED (Bill, 2026-09-10): if the folder cannot be created there
+        # are NO rings. Never fall back to drawing them at map root — a
+        # root-level ring is visible to every searcher, which is precisely the
+        # distraction leadership asked to remove in #244. Failing open here
+        # would reintroduce the bug this feature exists to avoid.
+        #
+        # Rings are centred on the LKP and ONLY the LKP. Koester distances are
+        # measured from the last known position; the seed-feature fallback chain
+        # (residence, then staging) is right for "where do we anchor the map"
+        # and wrong for "where does the 50th-percentile ring start". A residence
+        # across town would render an authoritative-looking circle around the
+        # wrong point, so no LKP means no rings.
+        if rings and lkp:
+            try:
+                folder_id = _add_folder(
+                    client, map_id, _PLANNING_FOLDER_TITLE, visible=False,
+                )
+                if not folder_id:
+                    # A 2xx without an id is not a success: the rings would have
+                    # nothing to reference. Treated as a folder failure so the
+                    # fail-closed path runs.
+                    raise RuntimeError("CalTopo folder create returned no id")
+                for ring in rings:
+                    _add_ring(
+                        client, map_id,
+                        lat=lkp["lat"], lng=lkp["lng"],
+                        radius_miles=ring["radius_miles"],
+                        title=ring.get("label", "Range ring"),
+                        folder_id=folder_id,
+                    )
+                logger.info(
+                    "CalTopo range rings complete | map_id=%s rings=%d hidden=True",
+                    map_id, len(rings),
+                )
+            except Exception as exc:
+                # Includes CalTopoRateLimitError: a 429 while adding a hidden
+                # planning layer must not turn a finished map into a 503 the
+                # dispatcher has to retry. The map is already complete.
+                logger.warning(
+                    "CalTopo range rings skipped | map_id=%s rings_intended=%d "
+                    "exc=%s — map and markers are unaffected",
+                    map_id, len(rings), type(exc).__name__,
+                )
 
     map_url = f"https://caltopo.com/m/{map_id}"
     logger.info("CalTopo incident map ready | url=%s", map_url)

@@ -736,3 +736,314 @@ class TestCalTopoRetryProductionParity:
         assert code.index("time.sleep(backoff_s)") > code.index("if backoff_s is None:"), (
             "time.sleep no longer follows the context-manager exit"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #847 — LPB range rings inside a hidden "Planning" folder
+# ---------------------------------------------------------------------------
+import math
+import re
+from pathlib import Path
+
+_RING_VERTICES   = 72
+_EARTH_RADIUS_MI = 3958.7613
+_COLOR_RING      = "#000000"
+
+
+def _ring_coordinates_mirror(lat, lng, radius_miles, vertices=_RING_VERTICES):
+    """Executes the PRODUCTION _ring_coordinates, lifted out of caltopo.py.
+
+    NOT a hand-written mirror, and that distinction is load-bearing. It was one
+    originally, and mutation testing caught the consequence: replacing the
+    great-circle formula in caltopo.py with a flat degrees-per-mile offset left
+    all 140 tests green. The geometry assertions were exercising the copy, and
+    the AST pin that was meant to cover the gap only checked that the substring
+    "math.asin(" appeared somewhere in the function — which a mutation that
+    keeps the call in a dead assignment satisfies trivially.
+
+    caltopo.py cannot be imported (httpx and CalTopo env vars are absent), but
+    _ring_coordinates is pure math with no module-level dependency, so the real
+    function can be exec'd out of the source and tested directly. Now a flat
+    offset fails test_every_vertex_sits_at_the_requested_radius, which is a
+    statement about the circle rather than about the source text.
+    """
+    src = (Path(__file__).parent / "caltopo.py").read_text(encoding="utf-8")
+    start = src.index("_RING_VERTICES = ")
+    end = src.index("def _add_folder(")
+    ns = {"math": math}
+    exec(src[start:end], ns)          # noqa: S102 - production source, not input
+    return ns["_ring_coordinates"](lat, lng, radius_miles, vertices)
+
+
+def _haversine_mi(a, b):
+    """Independent distance check — deliberately NOT the formula under test.
+
+    _ring_coordinates uses the destination formula; this inverts with haversine. A
+    shared implementation would agree with itself even if both were wrong.
+    """
+    (lng1, lat1), (lng2, lat2) = a, b
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lng2 - lng1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * _EARTH_RADIUS_MI * math.asin(math.sqrt(h))
+
+
+class TestRingGeometry:
+    """The ring must actually BE a circle of the stated radius.
+
+    This is not decoration: Plans sizes a search area off these circles. A ring
+    drawn 20% short on its long axis is a quantitatively wrong planning figure
+    that looks entirely plausible on screen.
+    """
+
+    _LAT, _LNG = 37.3382, -121.8863   # San Jose — SCC operating latitude
+
+    def test_every_vertex_sits_at_the_requested_radius(self):
+        ring = _ring_coordinates_mirror(self._LAT, self._LNG, 0.6)
+        d = [_haversine_mi([self._LNG, self._LAT], pt) for pt in ring]
+        assert max(d) - min(d) < 1e-6, f"ring is not circular: {min(d)}..{max(d)}"
+        assert abs(max(d) - 0.6) < 1e-6
+
+    def test_a_flat_degree_offset_would_fail_this_test(self):
+        """Pins WHY the great-circle formula is required, by demonstrating the
+        error the naive version produces. Without the cos(latitude) correction a
+        ring is squashed east-west by ~21% at 37°N — on a 0.6 mi ring that is
+        roughly 600 ft of lie. If someone "simplifies" _ring_coordinates to a flat
+        offset, the test above fails and this one explains it."""
+        naive = [[self._LNG + (0.6 / 69.0544) * math.sin(2 * math.pi * i / 64),
+                  self._LAT + (0.6 / 69.0544) * math.cos(2 * math.pi * i / 64)]
+                 for i in range(64)]
+        d = [_haversine_mi([self._LNG, self._LAT], pt) for pt in naive]
+        distortion = (max(d) - min(d)) / 0.6
+        assert distortion > 0.15, (
+            "the naive flat offset no longer distorts — recheck this pin's premise"
+        )
+
+    def test_ring_is_closed(self):
+        """CalTopo's own range rings close their LineString; without the closing
+        vertex a circle renders with a visible gap at bearing 0."""
+        ring = _ring_coordinates_mirror(self._LAT, self._LNG, 1.0)
+        assert ring[0] == ring[-1]
+        assert len(ring) == _RING_VERTICES + 1
+
+    def test_coordinates_are_longitude_first(self):
+        """GeoJSON is lon,lat — the same trap _add_marker calls out. Swapped, a
+        San Jose ring lands in the Indian Ocean."""
+        ring = _ring_coordinates_mirror(self._LAT, self._LNG, 0.5)
+        lngs = [c[0] for c in ring]
+        lats = [c[1] for c in ring]
+        assert all(-122.1 < x < -121.6 for x in lngs), "first element is not longitude"
+        assert all(37.0 < y < 37.7 for y in lats), "second element is not latitude"
+
+    def test_radius_scales(self):
+        for r in (0.2, 0.6, 3.0):
+            ring = _ring_coordinates_mirror(self._LAT, self._LNG, r)
+            d = _haversine_mi([self._LNG, self._LAT], ring[0])
+            assert abs(d - r) < 1e-6
+
+
+class TestRingProductionParity:
+    """caltopo.py is not importable here (httpx + env vars are absent), so every
+    test above runs against a mirror. Without these pins, reverting caltopo.py
+    alone leaves them all green — the hole that let three params be deleted from
+    slack.py with 1841 tests passing.
+    """
+
+    @staticmethod
+    def _src():
+        return (Path(__file__).parent / "caltopo.py").read_text(encoding="utf-8")
+
+    @classmethod
+    def _fn(cls, name):
+        src = cls._src()
+        start = src.index(f"def {name}(")
+        end = src.index("\ndef ", start + 1)
+        body = re.sub(r'""".*?"""', "", src[start:end], flags=re.DOTALL)
+        return "\n".join(l.split("#")[0] for l in body.splitlines())
+
+    def test_production_uses_the_great_circle_formula(self):
+        """asin/atan2 are the destination formula's signature. A flat
+        degrees-per-mile rewrite has neither."""
+        fn = self._fn("_ring_coordinates")
+        assert "phi2 = math.asin(" in fn and "lam2 = lam1 + math.atan2(" in fn, (
+            "_ring_coordinates no longer ASSIGNS from the great-circle "
+            "destination formula — a flat offset squashes the ring ~21% "
+            "east-west at SCC latitude. Asserting the assignment, not the bare "
+            "call: a mutation that leaves math.asin() in a dead assignment "
+            "satisfies a substring check (caught by mutation 2026-09-10)."
+        )
+
+    def test_production_closes_the_ring(self):
+        assert "coords.append(coords[0])" in self._fn("_ring_coordinates"), (
+            "the ring is no longer closed — CalTopo's own range rings close "
+            "their LineString, and without it the circle renders with a visible "
+            "gap at bearing 0"
+        )
+
+    def test_production_earth_radius_matches_the_mirror(self):
+        assert f"_EARTH_RADIUS_MI = {_EARTH_RADIUS_MI}" in self._src()
+
+    def test_production_ring_colour_carries_the_hash_prefix(self):
+        """Shape colours take a LEADING '#'; marker colours do NOT. Read off 400
+        live Shape objects, and off CalTopo's own saved range rings (#000000).
+        Reusing COLOR_RED (no '#') here ships a malformed colour that the marker
+        constants' own comment would seem to endorse."""
+        assert f'COLOR_RING = "{_COLOR_RING}"' in self._src(), (
+            "COLOR_RING drifted; Shape colours must be '#RRGGBB'"
+        )
+        assert re.search(r'^COLOR_RED\s*=\s*"[0-9A-F]{6}"', self._src(), re.M), (
+            "COLOR_RED gained or lost its format; markers must stay '#'-less"
+        )
+
+    def test_production_folder_defaults_to_hidden(self):
+        """A caller who forgets the argument must get the SAFE behaviour. This
+        helper exists to hide things."""
+        sig = self._src()[self._src().index("def _add_folder("):]
+        sig = sig[:sig.index(") -> str:")]
+        assert "visible: bool = False" in sig, (
+            "_add_folder no longer defaults to hidden — a forgotten argument "
+            "would put range rings in front of every searcher (#244)"
+        )
+
+    def test_production_folder_sends_visible_and_class(self):
+        fn = self._fn("_add_folder")
+        assert '"class":        "Folder"' in fn or '"class": "Folder"' in fn
+        assert '"visible":      visible' in fn or '"visible": visible' in fn, (
+            "the folder payload stopped carrying `visible` — CalTopo defaults "
+            "a folder to shown"
+        )
+
+    def test_production_ring_refuses_an_empty_folder_id(self):
+        """Fail-closed at the helper, not only at the call site. A root-level
+        ring is the #244 regression.
+
+        AST, not substring co-occurrence. The first version of this pin asserted
+        only that "if not folder_id:" and "raise ValueError" both appeared
+        somewhere in the function, which mutation testing showed is satisfied by
+        `if not folder_id: pass` followed by `if False: raise ValueError(...)` —
+        a completely neutered guard, 23/23 green. Same defect class as the
+        `math.asin(` pin caught earlier in this change: a keyword's PRESENCE is
+        not its BEHAVIOUR. caltopo.py cannot be imported here, but it can be
+        parsed, so the real structure is checkable.
+        """
+        import ast
+        tree = ast.parse(self._src())
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "_add_ring"), None)
+        assert fn is not None, "_add_ring not found in caltopo.py"
+        guarded = [
+            node for node in fn.body
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "folder_id"
+            and any(isinstance(stmt, ast.Raise) for stmt in node.body)
+        ]
+        assert guarded, (
+            "_add_ring no longer RAISES inside `if not folder_id:` — rings "
+            "could be created at map root, visible to every responder (#244). "
+            "The guard must be structural: a raise elsewhere in the function "
+            "does not stop the _post() below it."
+        )
+
+    def test_production_ring_guard_precedes_the_post(self):
+        """Ordering, for the same reason the call-site pin checks it: a guard
+        that runs after the write is not a guard."""
+        fn = self._fn("_add_ring")
+        assert fn.index("if not folder_id:") < fn.index("_post("), (
+            "the folder_id guard no longer precedes the Shape POST"
+        )
+
+    def test_production_ring_sets_folder_id_on_the_shape(self):
+        assert '"folderId"' in self._fn("_add_ring"), (
+            "the ring payload lost folderId — confirmed live as the ONLY key "
+            "CalTopo honours for folder membership (parentId is ignored)"
+        )
+
+    def test_production_rings_are_linestrings_with_no_fill(self):
+        """CalTopo's own range rings are LineString and carry NO fill keys —
+        that is how it keeps three nested circles from stacking into a muddy
+        overlay. A Polygon rewrite reintroduces the fill question and diverges
+        from the shape the platform itself produces."""
+        fn = self._fn("_add_ring")
+        assert '"type":        "LineString"' in fn or '"type": "LineString"' in fn, (
+            "range rings are no longer LineString; CalTopo's own are"
+        )
+        assert "fill" not in fn, (
+            "range rings gained a fill key; CalTopo's own range rings have none"
+        )
+
+    def test_production_vertex_count_matches_caltopos_own(self):
+        assert "_RING_VERTICES = 72" in self._src(), (
+            "vertex count drifted from the 72 (+1 closing) CalTopo itself emits"
+        )
+
+
+class TestBuildIncidentMapRingsFailClosed:
+    """The failure policy, pinned as source structure.
+
+    Decided by Bill 2026-09-10: if the folder cannot be created there are NO
+    rings. Failing OPEN would draw them at map root, visible to every searcher —
+    exactly the distraction leadership asked to remove in #244. This is the one
+    behaviour where a bug is worse than the missing feature.
+    """
+
+    @staticmethod
+    def _fn():
+        src = (Path(__file__).parent / "caltopo.py").read_text(encoding="utf-8")
+        start = src.index("def build_incident_map(")
+        body = re.sub(r'""".*?"""', "", src[start:], flags=re.DOTALL)
+        return "\n".join(l.split("#")[0] for l in body.splitlines())
+
+    def test_rings_require_an_lkp(self):
+        """Koester distances are measured from the LAST KNOWN POSITION. The
+        seed-feature fallback (residence, then staging) is right for anchoring a
+        map and wrong for anchoring a statistical ring — a residence across town
+        would render an authoritative circle around the wrong point."""
+        assert "if rings and lkp:" in self._fn(), (
+            "the ring block no longer requires an LKP; rings must never be "
+            "centred on the residence/staging seed fallback"
+        )
+
+    def test_rings_are_centred_on_the_lkp_not_the_seed(self):
+        fn = self._fn()
+        stanza = fn[fn.index("if rings and lkp:"):]
+        assert 'lat=lkp["lat"]' in stanza and 'lng=lkp["lng"]' in stanza
+
+    def test_folder_id_is_checked_before_any_ring_is_created(self):
+        """Ordering is the guard. Structure, not keyword presence: the raise
+        must sit BETWEEN the folder create and the ring loop."""
+        fn = self._fn()
+        stanza = fn[fn.index("if rings and lkp:"):]
+        create = stanza.index("_add_folder(")
+        guard  = stanza.index("if not folder_id:")
+        loop   = stanza.index("for ring in rings:")
+        assert create < guard < loop, (
+            "the empty-folder-id guard is no longer between the folder create "
+            "and the ring loop — rings could be attempted without a folder"
+        )
+
+    def test_ring_failures_do_not_raise(self):
+        """Best-effort past the point of no return (Failure-mode Q2). A hidden
+        planning layer must never turn a finished map into a 502 the dispatcher
+        has to retry."""
+        fn = self._fn()
+        stanza = fn[fn.index("if rings and lkp:"):]
+        assert "except Exception as exc:" in stanza, (
+            "the ring block no longer swallows failures — losing a hidden "
+            "planning layer would fail an otherwise complete dispatch"
+        )
+        after = stanza[stanza.index("except Exception as exc:"):]
+        assert "raise" not in after, (
+            "the ring failure path re-raises; it must log and continue"
+        )
+
+    def test_ring_block_is_outside_the_orphan_handler(self):
+        """If it sat inside, any ring failure would become
+        CalTopoOrphanMapError -> 502, which is the opposite of best-effort."""
+        fn = self._fn()
+        assert fn.index("raise CalTopoOrphanMapError(") < fn.index("if rings and lkp:"), (
+            "the ring block moved inside the orphan try/except — a hidden "
+            "planning layer would now fail the whole dispatch"
+        )
