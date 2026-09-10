@@ -245,6 +245,7 @@ def format_pinned_welcome(
     age: Optional[int],
     gender: str,
     at_risk: str,
+    wearing: str = "",
     notes: str = "",
     last_seen: str = "",
     request: str = "",
@@ -264,10 +265,35 @@ def format_pinned_welcome(
 
         *{event_name}*
         MP: {mp_name} – {age}yo {gender_display}, {at_risk_clean}
+        [Wearing: {intake Last Seen Wearing, verbatim}]   ← issue #845
         [Notes: {novel intake free text}]   ← issue #670
         [Last seen: {intake Last Seen At, verbatim}]   ← issue #755
         [Request: {intake Request box, verbatim}]
         [Contact: {officer_contact}]
+
+    Wearing (issue #845) sits directly under the MP line, above Notes (Bill,
+    2026-09-09): clothing is the most searchable physical fact about the subject
+    and reads as part of the description, so a responder scanning the pin learns
+    who they are looking for and then what they look like.
+
+    Its sentinel rule is WIDER than the one Last seen uses below, and copying
+    that narrower shape here is the live failure mode. Last Seen At renders a
+    blank as the bracketed "[not recorded]", so a leading-"[" test covers it.
+    Last Seen Wearing renders a blank as the UNBRACKETED literal "Not recorded"
+    on BOTH intake paths — pdf_extract's `_f("mp_wearing") or "Not recorded"` and
+    gemini.py's `else "Not recorded"` prompt clause — so a bracket-only guard
+    would publish "Wearing: Not recorded" to every responder whenever the officer
+    left the box blank. "UNKNOWN" and "N/A" are rejected on the same measured
+    grounds — they are 2 of the 7 populated clothing boxes across the 20 v2
+    corpus PDFs. The bracket test is still needed on top, for the same Gemini
+    template leak documented under Last seen.
+
+    Neither echo-filtered nor capped, both deliberate and for the same reason
+    as at-risk: the corpus maximum is 77 characters, and the distinctive detail
+    ("red knit cap", a medical bracelet) is commonly the last item written, so
+    a tail-truncation drops exactly what makes the subject findable. This must agree with
+    main._subject_last_seen_wearing_value, which feeds the D4H record by a
+    server-side re-parse; both directions are pinned.
 
     Notes sits directly under the MP line ON PURPOSE: it is risk detail and
     belongs beside the at-risk list it qualifies, whereas Contact is logistics.
@@ -358,6 +384,13 @@ def format_pinned_welcome(
         f"*{event_name}*",
         mp_line,
     ]
+    # #845 — see the docstring: "Not recorded" arrives UNBRACKETED on both
+    # intake paths, so the bracket test alone is NOT enough here.
+    wearing_clean = wearing.strip()
+    if (wearing_clean and not wearing_clean.startswith("[")
+            and wearing_clean.casefold() not in ("not recorded", "unknown", "n/a")):
+        wearing_clean = _mrkdwn_escape(wearing_clean)
+        lines.append(f"Wearing: {wearing_clean}")
     if notes_clean:
         notes_clean = _mrkdwn_escape(notes_clean)
         lines.append(f"Notes: {notes_clean}")

@@ -124,6 +124,7 @@ def format_pinned_welcome(
     age,
     gender: str,
     at_risk: str,
+    wearing: str = "",
     notes: str = "",
     last_seen: str = "",
     request: str = "",
@@ -152,6 +153,11 @@ def format_pinned_welcome(
         f"*{event_name}*",
         mp_line,
     ]
+    wearing_clean = wearing.strip()
+    if (wearing_clean and not wearing_clean.startswith("[")
+            and wearing_clean.casefold() not in ("not recorded", "unknown", "n/a")):
+        wearing_clean = _mrkdwn_escape(wearing_clean)
+        lines.append(f"Wearing: {wearing_clean}")
     if notes_clean:
         notes_clean = _mrkdwn_escape(notes_clean)
         lines.append(f"Notes: {notes_clean}")
@@ -1820,6 +1826,105 @@ class TestWelcomeRequestLine:
         assert "Staging:" not in msg
 
 
+class TestWelcomeWearingLine:
+    """#845 — the subject's clothing on the pinned welcome.
+
+    Extracted since v1, reaching the D4H *Description* only by accident, and
+    structurally unable to reach the surface responders read: format_pinned_welcome
+    had no parameter for it. On the 2026-09-09 SJPD callout — an at-risk elderly
+    subject with dementia and no English — the dispatcher pasted the clothing
+    description into the channel by hand.
+    """
+
+    _BASE = dict(event_name="2026-09-09 SJPD ALLENWOOD", mp_name="John Doe",
+                 age=78, gender="M", at_risk="dementia, alone")
+
+    def _lines(self, **kw):
+        return format_pinned_welcome(**{**self._BASE, **kw}).split("\n")
+
+    def test_wearing_renders_directly_below_the_mp_line(self):
+        lines = self._lines(wearing="blue windbreaker, tan slacks, white sneakers")
+        assert lines[1].startswith("MP: ")
+        assert lines[2] == "Wearing: blue windbreaker, tan slacks, white sneakers"
+
+    def test_wearing_precedes_notes_when_both_present(self):
+        lines = self._lines(wearing="red jacket", notes="carries an oxygen tank")
+        assert lines[2] == "Wearing: red jacket"
+        assert lines[3] == "Notes: carries an oxygen tank"
+
+    def test_wearing_renders_verbatim(self):
+        """Officer shorthand is not tidied, expanded or re-cased — this is the
+        description responders call out against."""
+        raw = "BLU JKT/blk pants, NO shoes"
+        assert f"Wearing: {raw}" in self._lines(wearing=raw)
+
+    def test_long_value_is_not_truncated(self):
+        """Same rule as at-risk: a tail-truncation would drop the distinctive
+        detail, which is commonly the last item written."""
+        raw = ("dark green parka with orange lining, grey sweatpants, black "
+               "orthopedic shoes, red knit cap with a white pom, and a silver "
+               "medical alert bracelet on the left wrist")
+        assert f"Wearing: {raw}" in self._lines(wearing=raw)
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_blank_adds_no_row(self, value):
+        assert not any(l.startswith("Wearing:") for l in self._lines(wearing=value))
+
+    def test_omitted_parameter_adds_no_row(self):
+        assert not any(l.startswith("Wearing:") for l in self._lines())
+
+    @pytest.mark.parametrize("value", [
+        "Not recorded", "not recorded", "NOT RECORDED", "  Not Recorded  ",
+        "Unknown", "unknown", "N/A", "n/a",
+    ])
+    def test_unbracketed_not_recorded_sentinel_is_dropped(self, value):
+        """THE trap in this feature. Last Seen At renders a blank as the
+        BRACKETED "[not recorded]", so slack.py's last_seen guard tests only for
+        a leading "[". Last Seen Wearing renders a blank UNBRACKETED on BOTH
+        intake paths — pdf_extract's `_f("mp_wearing") or "Not recorded"` and
+        gemini.py's `else "Not recorded"`. A guard copied from the last_seen
+        shape would publish "Wearing: Not recorded" to every responder on every
+        blank-clothing dispatch."""
+        assert not any(l.startswith("Wearing:") for l in self._lines(wearing=value))
+
+    @pytest.mark.parametrize("value", [
+        "[not recorded]",
+        "[if present on form, else \"Not recorded\"]",
+        "[describe clothing]",
+    ])
+    def test_bracketed_gemini_template_leak_is_dropped(self, value):
+        """The bracket test is still required ON TOP of the literal test: the
+        JPEG path echoes Gemini's own instruction text when it extracts nothing.
+        That leak reached responders once already, on #755's welcome."""
+        assert not any(l.startswith("Wearing:") for l in self._lines(wearing=value))
+
+    def test_sentinel_match_is_exact_equality_not_a_prefix(self):
+        """Corpus-discovered near-miss: "UNKNOWN, WHITE, 5\'2, 110 LBS" begins
+        with a sentinel word but is real physical description. A
+        `startswith("unknown")` rewrite would drop it."""
+        raw = "UNKNOWN, WHITE, 5'2, 110 LBS"
+        assert f"Wearing: {raw}" in self._lines(wearing=raw)
+
+    def test_a_real_value_containing_brackets_mid_string_survives(self):
+        """Only a LEADING bracket is a sentinel — an officer's parenthetical is
+        data. Guards against a naive `"[" in value` rewrite."""
+        raw = "blue jacket [dark], jeans"
+        assert f"Wearing: {raw}" in self._lines(wearing=raw)
+
+    def test_wearing_is_mrkdwn_escaped(self):
+        """Clothing is free text and can carry & < > — unescaped, Slack renders
+        it as broken markup."""
+        assert "Wearing: T-shirt &amp; shorts" in self._lines(wearing="T-shirt & shorts")
+
+    def test_wearing_does_not_disturb_the_other_optional_rows(self):
+        lines = self._lines(wearing="red jacket", notes="oxygen tank",
+                            last_seen="2026-09-09 14:20", request="K9",
+                            officer_contact="Ofc. Lee; 408-555-0100")
+        assert [l.split(":")[0] for l in lines[2:]] == [
+            "Wearing", "Notes", "Last seen", "Request", "Contact"
+        ]
+
+
 class TestWelcomeRequestProductionParity:
     """Tie the mirror above to backend/slack.py.
 
@@ -1880,10 +1985,10 @@ class TestWelcomeRequestProductionParity:
         """
         prod = self._code_only(self._fn("format_pinned_welcome"))
         appended = re.findall(r'lines\.append\(f"([A-Za-z ]+):', prod)
-        assert appended == ["Notes", "Last seen", "Request", "Contact"], (
+        assert appended == ["Wearing", "Notes", "Last seen", "Request", "Contact"], (
             f"the welcome's optional rows are now {appended!r}; expected "
             f"subject → tasking → logistics "
-            f"(Notes, Last seen, Request, Contact)"
+            f"(Wearing, Notes, Last seen, Request, Contact)"
         )
 
     def test_production_does_not_echo_filter_or_cap_the_request(self):
@@ -1911,6 +2016,106 @@ class TestWelcomeRequestProductionParity:
         assert 'request    = " ".join(_f("request").split())' in code, (
             "pdf_extract.py no longer collapses the multi-line Request value, "
             "so a wrapped entry is silently truncated at the first newline."
+        )
+
+
+class TestWelcomeWearingProductionParity:
+    """#845 — tie the mirror above to backend/slack.py.
+
+    Every behavioural test in this file runs against the hand-written mirror,
+    because slack_sdk is not installed locally. Reverting only slack.py would
+    leave them all green — the exact hole that let three params be deleted from
+    the real function in 2026-08-01 with 1841 tests passing.
+    """
+
+    @staticmethod
+    def _prod():
+        return (Path(__file__).parent / "slack.py").read_text(encoding="utf-8")
+
+    @classmethod
+    def _fn(cls):
+        m = re.search(
+            r"^def format_pinned_welcome\(.*?(?=\n\n(?:def |async def |# -{10,}))",
+            cls._prod(), re.DOTALL | re.MULTILINE,
+        )
+        assert m, "format_pinned_welcome not found in slack.py"
+        return m.group(0)
+
+    @classmethod
+    def _code_only(cls):
+        """Strip the docstring AND comments before any assertion. The docstring
+        explains the unbracketed-sentinel trap using the very literals asserted
+        below, so a raw-source search passes with the guard deleted."""
+        body = re.sub(r'""".*?"""', '', cls._fn(), flags=re.DOTALL)
+        return "\n".join(l.split("#")[0] for l in body.splitlines())
+
+    def test_production_accepts_a_worn_parameter(self):
+        sig = self._fn().split(") -> str:")[0]
+        assert re.search(r"^\s*wearing: str = \"\",\s*$", sig, re.M), (
+            "format_pinned_welcome no longer takes `wearing` — the welcome "
+            "silently stopped carrying the subject's clothing description."
+        )
+
+    def test_production_renders_the_wearing_line(self):
+        assert 'lines.append(f"Wearing: {wearing_clean}")' in self._code_only(), (
+            "the Wearing line is gone from the pinned welcome — back to the "
+            "state that made the dispatcher paste it in by hand on 2026-09-09"
+        )
+
+    def test_production_drops_the_unbracketed_not_recorded_sentinel(self):
+        """The guard that a copy-paste from the last_seen shape would omit.
+        Without it every blank-clothing dispatch publishes 'Wearing: Not
+        recorded' to every responder."""
+        prod = self._code_only()
+        stanza = prod[prod.index("wearing_clean = wearing.strip()"):
+                      prod.index('f"Wearing: {wearing_clean}"')]
+        assert "casefold() not in (" in stanza, (
+            "the unbracketed-sentinel guard is gone from the Wearing line; both "
+            "intake paths emit the literal 'Not recorded' for a blank box"
+        )
+        # Each literal pinned separately, not the tuple: adding a newly
+        # observed sentinel must not break this pin, but dropping one must.
+        # "n/a" and "unknown" are not guesses — they are 2 of the 7 populated
+        # clothing boxes across the 20 v2 corpus PDFs, i.e. 29% of the values
+        # an officer actually wrote are contentless.
+        for literal in ('"not recorded"', '"unknown"', '"n/a"'):
+            assert literal in stanza, (
+                f"the Wearing line stopped rejecting {literal} — a measured "
+                f"contentless value now reaches every responder"
+            )
+
+    def test_production_also_drops_the_bracketed_template_leak(self):
+        """Required ON TOP of the literal test — the JPEG path echoes Gemini's
+        own bracketed instruction text when it extracts nothing."""
+        prod = self._code_only()
+        stanza = prod[prod.index("wearing_clean = wearing.strip()"):
+                      prod.index('f"Wearing: {wearing_clean}"')]
+        assert 'not wearing_clean.startswith("[")' in stanza, (
+            "the bracketed-leak guard is gone from the Wearing line"
+        )
+
+    def test_production_escapes_the_worn_value(self):
+        prod = self._code_only()
+        stanza = prod[prod.index("wearing_clean = wearing.strip()"):
+                      prod.index('lines.append(f"Wearing:')]
+        assert "_mrkdwn_escape(wearing_clean)" in stanza, (
+            "the Wearing value is no longer mrkdwn-escaped; clothing is free "
+            "text and an & or < renders as broken markup"
+        )
+
+    def test_production_does_not_echo_filter_or_cap_the_worn_value(self):
+        """Both omissions are the decision, so both need a pin — an omission
+        cannot fail loudly on its own. Same rule as at-risk: the distinctive
+        detail is commonly the last item the officer wrote."""
+        prod = self._code_only()
+        stanza = prod[prod.index("wearing_clean = wearing.strip()"):
+                      prod.index('f"Wearing: {wearing_clean}"')]
+        assert "novel_notes" not in stanza, (
+            "the Wearing line was routed through novel_notes() — clothing that "
+            "reuses an at-risk word would now be dropped"
+        )
+        assert "[:" not in stanza and "textwrap" not in stanza, (
+            "a length cap was introduced on the Wearing line"
         )
 
 

@@ -1218,7 +1218,12 @@ def _build_involved_person_payload(ocr_data: dict) -> dict:
     # koester_narrative + at-risk indicators. \n\n between paragraphs.
     paragraphs: list[str] = []
 
-    # #755 mirror — subject fact, so it leads the notes.
+    # #755 mirror — subject fact, so it leads the notes with #845's Wearing.
+    # #845 mirror — subject description leads, then chronology.
+    wearing = (ocr_data.get("last_seen_wearing") or "").strip()
+    if wearing:
+        paragraphs.append(f"Wearing: {wearing}")
+
     last_seen = (ocr_data.get("last_seen_at") or "").strip()
     if last_seen:
         paragraphs.append(f"Last seen: {last_seen}")
@@ -3995,14 +4000,31 @@ class TestInvolvedPersonLastSeen:
     def _notes(self, **kw):
         return _build_involved_person_payload({**self._BASE, **kw})["involvementNotes"]
 
-    def test_last_seen_is_the_first_paragraph(self):
-        """It is a plain fact about the person; everything below is analysis."""
+    def test_last_seen_leads_when_no_clothing_was_recorded(self):
+        """It is a plain fact about the person; everything below is analysis.
+
+        #845 put Wearing above it, so this asserts the whole leading SEQUENCE
+        rather than "index 0" — an index check cannot see a paragraph
+        inserted above it, which is exactly what #845 did.
+        """
         notes = self._notes(
             last_seen_at="2026-08-16 21:30",
             q2_question="Has phone", q2_answer="Yes",
             koester_narrative="Dementia, urban. 50% within 1.2 mi (1.9 km).",
         )
         assert notes.split("\n\n")[0] == "Last seen: 2026-08-16 21:30"
+
+    def test_wearing_leads_and_last_seen_follows_when_both_recorded(self):
+        notes = self._notes(
+            last_seen_wearing="blue windbreaker, tan slacks",
+            last_seen_at="2026-08-16 21:30",
+            q2_question="Has phone", q2_answer="Yes",
+        ).split("\n\n")
+        assert notes[:3] == [
+            "Wearing: blue windbreaker, tan slacks",
+            "Last seen: 2026-08-16 21:30",
+            "Q2 - Yes - Has phone",
+        ]
 
     def test_present_even_when_it_is_the_only_content(self):
         assert self._notes(last_seen_at="21:30") == "Last seen: 21:30"
@@ -4032,6 +4054,112 @@ class TestInvolvedPersonLastSeen:
         assert notes[1] == "Q2 - Yes - Has phone"
         assert notes[2] == "Dementia, urban."
         assert notes[3].startswith("At-risk indicators:")
+
+
+class TestInvolvedPersonWearing:
+    """#845 — the subject's clothing on the D4H involved-person record.
+
+    The clothing reached the D4H incident *Description* only by accident:
+    post-#614 the FULL INCIDENT SUMMARY marker no longer exists, so
+    _extract_iis_body_for_d4h takes its no-marker fallback and the whole
+    textarea lands there. Nothing put it on the Subject record itself, which is
+    the field a post-incident reviewer actually reads.
+    """
+
+    _BASE = {"mp_full_name": "Jane Doe"}
+
+    def _notes(self, **kw):
+        return _build_involved_person_payload({**self._BASE, **kw})["involvementNotes"]
+
+    def test_wearing_is_the_first_paragraph(self):
+        notes = self._notes(
+            last_seen_wearing="red parka, jeans",
+            q2_question="Has phone", q2_answer="Yes",
+            koester_narrative="Dementia, urban.",
+        )
+        assert notes.split("\n\n")[0] == "Wearing: red parka, jeans"
+
+    def test_present_even_when_it_is_the_only_content(self):
+        assert self._notes(last_seen_wearing="red parka") == "Wearing: red parka"
+
+    def test_renders_verbatim(self):
+        raw = "BLU JKT/blk pants, NO shoes"
+        assert f"Wearing: {raw}" in self._notes(last_seen_wearing=raw)
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_absent_value_adds_no_paragraph(self, value):
+        notes = self._notes(last_seen_wearing=value, q2_question="Has phone",
+                            q2_answer="Yes")
+        assert "Wearing" not in notes
+        assert notes == "Q2 - Yes - Has phone"
+
+    def test_missing_key_adds_no_paragraph(self):
+        assert "Wearing" not in self._notes(q2_question="Has phone",
+                                         q2_answer="Yes")
+
+    def test_does_not_disturb_the_existing_paragraph_order(self):
+        notes = self._notes(
+            last_seen_wearing="red parka",
+            last_seen_at="2026-08-16 21:30",
+            q2_question="Has phone", q2_answer="Yes",
+            koester_narrative="Dementia, urban.",
+            at_risk_indicators=["dementia", "alone"],
+        ).split("\n\n")
+        assert notes[1] == "Last seen: 2026-08-16 21:30"
+        assert notes[2] == "Q2 - Yes - Has phone"
+        assert notes[3] == "Dementia, urban."
+        assert notes[4].startswith("At-risk indicators:")
+
+    def test_sentinel_filtering_is_upstream_not_here(self):
+        """d4h.py deliberately does NOT re-test the sentinels — the value
+        arrives already cleaned by main._subject_last_seen_wearing_value, the
+        single source of truth. Pinned so a reviewer who notices the asymmetry
+        against slack.py does not "fix" it by duplicating the rule a third
+        time, and so the responsibility stays where TestLastSeenWearingWiring
+        pins it."""
+        assert self._notes(last_seen_wearing="Not recorded") == "Wearing: Not recorded"
+
+
+class TestInvolvedPersonWearingProductionParity:
+    """#845 — ties the mirror above to backend/d4h.py.
+
+    httpx is absent locally so this file mirrors rather than imports; a mirror
+    alone tests nothing. Three mutations leaked exactly this way on #756 before
+    a parity pin was added.
+    """
+
+    @staticmethod
+    def _fn():
+        src = (Path(__file__).parent / "d4h.py").read_text(encoding="utf-8")
+        start = src.index("\ndef _build_involved_person_payload(")
+        end = src.index("\ndef ", start + 1)
+        body = re.sub(r'""".*?"""', "", src[start:end], flags=re.DOTALL)
+        return "\n".join(l.split("#")[0] for l in body.splitlines())
+
+    def test_production_appends_the_worn_paragraph(self):
+        assert 'paragraphs.append(f"Wearing: {wearing}")' in self._fn(), (
+            "the Wearing paragraph is gone from involvementNotes — the D4H "
+            "Subject record stops carrying the clothing description"
+        )
+
+    def test_production_reads_the_last_seen_wearing_key(self):
+        assert 'wearing = (ocr_data.get("last_seen_wearing") or "").strip()' in self._fn(), (
+            "the ocr_data key changed; main.py's _build_ocr_data_for_d4h emits "
+            "last_seen_wearing and a rename here fails silently"
+        )
+
+    def test_production_appends_worn_before_last_seen_and_the_questionnaire(self):
+        """Source order, since all three appends are literals. Asserts the full
+        leading order rather than one pair — a pairwise check cannot see a
+        paragraph inserted between them."""
+        prod = self._fn()
+        wearing = prod.index('paragraphs.append(f"Wearing: {wearing}")')
+        last_seen = prod.index('paragraphs.append(f"Last seen: {last_seen}")')
+        qn = prod.index('paragraphs.append("\\n".join(qn_lines))')
+        assert wearing < last_seen < qn, (
+            "involvementNotes no longer leads with the subject's description "
+            "then chronology; order must match the pinned Slack welcome"
+        )
 
 
 class TestInvolvedPersonLastSeenProductionParity:

@@ -661,17 +661,31 @@ def _build_involved_person_payload(ocr_data: dict) -> dict:
     # mapped) + koester_narrative + at-risk indicators. \n\n between paragraphs.
     paragraphs: list[str] = []
 
-    # Issue #755 (Kris/Ops, 2026-08-18) — when the SUBJECT was last seen. FIRST
-    # paragraph: it is a plain fact about the person this record describes,
-    # whereas everything below it is questionnaire output and analysis.
+    # Issues #845 + #755 — two plain facts about the person this record
+    # describes, LEADING the notes because everything below them is
+    # questionnaire output and analysis. Order within the pair matches the
+    # pinned Slack welcome (description, then chronology) so the same facts read
+    # the same way on both surfaces.
     #
     # involvementNotes rather than a native field or a custom field: the live
-    # involved-person schema exposes no last-seen equivalent (verified against
-    # team 1775, 2026-08-18), and customFieldValues was ruled out by Bill — we
-    # have no analytics capability that would read it. Incident.startsAt stays
-    # DISPATCH time and is not the place for this.
-    #
-    # Rendered verbatim. main._subject_last_seen_value has already dropped the
+    # involved-person schema exposes no equivalent for either (enumerated
+    # against team 1775, 2026-08-18) — only createdAt/updatedAt — while the
+    # incident carries just startsAt/endsAt/createdAt. customFieldValues was
+    # ruled out by Bill: no analytics capability reads it. incident.startsAt
+    # stays DISPATCH time and is not a substitute.
+
+    # #845 — what the subject was last seen wearing. Rendered verbatim;
+    # main._subject_last_seen_wearing_value has already dropped the sentinels,
+    # including the UNBRACKETED "Not recorded" that both intake paths emit for a
+    # blank box — a WIDER rule than last-seen below needs, because Last Seen At
+    # renders its blank bracketed. A value arriving here is one the officer
+    # actually wrote.
+    wearing = (ocr_data.get("last_seen_wearing") or "").strip()
+    if wearing:
+        paragraphs.append(f"Wearing: {wearing}")
+
+    # #755 (Kris/Ops, 2026-08-18) — when the SUBJECT was last seen. Rendered
+    # verbatim; main._subject_last_seen_value has already dropped the
     # "[not recorded]" sentinel, so a value arriving here is one the officer
     # actually wrote — including a bare time with no date, which is passed
     # through rather than completed by inference.
