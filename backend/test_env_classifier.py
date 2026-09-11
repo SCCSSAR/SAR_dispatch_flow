@@ -111,11 +111,13 @@ class TestEnvRule:
         ("Coyote Valley Wild/Hilly", "R", ["U", "U"] + ["R"] * 6, 153, "rural", "mountainous"),
         ("Rancho Wild/Mountainous",  "R", ["U"] * 5 + ["R"] * 3,  211, "rural", "mountainous"),
         ("Bonny Doon Rural/Hilly",   "R", ["R"] * 8,              440, "rural", "mountainous"),
+        # Urban block, wilderness all round: the harder environment wins (Bill, 2026-09-10).
+        ("San Felipe Rural/Hilly",   "U", ["U", "U"] + ["R"] * 6, 333, "rural", "mountainous"),
     ]
 
     @pytest.mark.parametrize("label,ur,ring,relief,pop,terr", CASES)
     def test_labelled_places(self, label, ur, ring, relief, pop, terr):
-        r = _load()["_env_from_signals"](ur, ring, relief if ur == "R" else None)
+        r = _load()["_env_from_signals"](ur, ring, relief)
         assert (r["population"], r["terrain"]) == (pop, terr), label
 
     def test_relief_cutoff_boundary(self):
@@ -142,8 +144,26 @@ class TestEnvRule:
         r = _load()["_env_from_signals"]("R", ["U"] * 5 + ["R"] * 3, 211)
         assert r["interface"] is True and r["urban_frac"] == pytest.approx(5 / 8)
 
-    def test_interface_urban_point_mostly_rural_ring(self):
-        assert _load()["_env_from_signals"]("U", ["U"] * 3 + ["R"] * 5, None)["interface"] is True
+    def test_urban_point_in_a_mostly_rural_ring_is_classified_rural(self):
+        """At an edge the more demanding environment wins (Bill, 2026-09-10,
+        San Felipe): an urban block surrounded by wilderness is planned as
+        wilderness. The warning still fires, and the point is still reported."""
+        r = _load()["_env_from_signals"]("U", ["U"] * 3 + ["R"] * 5, 333)
+        assert (r["population"], r["terrain"], r["interface"], r["point_population"]) == (
+            "rural", "mountainous", True, "urban")
+
+    def test_urban_point_half_urban_ring_stays_urban(self):
+        r = _load()["_env_from_signals"]("U", ["U"] * 4 + ["R"] * 4, 333)
+        assert r["population"] == "urban" and r["terrain"] is None
+
+    def test_rural_point_stays_rural_whatever_the_ring(self):
+        """Already the harder environment (Rancho, Alexis)."""
+        assert _load()["_env_from_signals"]("R", ["U"] * 8, 211)["population"] == "rural"
+
+    def test_partial_ring_leaves_an_urban_point_urban(self):
+        """Seven answers cannot move the classification any more than they can raise a warning."""
+        r = _load()["_env_from_signals"]("U", ["R"] * 7 + [None], 333)
+        assert r["population"] == "urban" and r["interface"] is False
 
     def test_interface_threshold_boundary(self):
         f = _load()["_env_from_signals"]
@@ -194,6 +214,13 @@ class TestLine:
         ns = _load()
         for env in (None, ns["_env_from_signals"](None, [None] * 8, None)):
             assert "Environment: not determined" in ns["_format_environment_line"](env)
+
+    def test_edge_override_explains_itself(self):
+        ns = _load()
+        line = ns["_format_environment_line"](ns["_env_from_signals"]("U", ["U", "U"] + ["R"] * 6, 333))
+        assert line.startswith("Environment: Rural or Wilderness")
+        assert "the LKP is in an urban block but only 25% of the area within 1 km is urban" in line
+        assert "Classified by the more demanding environment" in line
 
     def test_no_census_block_points_at_the_geocode(self):
         ns = _load()
@@ -270,6 +297,14 @@ class TestClassifyNetwork:
         meteo = [p for u, p in fake.calls if "open-meteo" in u]
         assert len(meteo) == 1 and len(meteo[0]["latitude"].split(",")) == 25
         assert r["terrain"] == "mountainous" and r["relief_m"] == 160
+
+    def test_urban_point_in_rural_ring_fetches_elevation(self):
+        """The override makes the result rural, so terrain must be evaluated."""
+        centre = lambda x, y: "U" if (f"{y:.3f}", f"{x:.3f}") == ("37.334", "-121.910") else "R"
+        fake = _FakeHttpx(census=centre, elevation=lambda n: [100] * (n - 1) + [433])
+        r = _run(_load(fake))
+        assert sum("open-meteo" in h for h in fake.hosts()) == 1
+        assert (r["population"], r["terrain"], r["relief_m"]) == ("rural", "mountainous", 333)
 
     def test_census_requests_the_blocks_layer_by_name(self):
         """Layer id "10" is block GROUPS (no UR flag) — verified 2026-09-10."""
