@@ -432,6 +432,17 @@ else:                                        # default: Turbo's LKP marker
 env = asyncio.run(ns["_classify_environment"](lat, lng))
 print(ns["_format_environment_line"](env))
 print({k: env[k] for k in ("population", "point_population", "terrain", "relief_m", "interface")})
+if env["population"] == "urban":   # AAR only: dispatch never evaluates urban terrain (Locked Decision)
+    async def _urban_relief():
+        async with _Client() as c:
+            dp = ns["_ENV_COORD_DP"]
+            return await ns["_env_relief_m"](c, round(lat, dp), round(lng, dp))
+    relief = asyncio.run(_urban_relief())
+    if relief is None:
+        print("D4H Terrain suggestion: not determined (elevation lookup unavailable); ask")
+    else:
+        pick = "Hilly or Mountainous" if relief >= ns["_ENV_RELIEF_CUTOFF_M"] else "Flat"
+        print(f"D4H Terrain suggestion (AAR only): {pick} ({relief:.0f} m relief within 2 km)")
 EOF
 ```
 
@@ -439,7 +450,7 @@ EOF
 
 | Classifier | D4H Population Density | D4H Terrain |
 |---|---|---|
-| `urban` | Urban **or** Suburban (most SCCSSAR callouts are Urban) | Not evaluated: ISRID's Urban tables ignore it. Ask (#03766 was entered Flat) |
+| `urban` | Urban **or** Suburban (most SCCSSAR callouts are Urban) | The snippet's **AAR-only** suggestion (Flat, or Hilly or Mountainous, from the same relief helper and cutoff). ISRID's Urban tables ignore terrain, so dispatch never looks it up; D4H still asks for it, so the AAR does (Bill, 2026-09-11) |
 | `rural`, `mountainous` | Rural **or** Wilderness | Hilly **or** Mountainous (Cal OES Type 3 = Hilly; Types 2 and 1 = Mountainous) |
 | `rural`, `flat` | Rural **or** Wilderness | Flat |
 | `interface=True` | Say so, and ask: the LKP sits at an urban–wilderness edge | — |
