@@ -2161,8 +2161,12 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 #     18 m while the hills Bill labelled start beyond it. The flat side rests on
 #     ONE rural label, so err toward hilly — calling gentle hills flat sizes the
 #     rings for pavement.
-#   * the 1 km ring is NOT a classifier (Rancho is 62% urban around a rural
-#     point, and is wilderness) — it only raises an edge warning.
+#   * at an EDGE the more demanding environment wins (Bill, 2026-09-10): an
+#     urban point whose complete 1 km ring is under half urban is classified
+#     rural (San Felipe: an urban block, wilderness all round, planned as
+#     wilderness). A rural point stays rural whatever surrounds it (Rancho is
+#     62% urban around a rural point, and is wilderness). The edge warning
+#     fires either way; a partial ring changes nothing.
 #
 # Both sources are keyless public APIs, verified 2026-09-10. Coordinates are
 # rounded to 3 dp (~110 m) before they leave; their query parameters are in
@@ -2203,22 +2207,26 @@ def _env_from_signals(ur_point, ring_urs, relief_m) -> dict:
     so a partial ring never asserts one. ``relief_m`` is only meaningful for a
     rural point and is ignored for an urban one.
     """
-    population = {"U": "urban", "R": "rural"}.get(ur_point)
+    point_population = {"U": "urban", "R": "rural"}.get(ur_point)
     ring = list(ring_urs or [])
     complete = len(ring) == len(_ENV_BEARINGS) and all(u in ("U", "R") for u in ring)
     urban_frac = sum(u == "U" for u in ring) / len(ring) if complete else None
     interface = bool(
         urban_frac is not None and (
-            (population == "urban" and urban_frac < _ENV_INTERFACE_FRAC)
-            or (population == "rural" and urban_frac >= _ENV_INTERFACE_FRAC)
+            (point_population == "urban" and urban_frac < _ENV_INTERFACE_FRAC)
+            or (point_population == "rural" and urban_frac >= _ENV_INTERFACE_FRAC)
         )
     )
+    # The harder environment wins at an edge: only the urban->rural direction
+    # needs overriding, because a rural point is already the harder case.
+    population = "rural" if (point_population == "urban" and interface) else point_population
     terrain = None
     if population == "rural" and relief_m is not None:
         terrain = "mountainous" if relief_m >= _ENV_RELIEF_CUTOFF_M else "flat"
     return {
         "status": "ok" if population else ("no_census_block" if ur_point == "" else "not_determined"),
         "population": population,
+        "point_population": point_population,
         "terrain": terrain,
         "relief_m": int(round(relief_m)) if (population == "rural" and relief_m is not None) else None,
         "urban_frac": urban_frac,
@@ -2259,8 +2267,13 @@ def _format_environment_line(env, from_residence: bool = False) -> str:
                 f"Eco-region: {_ENV_ECO_REGION} · Terrain: {terrain}{relief}")
     if env.get("interface"):
         pct = int(round(env["urban_frac"] * 100))
-        line += (f"\n⚠️ Urban–wilderness edge: {pct}% of the area within 1 km is urban. "
-                 "Confirm the environment.")
+        if env.get("point_population") == "urban" and env["population"] == "rural":
+            line += (f"\n⚠️ Urban–wilderness edge: the LKP is in an urban block but only {pct}% of the "
+                     "area within 1 km is urban. Classified by the more demanding environment; "
+                     "confirm the environment.")
+        else:
+            line += (f"\n⚠️ Urban–wilderness edge: {pct}% of the area within 1 km is urban. "
+                     "Confirm the environment.")
     return line
 
 
@@ -2319,10 +2332,14 @@ async def _env_classify_inner(lat: float, lng: float) -> dict:
     ring = [_env_destination(clat, clng, _ENV_URBAN_RING_KM, b) for b in _ENV_BEARINGS]
     async with httpx.AsyncClient(timeout=_ENV_HTTP_TIMEOUT_S) as client:
         urs = await asyncio.gather(*(_env_census_ur(client, a, b) for a, b in [(clat, clng)] + ring))
+        env = _env_from_signals(urs[0], urs[1:], None)
         # Terrain only matters off the Urban cut, so most dispatches (urban)
-        # never send the LKP to the elevation provider at all.
-        relief = await _env_relief_m(client, clat, clng) if urs[0] == "R" else None
-    return _env_from_signals(urs[0], urs[1:], relief)
+        # never send the LKP to the elevation provider at all. Decided on the
+        # CLASSIFIED population, so an urban point overridden to rural at an
+        # edge still gets its terrain.
+        if env["population"] == "rural":
+            env = _env_from_signals(urs[0], urs[1:], await _env_relief_m(client, clat, clng))
+    return env
 
 
 async def _classify_environment(lat: float, lng: float) -> dict:
@@ -2336,7 +2353,7 @@ async def _classify_environment(lat: float, lng: float) -> dict:
     except Exception as exc:  # timeout included: an unknown beats a slow /ocr
         logger.warning("Environment classification unavailable | type=%s ms=%d",
                        type(exc).__name__, int((time.monotonic() - t0) * 1000))
-        return {"status": "unavailable", "population": None, "terrain": None,
+        return {"status": "unavailable", "population": None, "point_population": None, "terrain": None,
                 "relief_m": None, "urban_frac": None, "interface": False}
     logger.info("Environment classified | population=%s terrain=%s relief_m=%s interface=%s ms=%d",
                 env["population"], env["terrain"], env["relief_m"], env["interface"],
