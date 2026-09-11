@@ -286,7 +286,7 @@ Lead each round with what the logs already showed, then ask. Keep it conversatio
 
 Skip for tests, and for searches that ended without a find (record the outcome in one line and move on). Otherwise this step has two outputs:
 
-1. **An entry sheet for D4H's Lost Behavior tab.** D4H is the system of record, and its LPB tab is what feeds ISRID and the Cal OES equivalent. The tab is **not reachable through the D4H API** (the Involved Person record has no location fields), so today someone enters it by hand. The sheet turns that into a copy job.
+1. **An entry sheet for D4H's Lost Behavior tab.** D4H is the system of record, and its LPB tab is what feeds ISRID and the Cal OES equivalent. The tab is **not reachable through the D4H API** — re-checked 2026-09-11 against D4H's published spec (v7.5.2) and by searching a filled-in tab's values in live responses (`experiments/d4h/notes/lpb-api-recheck-2026-09-11.md`). **One exception:** the tab's IPP IS the incident location Turbo writes at dispatch. Everything else is entered by hand, and the sheet turns that into a copy job. Re-check when D4H's spec version moves past 7.5.2; D4H ships APIs unannounced.
 2. **One row in the local finds log**, `research/lpb-local/finds.csv`, so our first-hand finds can be shown beside ISRID's statistics, which are thin for several categories (e.g. 8 records for Hiker in urban areas).
 
 ### 2.5a Which map
@@ -360,8 +360,8 @@ One line per D4H Lost Behavior field, in D4H's order, with the value and where i
 
 | D4H field | Source |
 |---|---|
-| Initial Planning Point | IPP marker, decimal degrees (D4H's map widget accepts D.DD°) |
-| Population Density / Terrain / Eco-Region Domain | Ask. Santa Clara County's eco-region is **Temperate**: Bailey places California's Mediterranean division in the Humid Temperate domain |
+| Initial Planning Point | **Already set:** D4H takes it from the incident location Turbo writes at dispatch (6 m apart on #03766). Verify it; change it only if Plans moved the IPP |
+| Population Density / Terrain / Eco-Region Domain | **Pre-filled by 2.5f**, then confirmed with the human. Eco-region is **Temperate** for Santa Clara County (Bailey: Mediterranean division = Humid Temperate) |
 | Subject Category, Fitness, Experience, Equipment | Category from the intake's LPB section; ask for the rest |
 | Total Time Lost | Intake `Last Seen At` → find. Needs a date on the last-seen value; ask if it is time-only |
 | Total Search Time | Everbridge send → find |
@@ -371,6 +371,80 @@ One line per D4H Lost Behavior field, in D4H's order, with the value and where i
 **Marker time is a proxy for find time.** The FIND marker's creation time is when someone *placed* it, which can lag the find. Present it as a suggestion, and take the human's time when they have one.
 
 **If the LPB tab is already filled in, compare.** Compute IPP → find from D4H's own coordinates and compare with the map. On 2026-09-09 they disagreed by 0.11 mi (1.13 mi in D4H, 1.24 mi on the map) because D4H's find location had resolved to a street name with no house number while the map marker was placed in the field. Recommend the map coordinates, and say which record should be corrected.
+
+### 2.5f Environment pre-fill (Population Density, Terrain, Eco-Region)
+
+The same classifier that prints the `Environment:` line at dispatch, so the AAR and the app can never disagree about the rule. Two routes:
+
+1. **The dispatch ran 1.11.75 or later:** take `Environment classified | population=… terrain=… relief_m=… interface=…` from the Pull B window. **On 1.11.74 exactly, if the line says `interface=True`, use route 2**: the edge rule arrived in 1.11.75.
+2. **Older dispatch, or no such line:** run the production classifier on the IPP. The snippet lifts the block out of **merged** `origin/main` (never the checked-out branch, which may be a contributor's unreviewed PR), refuses to run it unless it is only constants and function definitions, and swaps in a stdlib stand-in for `httpx`, which system python lacks. It sends only coordinates rounded to ~110 m, like the app.
+
+```bash
+python3 - <REPORT_DIR>/caltopo-<MAP_ID>.json [<ipp_lat> <ipp_lng>] <<'EOF'
+import ast, asyncio, json, logging, math, re, subprocess, sys, time, types, urllib.error, urllib.parse, urllib.request
+# MERGED code only: never the checked-out branch, which may be a contributor's unreviewed PR.
+if subprocess.run(["git", "fetch", "-q", "origin", "main"]).returncode != 0:   # offline: last-fetched main is still merged code
+    print("warning: git fetch failed; using the last-fetched origin/main", file=sys.stderr)
+src = subprocess.run(["git", "show", "origin/main:backend/main.py"], capture_output=True, text=True, check=True).stdout
+block = src[src.index("# ── BEGIN LPB environment classifier"):src.index("# ── END LPB environment classifier")]
+# Refuse to run unless the slice is only constants and function definitions, so a moved
+# marker fails loudly instead of executing module code with side effects.
+def _allowed_call(c):
+    return (isinstance(c.func, ast.Name) and c.func.id in ("tuple", "range")) or (
+        isinstance(c.func, ast.Attribute) and c.func.attr == "compile"
+        and isinstance(c.func.value, ast.Name) and c.func.value.id == "re")
+for node in ast.parse(block).body:
+    ok = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or (
+        isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)) or (
+        isinstance(node, (ast.Assign, ast.AnnAssign))
+        and all(_allowed_call(c) for c in ast.walk(node) if isinstance(c, ast.Call)))
+    if not ok:
+        sys.exit(f"ABORT: unexpected {type(node).__name__} at line {node.lineno} of the classifier block")
+class _Resp:
+    def __init__(self, status, raw): self.status_code, self._raw = status, raw
+    def json(self): return json.loads(self._raw)
+class _Client:
+    def __init__(self, *a, **k): pass
+    async def __aenter__(self): return self
+    async def __aexit__(self, *exc): return False
+    async def get(self, url, params=None):
+        def call():
+            try:
+                with urllib.request.urlopen(url + "?" + urllib.parse.urlencode(params or {}), timeout=10) as r:
+                    return _Resp(r.status, r.read())
+            except urllib.error.HTTPError as e:
+                return _Resp(e.code, b"{}")
+        return await asyncio.to_thread(call)
+ns = {"re": re, "math": math, "asyncio": asyncio, "time": time, "logger": logging.getLogger("aar"),
+      "httpx": types.SimpleNamespace(AsyncClient=_Client)}
+exec(block, ns)
+ns["_ENV_BUDGET_S"] = 30   # no dispatcher is waiting; urllib reconnects per call, so 4 s is too tight
+if len(sys.argv) == 4:                       # Plans moved the IPP: pass it explicitly
+    lat, lng = float(sys.argv[2]), float(sys.argv[3])
+else:                                        # default: Turbo's LKP marker
+    sym = next(n.value.value for n in ast.parse(open("backend/caltopo.py").read()).body
+               if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "SYMBOL_LKP")
+    lkps = [f for f in json.load(open(sys.argv[1]))["result"]["state"]["features"]
+            if f["properties"].get("marker-symbol") == sym]
+    if len(lkps) != 1:
+        sys.exit(f"{len(lkps)} LKP markers: pass the IPP as <lat> <lng>")
+    lng, lat = lkps[0]["geometry"]["coordinates"][:2]
+env = asyncio.run(ns["_classify_environment"](lat, lng))
+print(ns["_format_environment_line"](env))
+print({k: env[k] for k in ("population", "point_population", "terrain", "relief_m", "interface")})
+EOF
+```
+
+**Map the result onto D4H's dropdowns, then let the human choose** — the Census flag cannot split the pairs:
+
+| Classifier | D4H Population Density | D4H Terrain |
+|---|---|---|
+| `urban` | Urban **or** Suburban (most SCCSSAR callouts are Urban) | Not evaluated: ISRID's Urban tables ignore it. Ask (#03766 was entered Flat) |
+| `rural`, `mountainous` | Rural **or** Wilderness | Hilly **or** Mountainous (Cal OES Type 3 = Hilly; Types 2 and 1 = Mountainous) |
+| `rural`, `flat` | Rural **or** Wilderness | Flat |
+| `interface=True` | Say so, and ask: the LKP sits at an urban–wilderness edge | — |
+
+Record the human's final D4H choices in the report **next to** the classifier's suggestion. Every disagreement is a calibration point for the rule, which rests on few labels so far.
 
 ### 2.5e Append to the local finds log
 
