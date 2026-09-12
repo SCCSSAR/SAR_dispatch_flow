@@ -3623,6 +3623,136 @@ def _route_send(selected_target_ids: list[str]) -> SendDecision:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class OffCallPlan:
+    """Result of _plan_off_call_exclusion(). Frozen like SendDecision; the
+    caller passes `failure` in rather than setting it afterwards."""
+    mode: str                                  # excluded|nobody_excluded|all_off_call|page_all|draft|failed
+    send_contact_ids: list[str]
+    send_group_ids: list[str]
+    excluded: list[str] = dataclasses.field(default_factory=list)         # display names, sorted
+    picked_off_call: list[str] = dataclasses.field(default_factory=list)  # display names, sorted
+    unmatched: list[str] = dataclasses.field(default_factory=list)        # D4H names w/o usable Ref
+    failed_group_ids: list[str] = dataclasses.field(default_factory=list)
+    failure: str = ""                          # exception class name when mode == failed
+
+
+# The join key between D4H and Everbridge: the 3-digit OCEAN#. D4H `member.ref`
+# is "305"; the Everbridge member row carries `ocean` parsed from externalId
+# "1O305". Anything that is not exactly three digits cannot be matched.
+# fullmatch, not match: `$` would accept a trailing newline.
+_OCEAN_RE = re.compile(r"\d{3}")
+
+
+def _plan_off_call_exclusion(
+    *,
+    action: str,
+    page_all: bool,
+    picked_contact_ids: list[str],
+    selected_group_ids: list[str],
+    off_call: list[dict] | None,
+    group_members: dict[str, list[dict]],
+    failed_group_ids: list[str],
+    failure: str = "",
+) -> OffCallPlan:
+    """Decide what /send-notification sends to Everbridge once D4H off-call is known.
+
+    Everbridge ignores `excludedContactIds` on a group send (live-tested), so on
+    the LIVE path every selected group is EXPANDED into its member contacts, the
+    off-call members are dropped, and the send goes out by `contactIds`. Owner
+    rulings (Bill, 2026-09-12) encoded here:
+
+    - Expand on EVERY live send, even when nobody is off-call — one code path.
+    - ANY off-call period excludes from EVERY selected group, whatever the role.
+      Duty notes are never read, here or upstream in d4h.get_off_call_now().
+    - A member picked BY NAME (individual contact) while off-call is still paged,
+      and reported in `picked_off_call`.
+    - `page_all` (dispatcher override) sends the groups exactly as selected but
+      still reports who would have been excluded.
+    - Draft mode (`action != "send_live"`, personal-dev safe mode) keeps the
+      groups: a hand-sent Everbridge draft drops `contactIds` (#599/#600), so an
+      expanded draft would page nobody. Names are still reported so the Event
+      Log can say exclusion was NOT applied.
+    - Fail OPEN: `off_call is None` means the D4H read failed → send the groups
+      as selected, mode "failed", `failure` = the exception class name. `off_call
+      == []` means nobody is off-call and STILL expands. The two are deliberately
+      distinct.
+    - A group whose members are unknown — its fetch failed (`failed_group_ids`)
+      OR it is simply absent from `group_members` — stays a group id in the
+      payload and is reported in `failed_group_ids`; it is never ALSO expanded.
+      Absent-from-both fails OPEN too: expanding it to nothing would silently
+      page nobody.
+    - If expansion leaves NOTHING to send (everyone in the selected groups is
+      off-call and there are no picks), fall back to the groups as selected,
+      mode "all_off_call", with `excluded` populated. A convenience feature must
+      never reduce a callout to zero recipients; this is the pre-feature
+      behaviour, reported loudly, and PR 2's confirmation gate presents this
+      case explicitly. The label is earned only when off-call is WHY the
+      expansion is empty (`excluded` non-empty); a genuinely empty EB group
+      takes the same fallback payload under "nobody_excluded".
+    - `excluded` is FACTUAL only under mode "excluded" (those people were not
+      paged); under "page_all", "draft" and "all_off_call" it is COUNTERFACTUAL
+      — they WERE paged, or are still in the draft — and a consumer must render
+      it as "exclusion NOT applied".
+    - An off-call member whose `ref` is not exactly 3 digits is reported in
+      `unmatched`, never silently dropped. Because `oceans` only ever holds
+      3-digit strings, a contact whose `ocean` is None can never match an
+      off-call member whose ref is "" (the None-vs-"" guard).
+
+    Modes: excluded | nobody_excluded | all_off_call | page_all | draft | failed.
+    "nobody_excluded" means no group member was dropped — `picked_off_call` and
+    `unmatched` can still be non-empty under it. The three report lists
+    (`excluded`, `picked_off_call`, `unmatched`) are mode-independent; consumers
+    must read them whatever the mode. All id and name lists are sorted and
+    de-duplicated; name sorts are case-insensitive.
+
+    `send_group_ids` is for the PAYLOAD only. The caller's `target_group_ids`
+    stays the dispatcher's SELECTION for Step 9 (D4H group membership), which
+    must not shrink because the EB payload was expanded.
+    """
+    picked = sorted(set(picked_contact_ids))
+    if off_call is None:
+        return OffCallPlan(mode="failed", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), failure=failure)
+    failed = [g for g in selected_group_ids if g in failed_group_ids or g not in group_members]
+    oceans, unmatched = set(), []
+    for m in off_call:
+        if _OCEAN_RE.fullmatch(m.get("ref") or ""):
+            oceans.add(m["ref"])
+        else:
+            unmatched.append(m.get("name") or f"D4H member {m.get('member_id')}")
+    by_id = {}
+    for gid in selected_group_ids:
+        if gid in failed:
+            continue
+        for mc in group_members[gid]:
+            by_id.setdefault(mc["contact_id"], mc)
+    picked_set = set(picked)
+    excluded = sorted((mc["display_name"] for cid, mc in by_id.items()
+                       if mc.get("ocean") in oceans and cid not in picked_set), key=str.casefold)
+    picked_off = sorted((mc["display_name"] for cid, mc in by_id.items()
+                         if mc.get("ocean") in oceans and cid in picked_set), key=str.casefold)
+    common = dict(excluded=excluded, picked_off_call=picked_off,
+                  unmatched=sorted(unmatched, key=str.casefold), failed_group_ids=failed)
+    if action != "send_live":
+        return OffCallPlan(mode="draft", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), **common)
+    if page_all:
+        return OffCallPlan(mode="page_all", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), **common)
+    keep = sorted(cid for cid, mc in by_id.items() if mc.get("ocean") not in oceans)
+    send_contacts = sorted(set(keep) | picked_set)
+    send_groups = [g for g in selected_group_ids if g in failed]
+    if not send_contacts and not send_groups:
+        # "all_off_call" only when off-call is WHY it is empty; an empty EB
+        # group with nobody off-call is the same fallback payload, not that label.
+        return OffCallPlan(mode="all_off_call" if excluded else "nobody_excluded",
+                           send_contact_ids=[],
+                           send_group_ids=list(selected_group_ids), **common)
+    return OffCallPlan(mode="excluded" if excluded else "nobody_excluded",
+                       send_contact_ids=send_contacts, send_group_ids=send_groups, **common)
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic helpers used by the /send-notification orchestration (Task 1.10b).
 # Adding them now (Task 1.10a) so they're testable in isolation; the

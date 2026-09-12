@@ -10,6 +10,7 @@ identify the PR/issue that introduced the fix.
 """
 
 import ast
+import dataclasses
 import datetime
 import json
 import math
@@ -13251,3 +13252,129 @@ class TestWidePassCivicCategories:
             assert src.count(f'"{amenity}":') == 2, (
                 f"{amenity} is missing from one of the two type_labels copies"
             )
+
+
+# ---------------------------------------------------------------------------
+# D4H off-call exclusion planner — production parity (mirror lives in
+# test_send_notification.py::TestPlanOffCallExclusion).
+# ---------------------------------------------------------------------------
+
+def _off_call_mc(cid, ocean, name):
+    """everbridge.list_group_member_contacts() row shape (Task 2)."""
+    return {"contact_id": cid, "emails": [], "external_id": f"1O{ocean}" if ocean else "",
+            "ocean": ocean, "display_name": name}
+
+
+_OC_K9, _OC_UAS = "g-k9", "g-uas"
+_OC_BILL = _off_call_mc("c1", "305", "Bill Burns")
+_OC_KRIS = _off_call_mc("c2", "185", "Kris Black")
+_OC_DAMIAN = _off_call_mc("c3", "242", "Damian Romard")
+_OC_OFF_KRIS = [{"member_id": 9, "ref": "185", "name": "Black, Kris"}]
+
+
+class TestPlanOffCallExclusionProductionParity:
+    """main.py is not importable; exec the pure planner + dataclass out of the
+    production source and run the mirror's fixtures against it field by field.
+
+    The fixtures below are a copy of TestPlanOffCallExclusion's (no test module
+    in this repo imports a sibling test module) — keep the two case lists in
+    step when a rule is added."""
+
+    _WANTED = {"OffCallPlan", "_OCEAN_RE", "_plan_off_call_exclusion"}
+
+    @classmethod
+    def _exec_trio(cls, filename: str):
+        """Exec the three top-level definitions out of `filename` into one
+        namespace. A ClassDef's lineno starts at the `class` keyword, so the
+        segment is taken from the first decorator instead — otherwise the
+        @dataclass never applies and OffCallPlan() takes no arguments."""
+        src = (Path(__file__).parent / filename).read_text(encoding="utf-8")
+        lines = src.splitlines(keepends=True)
+        ns = {"re": re, "dataclasses": dataclasses}
+        found = set()
+        for node in ast.parse(src).body:
+            name = getattr(node, "name", None)
+            if name is None and isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+            if name in cls._WANTED:
+                start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+                exec("".join(lines[start - 1:node.end_lineno]), ns)
+                found.add(name)
+        assert found == cls._WANTED, f"missing from {filename}: {cls._WANTED - found}"
+        return ns["_plan_off_call_exclusion"]
+
+    @classmethod
+    def _prod(cls):
+        return cls._exec_trio("main.py")
+
+    @classmethod
+    def _mirror(cls):
+        # The mirror is exec'd out of its source the same way, so this pin
+        # compares two executed sources rather than importing a test module
+        # as a library.
+        return cls._exec_trio("test_send_notification.py")
+
+    @staticmethod
+    def _mirror_test_count() -> int:
+        src = (Path(__file__).parent / "test_send_notification.py").read_text(encoding="utf-8")
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.ClassDef) and node.name == "TestPlanOffCallExclusion":
+                return sum(1 for n in node.body
+                           if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"))
+        raise AssertionError("TestPlanOffCallExclusion not found in test_send_notification.py")
+
+    def test_production_matches_mirror_on_every_fixture(self):
+        K9, UAS, BILL, KRIS, DAMIAN = _OC_K9, _OC_UAS, _OC_BILL, _OC_KRIS, _OC_DAMIAN
+        _mc = _off_call_mc
+        prod, mirror = self._prod(), self._mirror()
+        # One case per mirror test, in the mirror's order. Variants a mirror
+        # test asserts in a second call are folded into that test's case.
+        cf_members = [_mc("c4", "401", "bill burns"), _mc("c5", "402", "Zed Adams"),
+                      _mc("c6", "403", "contact 42")]
+        cf_off = [{"member_id": 1, "ref": "401", "name": "x"}, {"member_id": 2, "ref": "402", "name": "x"},
+                  {"member_id": 3, "ref": "403", "name": "x"},
+                  {"member_id": 4, "ref": "", "name": "zulu, Z"}, {"member_id": 5, "ref": "", "name": "Alpha, A"}]
+        cases = [
+            dict(),                                                        # live expands + drops
+            dict(off_call=[]),                                             # nobody off-call still expands
+            dict(selected_group_ids=[K9, UAS], group_members={K9: [BILL, KRIS], UAS: [BILL]}, off_call=[]),
+            dict(group_members={K9: [BILL, DAMIAN]}),                      # off-call outside groups
+            dict(picked_contact_ids=["c2"]),                               # picked by name while off-call
+            dict(picked_contact_ids=["c9"]),                               # pick outside groups
+            dict(page_all=True, picked_contact_ids=["c3", "c1", "c3"]),    # override (+ dup picks)
+            dict(action="send_draft", picked_contact_ids=["c3", "c1", "c3"]),  # draft (+ dup picks)
+            dict(off_call=None, failure="D4HServerError"),                 # fail open + failure round-trip
+            dict(selected_group_ids=[K9, UAS], group_members={K9: [BILL, KRIS]}, failed_group_ids=[UAS]),
+            dict(selected_group_ids=[K9, UAS], group_members={K9: [BILL, KRIS]}, failed_group_ids=[]),  # absent from both
+            dict(selected_group_ids=[K9, UAS], group_members={K9: [BILL, KRIS], UAS: [DAMIAN]},
+                 failed_group_ids=[UAS]),                                  # failed never also expanded
+            dict(group_members={K9: [KRIS]}),                              # everyone off-call → groups
+            dict(group_members={K9: []}, off_call=[]),                     # empty group → groups, no label
+            dict(off_call=[{"member_id": 5, "ref": "", "name": "Monroe, Tyrone"},
+                           {"member_id": 6, "ref": "30", "name": "X, Y"}]),
+            dict(off_call=[{"member_id": 5, "ref": "", "name": ""}]),
+            dict(off_call=[{"member_id": 5, "ref": "", "name": "Monroe, Tyrone"}],
+                 group_members={K9: [_mc("c9", None, "contact c9")]}),
+            dict(picked_contact_ids=["c3", "c1"], off_call=[]),
+            dict(off_call=cf_off, group_members={K9: cf_members + [BILL]}, picked_contact_ids=["c4"]),  # casefold ×3
+        ]
+        assert len(cases) == self._mirror_test_count(), (
+            "a mirror test was added without a parity case (or vice versa)"
+        )
+        base = dict(action="send_live", page_all=False, picked_contact_ids=[],
+                    selected_group_ids=[K9], off_call=_OC_OFF_KRIS,
+                    group_members={K9: [BILL, KRIS, DAMIAN]}, failed_group_ids=[])
+        for kw in cases:
+            args = {**base, **kw}
+            assert dataclasses.asdict(prod(**args)) == dataclasses.asdict(mirror(**args)), kw
+        # Non-vacuity: production really excludes, really expands, and really
+        # falls back when expansion would page nobody.
+        p = prod(**base)
+        assert p.send_contact_ids == ["c1", "c3"]
+        assert p.send_group_ids == []
+        assert p.excluded == ["Kris Black"]
+        assert prod(**{**base, "group_members": {K9: [KRIS]}}).mode == "all_off_call"
+        assert prod(**{**base, "group_members": {K9: []}, "off_call": []}).mode == "nobody_excluded"
+        cf = prod(**{**base, **cases[-1]})
+        assert (cf.excluded, cf.picked_off_call, cf.unmatched) == (
+            ["contact 42", "Zed Adams"], ["bill burns"], ["Alpha, A", "zulu, Z"])

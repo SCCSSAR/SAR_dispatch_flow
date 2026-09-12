@@ -21,6 +21,9 @@ NOT exercised here (covered at live-test time on personal-dev):
   - _create_or_collide_channel() — wraps _decide_collision + Slack SDK + Firestore
   - _enqueue_poll_task() / _enqueue_template_delete_task() — STUB until Task 1.11
 """
+import dataclasses
+import re
+
 import pytest
 
 
@@ -1218,3 +1221,242 @@ class TestInjectDispatchMilestonesIntoEventLog:
 # Removed: TestFormatBulkAbsentSummary + _format_bulk_absent_summary mirror.
 # Selective mode (fullTeam: false) eliminates the bulk-ABSENT step entirely
 # — no async work to summarize. See project-d4h-selective-mode-decision.md.
+
+
+# ---------------------------------------------------------------------------
+# D4H off-call exclusion planner — mirror of backend/main.py::OffCallPlan +
+# _OCEAN_RE + _plan_off_call_exclusion. Production parity is pinned by
+# TestPlanOffCallExclusionProductionParity in test_main_regression.py, which
+# execs the production trio out of main.py and runs these same fixtures.
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class OffCallPlan:
+    mode: str                                  # excluded|nobody_excluded|all_off_call|page_all|draft|failed
+    send_contact_ids: list
+    send_group_ids: list
+    excluded: list = dataclasses.field(default_factory=list)         # display names, sorted
+    picked_off_call: list = dataclasses.field(default_factory=list)  # display names, sorted
+    unmatched: list = dataclasses.field(default_factory=list)        # D4H names w/o usable Ref
+    failed_group_ids: list = dataclasses.field(default_factory=list)
+    failure: str = ""                          # exception class name when mode == failed
+
+
+_OCEAN_RE = re.compile(r"\d{3}")
+
+
+def _plan_off_call_exclusion(
+    *, action, page_all, picked_contact_ids, selected_group_ids,
+    off_call, group_members, failed_group_ids, failure="",
+):
+    picked = sorted(set(picked_contact_ids))
+    if off_call is None:
+        return OffCallPlan(mode="failed", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), failure=failure)
+    failed = [g for g in selected_group_ids if g in failed_group_ids or g not in group_members]
+    oceans, unmatched = set(), []
+    for m in off_call:
+        if _OCEAN_RE.fullmatch(m.get("ref") or ""):
+            oceans.add(m["ref"])
+        else:
+            unmatched.append(m.get("name") or f"D4H member {m.get('member_id')}")
+    by_id = {}
+    for gid in selected_group_ids:
+        if gid in failed:
+            continue
+        for mc in group_members[gid]:
+            by_id.setdefault(mc["contact_id"], mc)
+    picked_set = set(picked)
+    excluded = sorted((mc["display_name"] for cid, mc in by_id.items()
+                       if mc.get("ocean") in oceans and cid not in picked_set), key=str.casefold)
+    picked_off = sorted((mc["display_name"] for cid, mc in by_id.items()
+                         if mc.get("ocean") in oceans and cid in picked_set), key=str.casefold)
+    common = dict(excluded=excluded, picked_off_call=picked_off,
+                  unmatched=sorted(unmatched, key=str.casefold), failed_group_ids=failed)
+    if action != "send_live":
+        return OffCallPlan(mode="draft", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), **common)
+    if page_all:
+        return OffCallPlan(mode="page_all", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), **common)
+    keep = sorted(cid for cid, mc in by_id.items() if mc.get("ocean") not in oceans)
+    send_contacts = sorted(set(keep) | picked_set)
+    send_groups = [g for g in selected_group_ids if g in failed]
+    if not send_contacts and not send_groups:
+        return OffCallPlan(mode="all_off_call" if excluded else "nobody_excluded",
+                           send_contact_ids=[],
+                           send_group_ids=list(selected_group_ids), **common)
+    return OffCallPlan(mode="excluded" if excluded else "nobody_excluded",
+                       send_contact_ids=send_contacts, send_group_ids=send_groups, **common)
+
+
+def _mc(cid, ocean, name):
+    """An everbridge.list_group_member_contacts() row (Task 2 shape)."""
+    return {"contact_id": cid, "emails": [], "external_id": f"1O{ocean}" if ocean else "",
+            "ocean": ocean, "display_name": name}
+
+
+K9 = "g-k9"
+UAS = "g-uas"
+BILL = _mc("c1", "305", "Bill Burns")
+KRIS = _mc("c2", "185", "Kris Black")
+DAMIAN = _mc("c3", "242", "Damian Romard")
+OFF_KRIS = [{"member_id": 9, "ref": "185", "name": "Black, Kris"}]
+
+
+class TestPlanOffCallExclusion:
+    """Each test names ONE owner ruling (Bill, 2026-09-12)."""
+
+    def _plan(self, **kw):
+        base = dict(action="send_live", page_all=False, picked_contact_ids=[],
+                    selected_group_ids=[K9], off_call=OFF_KRIS,
+                    group_members={K9: [BILL, KRIS, DAMIAN]}, failed_group_ids=[])
+        base.update(kw)
+        return _plan_off_call_exclusion(**base)
+
+    def test_live_send_expands_group_and_drops_off_call_member(self):
+        p = self._plan()
+        assert p.mode == "excluded"
+        assert p.send_group_ids == []
+        assert p.send_contact_ids == ["c1", "c3"]
+        assert p.excluded == ["Kris Black"]
+
+    def test_live_send_with_nobody_off_call_still_expands(self):
+        # Bill: expand on EVERY live send — one code path, not two.
+        p = self._plan(off_call=[])
+        assert p.mode == "nobody_excluded"
+        assert p.send_group_ids == []
+        assert p.send_contact_ids == ["c1", "c2", "c3"]
+
+    def test_member_of_two_groups_is_sent_once(self):
+        p = self._plan(selected_group_ids=[K9, UAS],
+                       group_members={K9: [BILL, KRIS], UAS: [BILL]}, off_call=[])
+        assert p.send_contact_ids == ["c1", "c2"]
+
+    def test_off_call_member_outside_selected_groups_is_not_reported(self):
+        p = self._plan(group_members={K9: [BILL, DAMIAN]})
+        assert p.excluded == []
+        assert p.mode == "nobody_excluded"
+
+    def test_picked_by_name_while_off_call_is_paged_and_noted(self):
+        p = self._plan(picked_contact_ids=["c2"])
+        assert "c2" in p.send_contact_ids
+        assert p.picked_off_call == ["Kris Black"]
+        assert p.excluded == []
+
+    def test_picked_contact_outside_groups_is_sent_and_not_reported(self):
+        # Accepted for PR 1: no projection exists for a pick outside every
+        # selected group, so it is sent but can never appear in picked_off_call.
+        p = self._plan(picked_contact_ids=["c9"])
+        assert "c9" in p.send_contact_ids
+        assert p.picked_off_call == []
+
+    def test_page_all_override_keeps_groups_and_still_names_them(self):
+        p = self._plan(page_all=True)
+        assert p.mode == "page_all"
+        assert p.send_group_ids == [K9]
+        assert p.send_contact_ids == []
+        assert p.excluded == ["Kris Black"]
+
+    def test_draft_keeps_groups_because_a_hand_send_drops_contact_ids(self):
+        # #599/#600: a hand-sent Everbridge draft drops contactIds, so an
+        # expanded draft would page nobody.
+        p = self._plan(action="send_draft")
+        assert p.mode == "draft"
+        assert p.send_group_ids == [K9]
+        assert p.send_contact_ids == []
+        assert p.excluded == ["Kris Black"]
+
+    def test_d4h_failure_fails_open_to_group_send(self):
+        p = self._plan(off_call=None, failure="D4HServerError")
+        assert p.mode == "failed"
+        assert p.failure == "D4HServerError"
+        assert p.send_group_ids == [K9]
+        assert p.send_contact_ids == []
+        assert p.excluded == []
+
+    def test_failed_group_expansion_keeps_that_group_and_expands_the_rest(self):
+        p = self._plan(selected_group_ids=[K9, UAS], group_members={K9: [BILL, KRIS]},
+                       failed_group_ids=[UAS])
+        assert p.send_group_ids == [UAS]
+        assert p.send_contact_ids == ["c1"]
+        assert p.failed_group_ids == [UAS]
+
+    def test_group_missing_from_both_inputs_is_kept_as_a_group_and_reported(self):
+        # Fail OPEN: a selected group absent from group_members AND from
+        # failed_group_ids would otherwise expand to nothing and page nobody.
+        p = self._plan(selected_group_ids=[K9, UAS], group_members={K9: [BILL, KRIS]},
+                       failed_group_ids=[])
+        assert p.send_group_ids == [UAS]
+        assert p.failed_group_ids == [UAS]
+        assert p.send_contact_ids == ["c1"]
+        # Other leg: present in group_members AND in failed_group_ids → failed wins.
+        p = self._plan(selected_group_ids=[K9, UAS],
+                       group_members={K9: [BILL, KRIS], UAS: [DAMIAN]}, failed_group_ids=[UAS])
+        assert p.send_group_ids == [UAS]
+        assert p.failed_group_ids == [UAS]
+        assert p.send_contact_ids == ["c1"]
+
+    def test_failed_group_is_not_also_expanded(self):
+        # A group is targeted as a group id OR as its members, never both.
+        p = self._plan(selected_group_ids=[K9, UAS],
+                       group_members={K9: [BILL, KRIS], UAS: [DAMIAN]}, failed_group_ids=[UAS])
+        assert p.send_group_ids == [UAS]
+        assert "c3" not in p.send_contact_ids
+
+    def test_everyone_off_call_falls_back_to_group_send_and_reports(self):
+        # A convenience feature must never reduce a callout to zero recipients.
+        p = self._plan(group_members={K9: [KRIS]})
+        assert p.mode == "all_off_call"
+        assert p.send_contact_ids == []
+        assert p.send_group_ids == [K9]
+        assert p.excluded == ["Kris Black"]
+
+    def test_empty_group_falls_back_to_group_send_without_off_call_label(self):
+        # Same fallback payload, but "all_off_call" is earned only when
+        # off-call is WHY the expansion came up empty.
+        p = self._plan(group_members={K9: []}, off_call=[])
+        assert p.mode == "nobody_excluded"
+        assert p.send_group_ids == [K9]
+        assert p.send_contact_ids == []
+        assert p.excluded == []
+
+    def test_unusable_ref_is_reported_not_matched(self):
+        off = [{"member_id": 5, "ref": "", "name": "Monroe, Tyrone"},
+               {"member_id": 6, "ref": "30", "name": "X, Y"}]
+        p = self._plan(off_call=off)
+        assert p.unmatched == ["Monroe, Tyrone", "X, Y"]
+        assert p.excluded == []
+
+    def test_unmatched_falls_back_to_member_id_when_name_blank(self):
+        p = self._plan(off_call=[{"member_id": 5, "ref": "", "name": ""}])
+        assert p.unmatched == ["D4H member 5"]
+
+    def test_no_ocean_contact_never_matches_an_empty_ref(self):
+        ghost = _mc("c9", None, "contact c9")
+        p = self._plan(off_call=[{"member_id": 5, "ref": "", "name": "Monroe, Tyrone"}],
+                       group_members={K9: [ghost]})
+        assert p.send_contact_ids == ["c9"]
+        assert p.excluded == []
+
+    def test_outputs_are_sorted_and_deduplicated(self):
+        p = self._plan(picked_contact_ids=["c3", "c1"], off_call=[])
+        assert p.send_contact_ids == ["c1", "c2", "c3"]
+        # Every branch returns sorted, deduped picks — not only the expanded one.
+        p = self._plan(picked_contact_ids=["c3", "c1", "c3"], page_all=True)
+        assert p.send_contact_ids == ["c1", "c3"]
+        p = self._plan(picked_contact_ids=["c3", "c1", "c3"], action="send_draft")
+        assert p.send_contact_ids == ["c1", "c3"]
+
+    def test_name_sorts_are_case_insensitive(self):
+        members = [_mc("c4", "401", "bill burns"), _mc("c5", "402", "Zed Adams"),
+                   _mc("c6", "403", "contact 42")]
+        off = [{"member_id": 1, "ref": "401", "name": "x"}, {"member_id": 2, "ref": "402", "name": "x"},
+               {"member_id": 3, "ref": "403", "name": "x"},
+               {"member_id": 4, "ref": "", "name": "zulu, Z"}, {"member_id": 5, "ref": "", "name": "Alpha, A"}]
+        p = self._plan(off_call=off, group_members={K9: [members[0], members[1], members[2], BILL]})
+        assert p.excluded == ["bill burns", "contact 42", "Zed Adams"]
+        assert p.unmatched == ["Alpha, A", "zulu, Z"]
+        p = self._plan(off_call=off, group_members={K9: members + [BILL]},
+                       picked_contact_ids=["c4", "c5", "c6"])
+        assert p.picked_off_call == ["bill burns", "contact 42", "Zed Adams"]
