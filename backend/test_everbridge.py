@@ -34,14 +34,18 @@ Specifically tested (Tasks 1.5 + 1.6):
   - _parse_group_members_response() — contact IDs for per-group tally map
   - _sort_emails_sccssar_first() — @sccssar.org-preferred ordering for Slack lookup
   - _extract_paths_emails() — extract email strings from a contact's paths field
-  - _parse_group_member_contacts_response() — [{contact_id, emails}] for email map
+  - _parse_group_member_contacts_response() — [{contact_id, emails, external_id,
+    ocean, display_name}] for the email map + off-call exclusion
   - _parse_discovery_response() — totalCount=0 → None semantics
   - _parse_poll_response() — terminal-status detection + YES filter + empty cache signal
   - review_draft_url() / monitor_active_url() — deep link formats
   - _log_and_raise_for_status() — body-truncation + log-level selection (mirror)
 """
+import ast
 import logging
 import os
+from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -290,10 +294,22 @@ def _extract_paths_emails(contact):
 def _parse_group_member_contacts_response(json_body):
     """Mirror of everbridge.py::_parse_group_member_contacts_response."""
     raw = json_body.get("page", {}).get("data", []) or []
-    return [
-        {"contact_id": str(c["id"]), "emails": _extract_paths_emails(c)}
-        for c in raw if c.get("id")
-    ]
+    out = []
+    for c in raw:
+        if not c.get("id"):
+            continue
+        contact_id = str(c["id"])
+        first = (c.get("firstName") or "").strip()
+        last = (c.get("lastName") or "").strip()
+        name = f"{first} {last}".strip()
+        out.append({
+            "contact_id":   contact_id,
+            "emails":       _extract_paths_emails(c),
+            "external_id":  c.get("externalId") or "",
+            "ocean":        _parse_ocean_from_external_id(c.get("externalId")),
+            "display_name": name or f"contact {contact_id}",
+        })
+    return out
 
 
 def _extract_id_from_post_response(json_body):
@@ -1245,7 +1261,7 @@ class TestSortEmailsSccssarFirst:
 
 
 # ---------------------------------------------------------------------------
-# _parse_group_member_contacts_response() — [{contact_id, emails}]
+# _parse_group_member_contacts_response() — [{contact_id, emails, external_id, ocean, display_name}]
 # ---------------------------------------------------------------------------
 
 class TestParseGroupMemberContactsResponse:
@@ -1256,15 +1272,18 @@ class TestParseGroupMemberContactsResponse:
         ]}}
         out = _parse_group_member_contacts_response(body)
         assert out == [
-            {"contact_id": "c1", "emails": ["bill@example.com"]},
-            {"contact_id": "c2", "emails": ["dana@example.com"]},
+            {"contact_id": "c1", "emails": ["bill@example.com"],
+             "external_id": "", "ocean": None, "display_name": "contact c1"},
+            {"contact_id": "c2", "emails": ["dana@example.com"],
+             "external_id": "", "ocean": None, "display_name": "contact c2"},
         ]
 
     def test_contact_with_no_email_paths(self):
         # SMS-only contact — emails list is [] (not missing), caller handles gracefully.
         body = {"page": {"data": [{"id": "c1", "paths": [{"value": "4085551234"}]}]}}
         out = _parse_group_member_contacts_response(body)
-        assert out == [{"contact_id": "c1", "emails": []}]
+        assert out == [{"contact_id": "c1", "emails": [],
+                        "external_id": "", "ocean": None, "display_name": "contact c1"}]
 
     def test_skips_entries_without_id(self):
         body = {"page": {"data": [
@@ -1284,6 +1303,104 @@ class TestParseGroupMemberContactsResponse:
         out = _parse_group_member_contacts_response(body)
         assert out[0]["contact_id"] == "99887766"
         assert isinstance(out[0]["contact_id"], str)
+
+
+class TestGroupMemberContactsCarryOcean:
+    """Off-call exclusion needs each group member's OCEAN# and a display
+    name; Step 9 keeps reading contact_id + emails. Additive keys only."""
+
+    _BODY = {"page": {"data": [
+        {"id": 795090251415976, "externalId": "1O305", "firstName": "Bill", "lastName": "Burns",
+         "paths": [{"pathId": 1, "value": "bill.burns@sccssar.org"}]},
+        {"id": 906019145263623, "externalId": "1O242", "firstName": "Damian", "lastName": "Romard", "paths": []},
+        {"id": 1, "externalId": "", "firstName": "", "lastName": "", "paths": []},
+        {"id": 2, "firstName": None, "lastName": "Solo"},                     # missing externalId + paths keys
+        {"id": 3, "externalId": "10O305", "firstName": " Bill ", "lastName": " Burns "},  # padded names, longer prefix
+    ]}}
+
+    def test_keys_and_ocean(self):
+        out = _parse_group_member_contacts_response(self._BODY)
+        assert set(out[0]) == {"contact_id", "emails", "external_id", "ocean", "display_name"}
+        assert out[0]["ocean"] == "305" and out[1]["ocean"] == "242"
+        assert out[0]["external_id"] == "1O305"
+        assert out[0]["display_name"] == "Bill Burns"
+
+    def test_padded_names_stripped_individually_and_longer_prefix_parses(self):
+        # Sibling _parse_contacts_response strips first/last individually; a
+        # joined-then-stripped string would leave the inner double space.
+        out = _parse_group_member_contacts_response(self._BODY)
+        assert out[4]["display_name"] == "Bill Burns"
+        assert out[4]["ocean"] == "305"
+
+    def test_unparseable_external_id_yields_none_ocean_and_id_fallback_name(self):
+        out = _parse_group_member_contacts_response(self._BODY)
+        assert out[2]["ocean"] is None and out[2]["external_id"] == ""
+        assert out[2]["display_name"] == "contact 1"
+
+    def test_missing_keys_are_none_safe(self):
+        out = _parse_group_member_contacts_response(self._BODY)
+        assert out[3] == {"contact_id": "2", "emails": [], "external_id": "", "ocean": None, "display_name": "Solo"}
+
+    def test_step9_contract_unchanged(self):
+        # The existing consumer reads exactly these two keys.
+        out = _parse_group_member_contacts_response(self._BODY)
+        assert out[0]["contact_id"] == "795090251415976" and out[0]["emails"] == ["bill.burns@sccssar.org"]
+
+
+class TestGroupMemberContactsProductionParity:
+    """First production-reading pin in this file: exec the parser and the
+    helpers it calls straight out of everbridge.py so the mirror above cannot
+    drift silently."""
+
+    @staticmethod
+    def _src() -> str:
+        return (Path(__file__).parent / "everbridge.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _fn(src: str, name: str) -> str:
+        tree = ast.parse(src)
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return ast.get_source_segment(src, node)
+        raise AssertionError(f"{name} not found in everbridge.py")
+
+    def _prod(self):
+        # `Optional` seeded because _parse_ocean_from_external_id's return
+        # annotation names it; everything else the parser needs is exec'd in
+        # dependency order into the same namespace.
+        ns: dict = {"Optional": Optional}
+        src = self._src()
+        for name in (
+            "_sort_emails_sccssar_first",
+            "_extract_paths_emails",
+            "_parse_ocean_from_external_id",
+            "_parse_group_member_contacts_response",
+        ):
+            exec(self._fn(src, name), ns)
+        return ns["_parse_group_member_contacts_response"]
+
+    def test_production_matches_mirror_on_all_fixtures(self):
+        prod = self._prod()
+        bodies = [
+            TestGroupMemberContactsCarryOcean._BODY,
+            {"page": {"data": [
+                {"id": "c1", "paths": [{"value": "bill@example.com"}]},
+                {"id": "c2", "paths": [{"value": "dana@example.com"}, {"value": "5555555"}]},
+            ]}},
+            {"page": {"data": [{"id": "c1", "paths": [{"value": "4085551234"}]}]}},
+            {"page": {"data": [
+                {"paths": [{"value": "no@id.com"}]},
+                {"id": "c2", "paths": [{"value": "ok@example.com"}]},
+            ]}},
+            {"page": {"data": []}},
+            {"message": "OK"},
+            {"page": {"data": [{"id": 99887766, "paths": [{"value": "a@b.com"}]}]}},
+        ]
+        for body in bodies:
+            assert prod(body) == _parse_group_member_contacts_response(body)
+        # The parity is not vacuous: the OCEAN fixture must actually produce the
+        # new keys through the PRODUCTION function, not merely agree on [].
+        assert prod(TestGroupMemberContactsCarryOcean._BODY)[0]["ocean"] == "305"
 
 
 # ---------------------------------------------------------------------------

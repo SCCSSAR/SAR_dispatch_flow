@@ -8864,7 +8864,7 @@ async def send_notification(
                 len(gid_to_name), len(missing_gids), len(missing_gids), len(gid_to_name),
             )
         # Fetch group membership + emails for each targeted group.
-        # list_group_member_contacts() returns [{contact_id, emails}] in a
+        # list_group_member_contacts() returns [{contact_id, emails, external_id, ocean, display_name}] in a
         # single call, populating both maps:
         #   contact_group_map  → per-group tally breakdown in #active-incidents
         #   contact_email_map  → Slack invite fallback (avoids callResultByPaths gap)
