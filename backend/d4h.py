@@ -83,6 +83,19 @@ STATUS_REQUESTED = "REQUESTED"
 STATUS_ATTENDING = "ATTENDING"
 STATUS_ABSENT    = "ABSENT"
 
+# Off-call exclusion (2026-09-12). D4H models the UI's "Add Off-Call" as a DUTY
+# PERIOD with type=OFF. `after`/`before` set to the same instant selects the
+# periods that OVERLAP it (after = ending after, before = starting before) —
+# exactly the UI's "Off-Call Now" panel, measured in experiments/d4h/27.
+# The 5 s is httpx's PER-PHASE timeout (connect/write/read/pool each, read
+# resetting per chunk) on EACH page — not a wall-clock bound. The page cap
+# bounds the number of round trips: 4 × 250 = 1000 periods, more than the
+# 375-member roster can produce. The caller (main.py) fails OPEN, so a slow
+# D4H degrades to today's group send rather than stalling a callout.
+OFF_CALL_DUTY_TYPE = "OFF"
+OFF_CALL_TIMEOUT_S = 5.0
+OFF_CALL_MAX_PAGES = 4
+
 # Role IDs — discovered via spike 16 (experiments/d4h/16_handlers_endpoint.py)
 # GET /v3/team/{teamId}/roles enumeration, 2026-06-03. SCCSSAR-specific; teams
 # customize role taxonomy. If a future role rename or re-bundle drifts the ID,
@@ -1419,6 +1432,65 @@ def _get_member_by_email(email: str) -> Optional[dict]:
         if not items or (seen_total is not None and seen_so_far >= seen_total):
             return None
         page += 1
+
+
+def _parse_off_call_response(json_body: dict) -> list[dict]:
+    """Return [{member_id, ref, name}] from GET /duties?type=OFF — one entry
+    per MEMBER even when overlapping periods repeat them.
+
+    Deliberately drops `notes` (free text a member wrote about WHY they are
+    away — may be medical or family; never rendered, never logged) and `role`
+    (every period carries one, and Bill ruled ANY off-call period excludes
+    from every group). `ref` is the join key to Everbridge: 3-digit OCEAN#,
+    matched in main.py against everbridge._parse_ocean_from_external_id.
+    Probed 2026-09-12 with the production token: each duty's embedded member
+    carries id/ref/name/status (refs all 3-digit) — no /members round trip
+    needed.
+    """
+    out: list[dict] = []
+    seen: set = set()
+    for duty in json_body.get("results", []) or []:
+        member = duty.get("member") or {}
+        member_id = member.get("id")
+        if not member_id or member_id in seen:
+            continue
+        seen.add(member_id)
+        out.append({
+            "member_id": member_id,
+            "ref":       str(member.get("ref") or "").strip(),
+            "name":      str(member.get("name") or "").strip(),
+        })
+    return out
+
+
+def get_off_call_now(now: datetime) -> list[dict]:
+    """Members with an off-call (type=OFF) duty period overlapping `now`.
+
+    Single paginated GET; raises D4HClientError / D4HServerError like every
+    other helper here. The CALLER (main.py Step 0.6) is the fail-open
+    boundary — this function does not swallow.
+    """
+    op_label = "d4h.get_off_call_now"
+    stamp = _format_d4h_datetime(now)
+    url = f"{BASE_URL}/team/{TEAM_ID}/duties"
+    results: list = []
+    page = 0
+    while page < OFF_CALL_MAX_PAGES:
+        resp = _safe_http_call(
+            httpx.get, url, op_label, headers=_auth_header(),
+            params={"type": OFF_CALL_DUTY_TYPE, "after": stamp, "before": stamp,
+                    "page": page, "size": 250},
+            timeout=OFF_CALL_TIMEOUT_S,
+        )
+        _log_and_raise_for_status(resp, op_label)
+        body = resp.json()
+        chunk = _extract_records(body)
+        results.extend(chunk)
+        total = body.get("totalSize")
+        if not chunk or (total is not None and len(results) >= total):
+            break
+        page += 1
+    return _parse_off_call_response({"results": results})
 
 
 def _get_equipment_by_ref(ref: str, kind_title: str) -> Optional[dict]:
