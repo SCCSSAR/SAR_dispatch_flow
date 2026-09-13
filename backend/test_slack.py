@@ -31,6 +31,7 @@ Specifically tested (Task 1.7):
   - format_tally_responder_line() / _multi_team_line() — live tally lines
     including Item 6 (`↳` indent, NOT 🔸 emoji)
 """
+import ast
 import re
 from pathlib import Path
 
@@ -262,6 +263,11 @@ def format_invite_failed_message(*, name: str, reason: str) -> str:
 def format_groups_requested(group_names: list) -> str:
     """Mirror of backend/slack.py::format_groups_requested()."""
     return f"Groups requested by dispatcher: {', '.join(group_names)}"
+
+
+def format_off_call_excluded(names: list) -> str:
+    """Mirror of backend/slack.py::format_off_call_excluded()."""
+    return f"🚫 Unavailable in D4H (not paged): {', '.join(names)}"
 
 
 def format_tally_responder_line(group: str, names: list) -> str:
@@ -1517,6 +1523,35 @@ class TestFormatGroupsRequested:
         # it isn't.
         msg = format_groups_requested(["K9"])
         assert "Would invite groups" not in msg
+
+
+# ---------------------------------------------------------------------------
+# format_off_call_excluded() — #active-incidents line for members NOT paged
+# ---------------------------------------------------------------------------
+
+class TestFormatOffCallExcluded:
+    """Names arrive 'First Last' from the Everbridge contact record (not D4H's
+    'Last, First'), so ', ' is unambiguous here — unlike the '; '-joined
+    responder lines."""
+
+    NAMES = ["Damian Romard", "Kris Black"]
+    EXPECTED = "🚫 Unavailable in D4H (not paged): Damian Romard, Kris Black"
+
+    def test_format(self):
+        assert format_off_call_excluded(self.NAMES) == self.EXPECTED
+
+    def test_production_renders_the_same_line(self):
+        """Exec the real function out of slack.py (pure string work, no
+        slack_sdk dependency) and run the SAME fixture through it, so a
+        wording change in production fails here and not only in the mirror."""
+        src = (Path(__file__).parent / "slack.py").read_text(encoding="utf-8")
+        node = next(n for n in ast.parse(src).body
+                    if isinstance(n, ast.FunctionDef) and n.name == "format_off_call_excluded")
+        ns: dict = {}
+        exec(ast.get_source_segment(src, node), ns)
+        prod = ns["format_off_call_excluded"]
+        assert prod(self.NAMES) == self.EXPECTED
+        assert prod(["Kris Black"]) == format_off_call_excluded(["Kris Black"])
 
 
 # ---------------------------------------------------------------------------

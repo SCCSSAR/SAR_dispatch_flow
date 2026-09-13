@@ -54,6 +54,14 @@ def _format_tally_multi_team_line(name: str, groups: list[str]) -> str:
     return f"  ↳ {name}: {', '.join(groups)}"
 
 
+def _format_groups_requested(group_names: list[str]) -> str:
+    return f"Groups requested by dispatcher: {', '.join(group_names)}"
+
+
+def _format_off_call_excluded(names: list[str]) -> str:
+    return f"🚫 Unavailable in D4H (not paged): {', '.join(names)}"
+
+
 def _compose_active_incidents_tally(doc: dict, header: str) -> str:
     """Mirror of backend/main.py::_compose_active_incidents_tally().
 
@@ -80,6 +88,12 @@ def _compose_active_incidents_tally(doc: dict, header: str) -> str:
         f"*✅ {yes_count} confirmed   ❌ {decline_count} declined   "
         f"⏳ {no_response_count} no response*",
     ]
+    group_names = doc.get("requested_group_names") or []
+    if group_names:
+        lines.append(_format_groups_requested(group_names))
+    off_call_names = doc.get("off_call_excluded_names") or []
+    if off_call_names:
+        lines.append(_format_off_call_excluded(off_call_names))
     for group_name, names in sorted(by_group.items()):
         lines.append(_format_tally_responder_line(group_name, sorted(names)))
 
@@ -343,6 +357,51 @@ class TestComposeActiveIncidentsTally:
         doc = {"event_name_human": "X", "responders": []}
         out = _compose_active_incidents_tally(doc, "🔔 Everbridge ACTIVE")
         assert "*✅ 0 confirmed   ❌ 0 declined   ⏳ 0 no response*" in out
+
+
+class TestTallyOffCallLine:
+    """D4H off-call exclusion (2026-09-12): the 🚫 line is composed from the
+    PERSISTED doc field, never from the plan — the tally is re-rendered from
+    Firestore on every poll cycle and at close, when the plan is long gone."""
+
+    _DOC = {
+        "event_name_human": "2026-09-12 SCCSO CEDAR",
+        "responders": [],
+        "requested_group_names": ["K9", "UAS"],
+        "off_call_excluded_names": ["Damian Romard", "Kris Black"],
+    }
+    _LINE = "🚫 Unavailable in D4H (not paged): Damian Romard, Kris Black"
+
+    def test_off_call_line_after_groups_requested(self):
+        lines = _compose_active_incidents_tally(self._DOC, "🔔 Everbridge ACTIVE").splitlines()
+        i = lines.index("Groups requested by dispatcher: K9, UAS")
+        assert lines[i + 1] == self._LINE
+
+    def test_off_call_line_omitted_when_empty_or_missing(self):
+        # [] is the non-factual modes (page_all / draft / all_off_call) and a
+        # clean plan; a missing key is a pre-feature Firestore doc.
+        empty = {**self._DOC, "off_call_excluded_names": []}
+        missing = {k: v for k, v in self._DOC.items() if k != "off_call_excluded_names"}
+        for doc in (empty, missing):
+            assert "🚫" not in _compose_active_incidents_tally(doc, "H")
+
+    def test_off_call_line_directly_after_counts_when_no_groups_requested(self):
+        # Individuals-only send (no group line): the 🚫 line still renders,
+        # directly under the tri-count line, whether the key is [] or absent.
+        doc = {**self._DOC, "requested_group_names": [], "off_call_excluded_names": ["Kris Black"]}
+        missing = {k: v for k, v in doc.items() if k != "requested_group_names"}
+        for d in (doc, missing):
+            lines = _compose_active_incidents_tally(d, "🔔 Everbridge ACTIVE").splitlines()
+            assert "Groups requested" not in "\n".join(lines)
+            assert lines[1].startswith("*✅ 0 confirmed")
+            assert lines[2] == "🚫 Unavailable in D4H (not paged): Kris Black"
+
+    def test_off_call_line_survives_poll_rerender(self):
+        responders = [{"name": "Burns", "groups": ["K9"]}]
+        doc = {**self._DOC, "responders": responders, "last_non_empty_responders": responders}
+        out = _compose_active_incidents_tally(doc, "🔔 Everbridge ACTIVE")
+        assert self._LINE in out
+        assert out.index(self._LINE) < out.index("• K9 (1): Burns")
 
 
 # ---------------------------------------------------------------------------

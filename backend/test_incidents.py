@@ -279,6 +279,16 @@ class TestNewIncidentDocLivePath:
         )
         assert doc["slack_dm_sent_user_ids"] == []
 
+    def test_off_call_excluded_names_persisted_and_defaults_empty(self):
+        # #570 symmetry: the #active-incidents 🚫 line is composed from the
+        # doc — initial_doc_for_tally at send time, the Firestore doc on every
+        # poll-cycle re-render — so the final .set(new_incident_doc(...)) must
+        # carry the value or the line vanishes on the first poll. Defaults to
+        # [] so the composer's .get() never sees None.
+        doc = new_incident_doc(**_live_path_kwargs(off_call_excluded_names=["Kris Black"]))
+        assert doc["off_call_excluded_names"] == ["Kris Black"]
+        assert new_incident_doc(**_live_path_kwargs())["off_call_excluded_names"] == []
+
     def test_contact_email_map_empty_for_group_only_send(self):
         # Group-member emails fetched by list_group_member_contacts; if that
         # call fails the map is {} (safe default — invite won't fire).

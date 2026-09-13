@@ -7513,6 +7513,9 @@ def _compose_active_incidents_tally(doc: dict, header: str) -> str:
     group_names = doc.get("requested_group_names") or []
     if group_names:
         lines.append(slack_module.format_groups_requested(group_names))
+    off_call_names = doc.get("off_call_excluded_names") or []
+    if off_call_names:
+        lines.append(slack_module.format_off_call_excluded(off_call_names))
     for group_name, names in sorted(by_group.items()):
         lines.append(slack_module.format_tally_responder_line(group_name, sorted(names)))
 
@@ -9202,11 +9205,14 @@ async def send_notification(
         "🔔 Everbridge ACTIVE" if decision.action == "send_live"
         else "📋 Awaiting dispatcher send"
     )
+    # Tally/doc field is FACTUAL only: page_all / draft / all_off_call paged them.
+    off_call_excluded_names = list(off_call_plan.excluded) if off_call_plan.mode == "excluded" else []
     initial_doc_for_tally = {
         "event_name_human":          event_name_human,
         "responders":                [],
         "last_non_empty_responders": [],
         "requested_group_names":     requested_names,
+        "off_call_excluded_names":   off_call_excluded_names,
         "contact_group_map":         contact_group_map,
         "contact_email_map":         contact_email_map,
     }
@@ -9443,6 +9449,7 @@ async def send_notification(
         # idempotency check (doc.get("slack_dm_sent_user_ids")) would read
         # empty and fire duplicate DMs to already-DM'd responders.
         slack_dm_sent_user_ids=dm_sent_user_ids,
+        off_call_excluded_names=off_call_excluded_names,
     )
     # Fold the Slack channel-provisioning outcome in (Step 6 guard). Like the
     # D4H fields, new_incident_doc() defaulted these to "ok"/None; overwrite

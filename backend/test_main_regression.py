@@ -13614,3 +13614,63 @@ class TestOffCallEventLogWiring:
         i_close = block.index("]", i_slack)
         assert i_list < i_eb < i_spread < i_slack < i_close
         assert "d4h_event_log.extend(_d4h_dispatch_milestones[:2 + len(_off_call_lines)])" in block
+
+
+# ---------------------------------------------------------------------------
+# Off-call → #active-incidents tally line (Task 6). Mirror lives in
+# test_send_notification.py::TestTallyOffCallLine.
+# ---------------------------------------------------------------------------
+
+class TestOffCallTallyWiring:
+    """The 🚫 tally line is composed from the incident DOC — initial_doc_for_tally
+    at send time, the Firestore doc on every poll cycle and at close — so the
+    handler value must be (a) FACTUAL: only `mode == "excluded"` means those
+    people were not paged (page_all / draft / all_off_call paged them, and the
+    Event Log carries that nuance); (b) in the send-time doc literal; and (c)
+    passed to the final new_incident_doc(...) so the Step 11 .set() does not
+    wipe it (#570 symmetry)."""
+
+    _GATE = ('off_call_excluded_names = list(off_call_plan.excluded) '
+             'if off_call_plan.mode == "excluded" else []')
+
+    @staticmethod
+    def _h() -> str:
+        return TestOffCallStepOrdering._strip_comments(TestOffCallStepOrdering._handler())
+
+    def test_value_is_gated_on_the_factual_mode(self):
+        h = self._h()
+        assert h.count(self._GATE) == 1
+        assert h.index(self._GATE) < h.index("initial_doc_for_tally = {")
+
+    def test_send_time_tally_doc_carries_excluded_names(self):
+        h = self._h()
+        lit = h[h.index("initial_doc_for_tally = {"):]
+        lit = lit[:lit.index("\n    }")]      # the literal's own closing brace (4-space indent)
+        assert re.search(r'"off_call_excluded_names":\s+off_call_excluded_names,', lit), lit
+
+    def test_final_doc_passes_the_same_value(self):
+        h = self._h()
+        call = h[h.index("incident_doc = new_incident_doc("):]
+        call = call[:call.index("\n    )")]
+        assert "off_call_excluded_names=off_call_excluded_names," in call, call
+
+    def test_composer_reads_the_doc_between_groups_and_responder_lines(self):
+        """`_compose_active_incidents_tally` reads the persisted field, gates
+        the append on it, and places the line after 'Groups requested' and
+        before the per-group responder loop — the ast pin checks the append
+        sits INSIDE the `if off_call_names:` body, not merely near it."""
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_compose_active_incidents_tally")
+        code = TestOffCallStepOrdering._strip_comments(ast.get_source_segment(src, fn))
+        i_groups = code.index("lines.append(slack_module.format_groups_requested(group_names))")
+        i_read = code.index('off_call_names = doc.get("off_call_excluded_names") or []')
+        i_line = code.index("lines.append(slack_module.format_off_call_excluded(off_call_names))")
+        i_resp = code.index("lines.append(slack_module.format_tally_responder_line(")
+        assert i_groups < i_read < i_line < i_resp
+        gated = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == "off_call_names"
+            and any("format_off_call_excluded(" in ast.get_source_segment(src, s) for s in n.body)
+        ]
+        assert len(gated) == 1
