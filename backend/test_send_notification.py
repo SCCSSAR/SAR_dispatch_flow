@@ -1460,3 +1460,124 @@ class TestPlanOffCallExclusion:
         p = self._plan(off_call=off, group_members={K9: members + [BILL]},
                        picked_contact_ids=["c4", "c5", "c6"])
         assert p.picked_off_call == ["bill burns", "contact 42", "Zed Adams"]
+
+
+# ---------------------------------------------------------------------------
+# Off-call plan → Event Log lines — mirror of main.py::_off_call_event_log_lines.
+# Production parity is pinned by TestOffCallEventLogLinesProductionParity in
+# test_main_regression.py, which execs the production helper out of main.py
+# and runs the same plans.
+# ---------------------------------------------------------------------------
+
+def _off_call_event_log_lines(plan, ts, group_names=None):
+    lines = []
+    if plan.mode == "failed":
+        lines.append(f"{ts} - D4H off-call check FAILED ({plan.failure or 'error'}) — no one was excluded; sent to the groups as selected")
+    if plan.excluded:
+        names = ", ".join(plan.excluded)
+        if plan.mode == "excluded":
+            lines.append(f"{ts} - Unavailable in D4H (off-call, not paged): {names}")
+        elif plan.mode == "page_all":
+            lines.append(f"{ts} - Dispatcher override: paged everyone in the selected groups despite off-call in D4H: {names}")
+        elif plan.mode == "draft":
+            lines.append(f"{ts} - Off-call in D4H: {names} — still in the Everbridge draft; remove them in Everbridge before sending")
+        elif plan.mode == "all_off_call":
+            lines.append(f"{ts} - Everyone in the selected groups is off-call in D4H ({names}) — sent to the groups as selected so the callout still has recipients")
+    if plan.picked_off_call:
+        lines.append(f"{ts} - Selected individually while off-call in D4H (paged): {', '.join(plan.picked_off_call)}")
+    if plan.unmatched:
+        lines.append(f"{ts} - Off-call in D4H but not matched to Everbridge (D4H Ref is not a 3-digit OCEAN#) — paged if in a selected group; ask a D4H admin to fix the Ref: {', '.join(plan.unmatched)}")
+    for gid in plan.failed_group_ids:
+        gname = (group_names or {}).get(gid, gid)
+        lines.append(f"{ts} - Everbridge group {gname} could not be expanded — sent as a group; off-call members in it were NOT excluded")
+    return lines
+
+
+OC_TS = "2026-09-12 14:50"
+
+
+class TestOffCallEventLogLines:
+    """One rule per test. Event Log policy: corrections and failures only, so
+    a clean `nobody_excluded` plan renders NOTHING."""
+
+    def _lines(self, group_names=None, **kw):
+        base = dict(mode="nobody_excluded", send_contact_ids=[], send_group_ids=[])
+        base.update(kw)
+        return _off_call_event_log_lines(OffCallPlan(**base), OC_TS, group_names=group_names)
+
+    def test_silent_when_nobody_excluded_and_nothing_to_report(self):
+        assert self._lines() == []
+
+    def test_excluded_line_names_and_order(self):
+        assert self._lines(mode="excluded", excluded=["Bill Burns", "Kris Black"]) == [
+            f"{OC_TS} - Unavailable in D4H (off-call, not paged): Bill Burns, Kris Black",
+        ]
+
+    def test_page_all_override_is_recorded(self):
+        assert self._lines(mode="page_all", excluded=["Kris Black"]) == [
+            f"{OC_TS} - Dispatcher override: paged everyone in the selected groups "
+            f"despite off-call in D4H: Kris Black",
+        ]
+
+    def test_draft_line_says_not_removed(self):
+        assert self._lines(mode="draft", excluded=["Kris Black"]) == [
+            f"{OC_TS} - Off-call in D4H: Kris Black — still in the Everbridge draft; "
+            f"remove them in Everbridge before sending",
+        ]
+
+    def test_all_off_call_line_says_sent_to_groups(self):
+        assert self._lines(mode="all_off_call", excluded=["Kris Black"]) == [
+            f"{OC_TS} - Everyone in the selected groups is off-call in D4H (Kris Black) "
+            f"— sent to the groups as selected so the callout still has recipients",
+        ]
+
+    def test_failed_line_present_and_first(self):
+        lines = self._lines(mode="failed", failure="D4HServerError", unmatched=["Monroe, Tyrone"])
+        assert lines == [
+            f"{OC_TS} - D4H off-call check FAILED (D4HServerError) — no one was excluded; "
+            f"sent to the groups as selected",
+            f"{OC_TS} - Off-call in D4H but not matched to Everbridge (D4H Ref is not a 3-digit "
+            f"OCEAN#) — paged if in a selected group; ask a D4H admin to fix the Ref: Monroe, Tyrone",
+        ]
+        # A blank failure class still renders a parenthetical.
+        assert self._lines(mode="failed", failure="")[0].startswith(
+            f"{OC_TS} - D4H off-call check FAILED (error) — ")
+
+    def test_picked_and_unmatched_lines(self):
+        # `unmatched` is D4H's own spelling, stray spaces included — verbatim.
+        lines = self._lines(picked_off_call=["Kris Black"],
+                            unmatched=["Monroe, Tyrone", "Villegas , Samuel"])
+        assert lines == [
+            f"{OC_TS} - Selected individually while off-call in D4H (paged): Kris Black",
+            f"{OC_TS} - Off-call in D4H but not matched to Everbridge (D4H Ref is not a 3-digit "
+            f"OCEAN#) — paged if in a selected group; ask a D4H admin to fix the Ref: "
+            f"Monroe, Tyrone, Villegas , Samuel",
+        ]
+
+    def test_failed_group_line_per_group(self):
+        assert self._lines(mode="excluded", excluded=["Kris Black"],
+                           failed_group_ids=["g-k9", "g-uas"])[1:] == [
+            f"{OC_TS} - Everbridge group g-k9 could not be expanded — sent as a group; "
+            f"off-call members in it were NOT excluded",
+            f"{OC_TS} - Everbridge group g-uas could not be expanded — sent as a group; "
+            f"off-call members in it were NOT excluded",
+        ]
+
+    def test_failed_group_line_uses_name_when_known_else_id(self):
+        assert self._lines(failed_group_ids=["g-k9", "g-uas"], group_names={"g-k9": "K9"}) == [
+            f"{OC_TS} - Everbridge group K9 could not be expanded — sent as a group; "
+            f"off-call members in it were NOT excluded",
+            f"{OC_TS} - Everbridge group g-uas could not be expanded — sent as a group; "
+            f"off-call members in it were NOT excluded",
+        ]
+
+    def test_every_line_carries_the_timestamp_prefix(self):
+        lines = self._lines(mode="failed", failure="RuntimeError", excluded=["A B"],
+                            picked_off_call=["C D"], unmatched=["E, F"], failed_group_ids=["g"])
+        assert len(lines) == 4
+        assert all(l.startswith(f"{OC_TS} - ") for l in lines)
+
+    def test_excluded_under_nobody_excluded_is_impossible_but_harmless(self):
+        # The planner never produces this shape; if a consumer ever did, no
+        # line may claim "not paged" without the factual mode behind it.
+        assert self._lines(mode="nobody_excluded", excluded=["Kris Black"]) == []

@@ -3822,6 +3822,63 @@ async def _build_off_call_plan(
     return plan, group_members
 
 
+def _off_call_event_log_lines(
+    plan: OffCallPlan, ts: str, group_names: dict[str, str] | None = None,
+) -> list[str]:
+    """Render an OffCallPlan as Event Log lines, each `<ts> - ...`.
+    `group_names` maps EB group id → display name for the failed-group line;
+    an unknown id renders as the id.
+
+    These strings reach the dispatcher textarea (via `d4h_event_log`) and the
+    D4H incident description (via `_inject_dispatch_milestones_into_event_log`).
+    They are Event Log CONTENT — names are allowed there, as they are for the
+    street-correction entries — and must NEVER be passed to `logger.*`.
+
+    - `nobody_excluded` with nothing else to report renders NOTHING: the Event
+      Log policy is corrections and failures only, never silent successes.
+    - The `excluded` line is FACTUAL only under mode "excluded" ("not paged").
+      Under "page_all", "draft" and "all_off_call" the same names WERE paged /
+      are still in the draft, so each of those modes gets its own wording that
+      says exclusion was NOT applied. No other mode gets an excluded line.
+    - The "failed" line comes FIRST and names the exception CLASS only.
+    - `picked_off_call`, `unmatched` and `failed_group_ids` are mode-independent.
+      `unmatched` is rendered in D4H's own spelling ("Last, First", stray
+      spaces included) on purpose: that is the string the dispatcher must find
+      in D4H to fix the missing Ref. It covers the WHOLE off-call list, not
+      only the selected groups, so the honest claim is "paged if in a
+      selected group".
+    """
+    lines: list[str] = []
+    if plan.mode == "failed":
+        lines.append(f"{ts} - D4H off-call check FAILED ({plan.failure or 'error'}) "
+                     f"— no one was excluded; sent to the groups as selected")
+    if plan.excluded:
+        names = ", ".join(plan.excluded)
+        if plan.mode == "excluded":
+            lines.append(f"{ts} - Unavailable in D4H (off-call, not paged): {names}")
+        elif plan.mode == "page_all":
+            lines.append(f"{ts} - Dispatcher override: paged everyone in the selected groups "
+                         f"despite off-call in D4H: {names}")
+        elif plan.mode == "draft":
+            lines.append(f"{ts} - Off-call in D4H: {names} — still in the Everbridge draft; "
+                         f"remove them in Everbridge before sending")
+        elif plan.mode == "all_off_call":
+            lines.append(f"{ts} - Everyone in the selected groups is off-call in D4H ({names}) "
+                         f"— sent to the groups as selected so the callout still has recipients")
+    if plan.picked_off_call:
+        lines.append(f"{ts} - Selected individually while off-call in D4H (paged): "
+                     f"{', '.join(plan.picked_off_call)}")
+    if plan.unmatched:
+        lines.append(f"{ts} - Off-call in D4H but not matched to Everbridge (D4H Ref is not a "
+                     f"3-digit OCEAN#) — paged if in a selected group; ask a D4H admin to fix "
+                     f"the Ref: {', '.join(plan.unmatched)}")
+    for gid in plan.failed_group_ids:
+        gname = (group_names or {}).get(gid, gid)
+        lines.append(f"{ts} - Everbridge group {gname} could not be expanded — sent as a group; "
+                     f"off-call members in it were NOT excluded")
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic helpers used by the /send-notification orchestration (Task 1.10b).
 # Adding them now (Task 1.10a) so they're testable in isolation; the
@@ -9034,6 +9091,7 @@ async def send_notification(
     requested_names: list[str] = []
     contact_group_map: dict[str, list[str]] = {}
     contact_email_map: dict[str, list[str]] = {}
+    gid_to_name: dict[str, str] = {}  # hoisted: Step 10.5's off-call lines read it on a no-group send too
     if target_group_ids:
         # Look up canonical group names (SAR- prefix stripped) from EB.
         # Single API call per send; the dispatcher selection set is small.
@@ -9042,7 +9100,6 @@ async def send_notification(
         # with no Firestore doc. Fall back to raw group IDs in the Slack
         # groups-requested message so dispatch can complete and the
         # polling chain runs. The per-group loop below is already guarded.
-        gid_to_name: dict[str, str] = {}
         try:
             groups_list = await loop.run_in_executor(
                 None,
@@ -9235,25 +9292,31 @@ async def send_notification(
             f"{_d4h_ts} - Slack incident channel creation FAILED ({slack_error}) "
             f"— EB sent; create the Slack channel manually"
         )
+        # Off-call exclusion (Step 0.7) is otherwise applied silently; these
+        # lines are the only place the dispatcher and the D4H record learn
+        # who was not paged (or, under page_all/draft/failed, that nobody was
+        # excluded). Empty on a clean plan — Event Log policy.
+        _off_call_lines = _off_call_event_log_lines(off_call_plan, _d4h_ts, group_names=gid_to_name)
         _d4h_dispatch_milestones = [
             f"{_d4h_ts} - Everbridge notification sent ({_eb_mode_label}) — "
             f"{_eb_title_display} — groups: {_eb_groups_label} — individuals: {_eb_indiv_count}",
+            *_off_call_lines,
             _slack_milestone,
             f"{_d4h_ts} - D4H incident request filed at dispatch time",
         ]
-        # Issue #542: EB + Slack entries also land in d4h_event_log so the
-        # frontend renders them server-side with consistent UTC + PT-hint
-        # format, regardless of the dispatcher's browser timezone. Pre-fix
-        # these entries were generated frontend-side via new Date(), so a
-        # traveling dispatcher (Bill on EDT during the 2026-05-31 #519
+        # Issue #542: EB + off-call + Slack entries also land in d4h_event_log
+        # so the frontend renders them server-side with consistent UTC +
+        # PT-hint format, regardless of the dispatcher's browser timezone.
+        # Pre-fix these entries were generated frontend-side via new Date(),
+        # so a traveling dispatcher (Bill on EDT during the 2026-05-31 #519
         # closure) saw them in browser-local time while the OCR-time
         # entries above rendered in Pacific — a 3-hour apparent gap on
-        # the same incident. The third milestone ("D4H incident request
+        # the same incident. The last milestone ("D4H incident request
         # filed at dispatch time") stays D4H-description-only — it's a
         # placeholder for the upcoming create, not a dispatcher-facing
         # milestone (the actual "D4H incident created" entry is appended
         # later, after the D4H POST succeeds).
-        d4h_event_log.extend(_d4h_dispatch_milestones[:2])
+        d4h_event_log.extend(_d4h_dispatch_milestones[:2 + len(_off_call_lines)])
         _ocr_text_for_d4h = _inject_dispatch_milestones_into_event_log(
             ocr_text, _d4h_dispatch_milestones
         )

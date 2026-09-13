@@ -13283,11 +13283,13 @@ class TestPlanOffCallExclusionProductionParity:
     _WANTED = {"OffCallPlan", "_OCEAN_RE", "_plan_off_call_exclusion"}
 
     @classmethod
-    def _exec_trio(cls, filename: str):
-        """Exec the three top-level definitions out of `filename` into one
-        namespace. A ClassDef's lineno starts at the `class` keyword, so the
-        segment is taken from the first decorator instead — otherwise the
-        @dataclass never applies and OffCallPlan() takes no arguments."""
+    def _exec_trio(cls, filename: str, wanted: set | None = None) -> dict:
+        """Exec the named top-level definitions (default: the planner trio) out
+        of `filename` into one namespace and return it. A ClassDef's lineno
+        starts at the `class` keyword, so the segment is taken from the first
+        decorator instead — otherwise the @dataclass never applies and
+        OffCallPlan() takes no arguments."""
+        wanted = cls._WANTED if wanted is None else wanted
         src = (Path(__file__).parent / filename).read_text(encoding="utf-8")
         lines = src.splitlines(keepends=True)
         ns = {"re": re, "dataclasses": dataclasses}
@@ -13296,23 +13298,23 @@ class TestPlanOffCallExclusionProductionParity:
             name = getattr(node, "name", None)
             if name is None and isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
                 name = node.targets[0].id
-            if name in cls._WANTED:
+            if name in wanted:
                 start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
                 exec("".join(lines[start - 1:node.end_lineno]), ns)
                 found.add(name)
-        assert found == cls._WANTED, f"missing from {filename}: {cls._WANTED - found}"
-        return ns["_plan_off_call_exclusion"]
+        assert found == wanted, f"missing from {filename}: {wanted - found}"
+        return ns
 
     @classmethod
     def _prod(cls):
-        return cls._exec_trio("main.py")
+        return cls._exec_trio("main.py")["_plan_off_call_exclusion"]
 
     @classmethod
     def _mirror(cls):
         # The mirror is exec'd out of its source the same way, so this pin
         # compares two executed sources rather than importing a test module
         # as a library.
-        return cls._exec_trio("test_send_notification.py")
+        return cls._exec_trio("test_send_notification.py")["_plan_off_call_exclusion"]
 
     @staticmethod
     def _mirror_test_count() -> int:
@@ -13500,6 +13502,8 @@ class TestBuildOffCallPlanFailsOpen:
         out = []
         if isinstance(node, ast.Attribute):
             out.append(node.attr)
+            if isinstance(node.value, ast.Name) and node.value.id in {"plan", "off_call_plan"}:
+                return out  # a field read of the plan is judged by the field (plan.mode is a status)
         elif isinstance(node, ast.Name):
             out.append(node.id)
         for child in ast.iter_child_nodes(node):
@@ -13509,7 +13513,8 @@ class TestBuildOffCallPlanFailsOpen:
     def test_logs_counts_only(self):
         src, fn = self._fn()
         banned = {"display_name", "excluded", "unmatched", "picked_off_call",
-                  "send_contact_ids", "name", "ref", "off_call", "group_members", "emails"}
+                  "send_contact_ids", "name", "ref", "off_call", "group_members", "emails",
+                  "plan", "off_call_plan", "d4h_event_log", "_d4h_dispatch_milestones"}
         seen = 0
         for call in ast.walk(fn):
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) \
@@ -13519,3 +13524,93 @@ class TestBuildOffCallPlanFailsOpen:
                     leaked = banned & set(self._refs_outside_len(arg))
                     assert not leaked, (leaked, ast.get_source_segment(src, call))
         assert seen >= 3  # D4H failure, group failure, the summary line
+
+
+# ---------------------------------------------------------------------------
+# Off-call plan → Event Log lines (Task 5). Mirror lives in
+# test_send_notification.py::TestOffCallEventLogLines.
+# ---------------------------------------------------------------------------
+
+class TestOffCallEventLogLinesProductionParity:
+    """Exec production `_off_call_event_log_lines` + `OffCallPlan` out of
+    main.py and the mirror out of test_send_notification.py, and run the same
+    plans through both. One case per mirror test, in the mirror's order."""
+
+    _WANTED = {"OffCallPlan", "_off_call_event_log_lines"}
+    _TS = "2026-09-12 14:50"
+
+    @classmethod
+    def _fn(cls, filename: str):
+        ns = TestPlanOffCallExclusionProductionParity._exec_trio(filename, cls._WANTED)
+        return ns["OffCallPlan"], ns["_off_call_event_log_lines"]
+
+    @staticmethod
+    def _mirror_test_count() -> int:
+        src = (Path(__file__).parent / "test_send_notification.py").read_text(encoding="utf-8")
+        for node in ast.parse(src).body:
+            if isinstance(node, ast.ClassDef) and node.name == "TestOffCallEventLogLines":
+                return sum(1 for n in node.body
+                           if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"))
+        raise AssertionError("TestOffCallEventLogLines not found in test_send_notification.py")
+
+    def test_production_matches_mirror_on_every_fixture(self):
+        PlanP, prod = self._fn("main.py")
+        PlanM, mirror = self._fn("test_send_notification.py")
+        cases = [
+            dict(),                                                               # silent
+            dict(mode="excluded", excluded=["Bill Burns", "Kris Black"]),
+            dict(mode="page_all", excluded=["Kris Black"]),
+            dict(mode="draft", excluded=["Kris Black"]),
+            dict(mode="all_off_call", excluded=["Kris Black"]),
+            dict(mode="failed", failure="", unmatched=["Monroe, Tyrone"]),        # failed first, (error)
+            dict(picked_off_call=["Kris Black"], unmatched=["Monroe, Tyrone", "Villegas , Samuel"]),
+            dict(mode="excluded", excluded=["Kris Black"], failed_group_ids=["g-k9", "g-uas"]),
+            dict(failed_group_ids=["g-k9", "g-uas"], group_names={"g-k9": "K9"}),  # name else id
+            dict(mode="failed", failure="RuntimeError", excluded=["A B"], picked_off_call=["C D"],
+                 unmatched=["E, F"], failed_group_ids=["g"]),                     # everything populated
+            dict(mode="nobody_excluded", excluded=["Kris Black"]),                # impossible but harmless
+        ]
+        assert len(cases) == self._mirror_test_count(), (
+            "a mirror test was added without a parity case (or vice versa)"
+        )
+        base = dict(mode="nobody_excluded", send_contact_ids=[], send_group_ids=[])
+        for kw in cases:
+            kw = dict(kw)
+            gn = kw.pop("group_names", None)
+            args = {**base, **kw}
+            assert prod(PlanP(**args), self._TS, group_names=gn) == \
+                mirror(PlanM(**args), self._TS, group_names=gn), kw
+        # Non-vacuity: production really is silent on a clean plan, really
+        # names the excluded under the factual mode, and really orders the
+        # failed line first.
+        assert prod(PlanP(**base), self._TS) == []
+        assert prod(PlanP(**{**base, **cases[1]}), self._TS) == [
+            f"{self._TS} - Unavailable in D4H (off-call, not paged): Bill Burns, Kris Black"]
+        out = prod(PlanP(**{**base, **cases[9]}), self._TS)
+        assert len(out) == 4 and "FAILED (RuntimeError)" in out[0]
+        assert all(l.startswith(f"{self._TS} - ") for l in out)
+        assert prod(PlanP(**{**base, **cases[10]}), self._TS) == []
+        named = prod(PlanP(**{**base, "failed_group_ids": ["g-k9", "g-uas"]}), self._TS,
+                     group_names={"g-k9": "K9"})
+        assert "group K9 could" in named[0] and "group g-uas could" in named[1]
+
+
+class TestOffCallEventLogWiring:
+    """The off-call lines ride `_d4h_dispatch_milestones` between the EB line
+    and the Slack line, so they reach BOTH the dispatcher textarea (the
+    `d4h_event_log` slice) and the D4H incident description (the inject)."""
+
+    def test_off_call_lines_ride_the_dispatch_milestones(self):
+        h = TestOffCallStepOrdering._strip_comments(TestOffCallStepOrdering._handler())
+        i_call = h.index("_off_call_lines = _off_call_event_log_lines(off_call_plan, _d4h_ts, group_names=gid_to_name)")
+        # gid_to_name is bound before Step 9's `if target_group_ids:` so a
+        # no-group send cannot hit an UnboundLocalError here.
+        assert h.index("gid_to_name: dict[str, str] = {}") < h.index("if target_group_ids:") < i_call
+        block = h[i_call:h.index("_ocr_text_for_d4h = _inject_dispatch_milestones_into_event_log", i_call)]
+        i_list = block.index("_d4h_dispatch_milestones = [")
+        i_eb = block.index("Everbridge notification sent", i_list)
+        i_spread = block.index("*_off_call_lines,", i_list)
+        i_slack = block.index("_slack_milestone,", i_list)
+        i_close = block.index("]", i_slack)
+        assert i_list < i_eb < i_spread < i_slack < i_close
+        assert "d4h_event_log.extend(_d4h_dispatch_milestones[:2 + len(_off_call_lines)])" in block
