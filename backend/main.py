@@ -3623,6 +3623,266 @@ def _route_send(selected_target_ids: list[str]) -> SendDecision:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class OffCallPlan:
+    """Result of _plan_off_call_exclusion(). Frozen like SendDecision; the
+    caller passes `failure` in rather than setting it afterwards."""
+    mode: str                                  # excluded|nobody_excluded|all_off_call|page_all|draft|failed
+    send_contact_ids: list[str]
+    send_group_ids: list[str]
+    excluded: list[str] = dataclasses.field(default_factory=list)         # display names, sorted
+    picked_off_call: list[str] = dataclasses.field(default_factory=list)  # display names, sorted
+    unmatched: list[str] = dataclasses.field(default_factory=list)        # D4H names w/o usable Ref
+    failed_group_ids: list[str] = dataclasses.field(default_factory=list)
+    failure: str = ""                          # exception class name when mode == failed
+
+
+# The join key between D4H and Everbridge: the 3-digit OCEAN#. D4H `member.ref`
+# is "305"; the Everbridge member row carries `ocean` parsed from externalId
+# "1O305". Anything that is not exactly three digits cannot be matched.
+# fullmatch, not match: `$` would accept a trailing newline.
+_OCEAN_RE = re.compile(r"\d{3}")
+
+
+def _plan_off_call_exclusion(
+    *,
+    action: str,
+    page_all: bool,
+    picked_contact_ids: list[str],
+    selected_group_ids: list[str],
+    off_call: list[dict] | None,
+    group_members: dict[str, list[dict]],
+    failed_group_ids: list[str],
+    failure: str = "",
+) -> OffCallPlan:
+    """Decide what /send-notification sends to Everbridge once D4H off-call is known.
+
+    Everbridge ignores `excludedContactIds` on a group send (live-tested), so on
+    the LIVE path every selected group is EXPANDED into its member contacts, the
+    off-call members are dropped, and the send goes out by `contactIds`. Owner
+    rulings (Bill, 2026-09-12) encoded here:
+
+    - Expand on EVERY live send, even when nobody is off-call — one code path.
+    - ANY off-call period excludes from EVERY selected group, whatever the role.
+      Duty notes are never read, here or upstream in d4h.get_off_call_now().
+    - A member picked BY NAME (individual contact) while off-call is still paged,
+      and reported in `picked_off_call` — ONLY when that contact is also a
+      member of a selected group, because the list is derived from `by_id`.
+      An off-call pick in none of the selected groups is paged and NOT
+      reported: accepted gap (a per-contact D4H lookup would be needed),
+      pinned by `test_picked_contact_outside_groups_is_sent_and_not_reported`.
+    - `page_all` (dispatcher override) sends the groups exactly as selected but
+      still reports who would have been excluded.
+    - Draft mode (`action != "send_live"`, personal-dev safe mode) keeps the
+      groups: a hand-sent Everbridge draft drops `contactIds` (#599/#600), so an
+      expanded draft would page nobody. Names are still reported so the Event
+      Log can say exclusion was NOT applied.
+    - Fail OPEN: `off_call is None` means the D4H read failed → send the groups
+      as selected, mode "failed", `failure` = the exception class name. `off_call
+      == []` means nobody is off-call and STILL expands. The two are deliberately
+      distinct.
+    - A group whose members are unknown — its fetch failed (`failed_group_ids`)
+      OR it is simply absent from `group_members` — stays a group id in the
+      payload and is reported in `failed_group_ids`; it is never ALSO expanded.
+      Absent-from-both fails OPEN too: expanding it to nothing would silently
+      page nobody.
+    - If expansion leaves NOTHING to send (everyone in the selected groups is
+      off-call and there are no picks), fall back to the groups as selected,
+      mode "all_off_call", with `excluded` populated. A convenience feature must
+      never reduce a callout to zero recipients; this is the pre-feature
+      behaviour, reported loudly, and PR 2's confirmation gate presents this
+      case explicitly. The label is earned only when off-call is WHY the
+      expansion is empty (`excluded` non-empty); a genuinely empty EB group
+      takes the same fallback payload under "nobody_excluded".
+    - `excluded` is FACTUAL only under mode "excluded" (those people were not
+      paged); under "page_all", "draft" and "all_off_call" it is COUNTERFACTUAL
+      — they WERE paged, or are still in the draft — and a consumer must render
+      it as "exclusion NOT applied".
+    - An off-call member whose `ref` is not exactly 3 digits is reported in
+      `unmatched`, never silently dropped. Because `oceans` only ever holds
+      3-digit strings, a contact whose `ocean` is None can never match an
+      off-call member whose ref is "" (the None-vs-"" guard).
+
+    Modes: excluded | nobody_excluded | all_off_call | page_all | draft | failed.
+    "nobody_excluded" means no group member was dropped — `picked_off_call` and
+    `unmatched` can still be non-empty under it. The three report lists
+    (`excluded`, `picked_off_call`, `unmatched`) are mode-independent; consumers
+    must read them whatever the mode. All id and name lists are sorted and
+    de-duplicated; name sorts are case-insensitive.
+
+    `send_group_ids` is for the PAYLOAD only. The caller's `target_group_ids`
+    stays the dispatcher's SELECTION for Step 9 (D4H group membership), which
+    must not shrink because the EB payload was expanded.
+    """
+    picked = sorted(set(picked_contact_ids))
+    if off_call is None:
+        return OffCallPlan(mode="failed", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), failure=failure)
+    failed = [g for g in selected_group_ids if g in failed_group_ids or g not in group_members]
+    oceans, unmatched = set(), []
+    for m in off_call:
+        if _OCEAN_RE.fullmatch(m.get("ref") or ""):
+            oceans.add(m["ref"])
+        else:
+            unmatched.append(m.get("name") or f"D4H member {m.get('member_id')}")
+    by_id = {}
+    for gid in selected_group_ids:
+        if gid in failed:
+            continue
+        for mc in group_members[gid]:
+            by_id.setdefault(mc["contact_id"], mc)
+    picked_set = set(picked)
+    excluded = sorted((mc["display_name"] for cid, mc in by_id.items()
+                       if mc.get("ocean") in oceans and cid not in picked_set), key=str.casefold)
+    picked_off = sorted((mc["display_name"] for cid, mc in by_id.items()
+                         if mc.get("ocean") in oceans and cid in picked_set), key=str.casefold)
+    common = dict(excluded=excluded, picked_off_call=picked_off,
+                  unmatched=sorted(unmatched, key=str.casefold), failed_group_ids=failed)
+    if action != "send_live":
+        return OffCallPlan(mode="draft", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), **common)
+    if page_all:
+        return OffCallPlan(mode="page_all", send_contact_ids=picked,
+                           send_group_ids=list(selected_group_ids), **common)
+    keep = sorted(cid for cid, mc in by_id.items() if mc.get("ocean") not in oceans)
+    send_contacts = sorted(set(keep) | picked_set)
+    send_groups = [g for g in selected_group_ids if g in failed]
+    if not send_contacts and not send_groups:
+        # "all_off_call" only when off-call is WHY it is empty; an empty EB
+        # group with nobody off-call is the same fallback payload, not that label.
+        return OffCallPlan(mode="all_off_call" if excluded else "nobody_excluded",
+                           send_contact_ids=[],
+                           send_group_ids=list(selected_group_ids), **common)
+    return OffCallPlan(mode="excluded" if excluded else "nobody_excluded",
+                       send_contact_ids=send_contacts, send_group_ids=send_groups, **common)
+
+
+async def _build_off_call_plan(
+    *,
+    decision: SendDecision,
+    page_all: bool,
+    picked_contact_ids: list[str],
+    selected_group_ids: list[str],
+) -> tuple[OffCallPlan, dict[str, list[dict]]]:
+    """Read D4H off-call + expand the selected EB groups, then plan the send.
+
+    Fail OPEN at every step: a D4H outage, an unset token, a slow group
+    lookup, or a bug in the planner itself must never stop a callout — the
+    plan degrades to today's group send and the Event Log says so (Task 5).
+    Returns the per-group member lists too so Step 9 reuses them instead of
+    re-fetching after the EB send. Logs COUNTS only — never names.
+
+    Group expansion runs in draft mode as well: a draft keeps groups, but the
+    Event Log still names who is off-call so the dispatcher can remove them
+    by hand in Everbridge (#599/#600).
+    """
+    import everbridge as eb_module
+    loop = asyncio.get_running_loop()
+    t0 = time.monotonic()
+    off_call: list[dict] | None = None
+    failure = ""
+    try:
+        off_call = await loop.run_in_executor(
+            None,
+            functools.partial(d4h.get_off_call_now, datetime.datetime.now(datetime.timezone.utc)),
+        )
+    except Exception as exc:  # fail open — includes RuntimeError (token unset)
+        failure = type(exc).__name__
+        logger.warning("off-call check failed (%s) — no one excluded", failure)
+    group_members: dict[str, list[dict]] = {}
+    failed_group_ids: list[str] = []
+    if off_call is not None:
+        for gid in selected_group_ids:
+            try:
+                # list_group_member_contacts is pageSize=1000, unpaged; it now
+                # bounds who gets PAGED, not just the tally (68 contacts today).
+                group_members[gid] = await loop.run_in_executor(
+                    None,
+                    functools.partial(eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid),
+                )
+            except Exception as exc:
+                failed_group_ids.append(gid)
+                logger.warning("group expansion failed for group %s (%s) — sent as a group",
+                               gid, type(exc).__name__)
+    try:
+        plan = _plan_off_call_exclusion(
+            action=decision.action, page_all=page_all,
+            picked_contact_ids=picked_contact_ids, selected_group_ids=selected_group_ids,
+            off_call=off_call, group_members=group_members,
+            failed_group_ids=failed_group_ids, failure=failure,
+        )
+    except Exception as exc:  # a planner bug must not block a dispatch either
+        logger.warning("off-call planner raised %s — no one excluded", type(exc).__name__)
+        plan = OffCallPlan(
+            mode="failed", send_contact_ids=sorted(set(picked_contact_ids)),
+            send_group_ids=list(selected_group_ids), failure=type(exc).__name__,
+        )
+    logger.info(
+        "off-call plan: mode=%s off_call=%d excluded=%d picked_off_call=%d unmatched=%d "
+        "failed_groups=%d latency_ms=%d",
+        plan.mode, len(off_call or []), len(plan.excluded), len(plan.picked_off_call),
+        len(plan.unmatched), len(plan.failed_group_ids), int((time.monotonic() - t0) * 1000),
+    )
+    return plan, group_members
+
+
+def _off_call_event_log_lines(
+    plan: OffCallPlan, ts: str, group_names: dict[str, str] | None = None,
+) -> list[str]:
+    """Render an OffCallPlan as Event Log lines, each `<ts> - ...`.
+    `group_names` maps EB group id → display name for the failed-group line;
+    an unknown id renders as the id.
+
+    These strings reach the dispatcher textarea (via `d4h_event_log`) and the
+    D4H incident description (via `_inject_dispatch_milestones_into_event_log`).
+    They are Event Log CONTENT — names are allowed there, as they are for the
+    street-correction entries — and must NEVER be passed to `logger.*`.
+
+    - `nobody_excluded` with nothing else to report renders NOTHING: the Event
+      Log policy is corrections and failures only, never silent successes.
+    - The `excluded` line is FACTUAL only under mode "excluded" ("not paged").
+      Under "page_all", "draft" and "all_off_call" the same names WERE paged /
+      are still in the draft, so each of those modes gets its own wording that
+      says exclusion was NOT applied. No other mode gets an excluded line.
+    - The "failed" line comes FIRST and names the exception CLASS only.
+    - `picked_off_call`, `unmatched` and `failed_group_ids` are mode-independent.
+      `unmatched` is rendered in D4H's own spelling ("Last, First", stray
+      spaces included) on purpose: that is the string the dispatcher must find
+      in D4H to fix the missing Ref. It covers the WHOLE off-call list, not
+      only the selected groups, so the honest claim is "paged if in a
+      selected group".
+    """
+    lines: list[str] = []
+    if plan.mode == "failed":
+        lines.append(f"{ts} - D4H off-call check FAILED ({plan.failure or 'error'}) "
+                     f"— no one was excluded; sent to the groups as selected")
+    if plan.excluded:
+        names = ", ".join(plan.excluded)
+        if plan.mode == "excluded":
+            lines.append(f"{ts} - Unavailable in D4H (off-call, not paged): {names}")
+        elif plan.mode == "page_all":
+            lines.append(f"{ts} - Dispatcher override: paged everyone in the selected groups "
+                         f"despite off-call in D4H: {names}")
+        elif plan.mode == "draft":
+            lines.append(f"{ts} - Off-call in D4H: {names} — still in the Everbridge draft; "
+                         f"remove them in Everbridge before sending")
+        elif plan.mode == "all_off_call":
+            lines.append(f"{ts} - Everyone in the selected groups is off-call in D4H ({names}) "
+                         f"— sent to the groups as selected so the callout still has recipients")
+    if plan.picked_off_call:
+        lines.append(f"{ts} - Selected individually while off-call in D4H (paged): "
+                     f"{', '.join(plan.picked_off_call)}")
+    if plan.unmatched:
+        lines.append(f"{ts} - Off-call in D4H but not matched to Everbridge (D4H Ref is not a "
+                     f"3-digit OCEAN#) — paged if in a selected group; ask a D4H admin to fix "
+                     f"the Ref: {', '.join(plan.unmatched)}")
+    for gid in plan.failed_group_ids:
+        gname = (group_names or {}).get(gid, gid)
+        lines.append(f"{ts} - Everbridge group {gname} could not be expanded — sent as a group; "
+                     f"off-call members in it were NOT excluded")
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic helpers used by the /send-notification orchestration (Task 1.10b).
 # Adding them now (Task 1.10a) so they're testable in isolation; the
@@ -7257,6 +7517,9 @@ def _compose_active_incidents_tally(doc: dict, header: str) -> str:
     group_names = doc.get("requested_group_names") or []
     if group_names:
         lines.append(slack_module.format_groups_requested(group_names))
+    off_call_names = doc.get("off_call_excluded_names") or []
+    if off_call_names:
+        lines.append(slack_module.format_off_call_excluded(off_call_names))
     for group_name, names in sorted(by_group.items()):
         lines.append(slack_module.format_tally_responder_line(group_name, sorted(names)))
 
@@ -8314,6 +8577,30 @@ async def send_notification(
     # Rate limit (separate, tighter cap than /ocr per design Section 4 §5)
     await check_rate_limits(dispatcher.get("email", ""))
 
+    # ---- Step 0.6: Mode-aware routing + target split (pure) -----------------
+    # Moved above Step 1 (2026-09-12) so the off-call plan below — and PR 2's
+    # 422 confirmation gate on it — run before the Firestore skeleton and
+    # every side effect. Was Steps 2/3; the numbering below is kept.
+    decision = _route_send(selected_target_ids)
+    target_contact_ids = [
+        _strip_target_prefix(t) for t in decision.target_ids if not _is_group(t)
+    ]
+    target_group_ids = [
+        _strip_target_prefix(t) for t in decision.target_ids if _is_group(t)
+    ]
+
+    # ---- Step 0.7: D4H off-call exclusion (read-only, fails open) ----------
+    # Everbridge ignores excludedContactIds on a group send (Gotcha 8), so a
+    # live send is EXPANDED to member contactIds minus off-call members.
+    # target_group_ids stays the dispatcher's SELECTION: Step 9 keys the
+    # per-group tally and the D4H K9/UAS joins on it, never on the payload.
+    off_call_plan, _prefetched_group_members = await _build_off_call_plan(
+        decision=decision,
+        page_all=bool(body.get("page_all_selected")),
+        picked_contact_ids=target_contact_ids,
+        selected_group_ids=target_group_ids,
+    )
+
     # ---- Step 1: Compose canonical event_name + Firestore key --------------
     event_name = _compose_event_name_with_hhmm(event_name_human)
     event_id = _slugify_for_firestore(event_name)
@@ -8348,17 +8635,6 @@ async def send_notification(
                 "event_id includes an HHMM stamp) and retry."
             ),
         )
-
-    # ---- Step 2: Mode-aware routing decision (Task 1.9) --------------------
-    decision = _route_send(selected_target_ids)
-
-    # ---- Step 3: Split target IDs into contacts vs groups ------------------
-    target_contact_ids = [
-        _strip_target_prefix(t) for t in decision.target_ids if not _is_group(t)
-    ]
-    target_group_ids = [
-        _strip_target_prefix(t) for t in decision.target_ids if _is_group(t)
-    ]
 
     # ---- Step 4: Create Everbridge event (shared by both paths) ------------
     import everbridge as eb_module
@@ -8397,8 +8673,8 @@ async def send_notification(
                 event_name=event_name,
                 title=notif_title,
                 body=notif_body,
-                target_contact_ids=target_contact_ids,
-                target_group_ids=target_group_ids,
+                target_contact_ids=off_call_plan.send_contact_ids,
+                target_group_ids=off_call_plan.send_group_ids,
                 category_id=category_id,
             ),
         )
@@ -8418,8 +8694,8 @@ async def send_notification(
                 event_name=event_name,
                 title=notif_title,
                 body=notif_body,
-                target_contact_ids=target_contact_ids,
-                target_group_ids=target_group_ids,
+                target_contact_ids=off_call_plan.send_contact_ids,
+                target_group_ids=off_call_plan.send_group_ids,
                 category_id=category_id,
             ),
         )
@@ -8822,6 +9098,7 @@ async def send_notification(
     requested_names: list[str] = []
     contact_group_map: dict[str, list[str]] = {}
     contact_email_map: dict[str, list[str]] = {}
+    gid_to_name: dict[str, str] = {}  # hoisted: Step 10.5's off-call lines read it on a no-group send too
     if target_group_ids:
         # Look up canonical group names (SAR- prefix stripped) from EB.
         # Single API call per send; the dispatcher selection set is small.
@@ -8830,7 +9107,6 @@ async def send_notification(
         # with no Firestore doc. Fall back to raw group IDs in the Slack
         # groups-requested message so dispatch can complete and the
         # polling chain runs. The per-group loop below is already guarded.
-        gid_to_name: dict[str, str] = {}
         try:
             groups_list = await loop.run_in_executor(
                 None,
@@ -8864,19 +9140,26 @@ async def send_notification(
                 len(gid_to_name), len(missing_gids), len(missing_gids), len(gid_to_name),
             )
         # Fetch group membership + emails for each targeted group.
-        # list_group_member_contacts() returns [{contact_id, emails}] in a
+        # list_group_member_contacts() returns [{contact_id, emails, external_id, ocean, display_name}] in a
         # single call, populating both maps:
         #   contact_group_map  → per-group tally breakdown in #active-incidents
         #   contact_email_map  → Slack invite fallback (avoids callResultByPaths gap)
         for gid in target_group_ids:
             gname = gid_to_name.get(gid, gid)
             try:
-                member_contacts = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid
-                    ),
-                )
+                # Reuse the Step 0.7 expansion; fetch only for a group whose
+                # expansion failed there (or was skipped after a D4H failure).
+                # Membership, not truthiness: an expansion that succeeded with
+                # [] (an empty EB group) is a result, not a miss (rubric Q6).
+                if gid in _prefetched_group_members:
+                    member_contacts = _prefetched_group_members[gid]
+                else:
+                    member_contacts = await loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid
+                        ),
+                    )
                 for mc in member_contacts:
                     cid = mc["contact_id"]
                     contact_group_map.setdefault(cid, []).append(gname)
@@ -8931,11 +9214,14 @@ async def send_notification(
         "🔔 Everbridge ACTIVE" if decision.action == "send_live"
         else "📋 Awaiting dispatcher send"
     )
+    # Tally/doc field is FACTUAL only: page_all / draft / all_off_call paged them.
+    off_call_excluded_names = list(off_call_plan.excluded) if off_call_plan.mode == "excluded" else []
     initial_doc_for_tally = {
         "event_name_human":          event_name_human,
         "responders":                [],
         "last_non_empty_responders": [],
         "requested_group_names":     requested_names,
+        "off_call_excluded_names":   off_call_excluded_names,
         "contact_group_map":         contact_group_map,
         "contact_email_map":         contact_email_map,
     }
@@ -9021,25 +9307,31 @@ async def send_notification(
             f"{_d4h_ts} - Slack incident channel creation FAILED ({slack_error}) "
             f"— EB sent; create the Slack channel manually"
         )
+        # Off-call exclusion (Step 0.7) is otherwise applied silently; these
+        # lines are the only place the dispatcher and the D4H record learn
+        # who was not paged (or, under page_all/draft/failed, that nobody was
+        # excluded). Empty on a clean plan — Event Log policy.
+        _off_call_lines = _off_call_event_log_lines(off_call_plan, _d4h_ts, group_names=gid_to_name)
         _d4h_dispatch_milestones = [
             f"{_d4h_ts} - Everbridge notification sent ({_eb_mode_label}) — "
             f"{_eb_title_display} — groups: {_eb_groups_label} — individuals: {_eb_indiv_count}",
+            *_off_call_lines,
             _slack_milestone,
             f"{_d4h_ts} - D4H incident request filed at dispatch time",
         ]
-        # Issue #542: EB + Slack entries also land in d4h_event_log so the
-        # frontend renders them server-side with consistent UTC + PT-hint
-        # format, regardless of the dispatcher's browser timezone. Pre-fix
-        # these entries were generated frontend-side via new Date(), so a
-        # traveling dispatcher (Bill on EDT during the 2026-05-31 #519
+        # Issue #542: EB + off-call + Slack entries also land in d4h_event_log
+        # so the frontend renders them server-side with consistent UTC +
+        # PT-hint format, regardless of the dispatcher's browser timezone.
+        # Pre-fix these entries were generated frontend-side via new Date(),
+        # so a traveling dispatcher (Bill on EDT during the 2026-05-31 #519
         # closure) saw them in browser-local time while the OCR-time
         # entries above rendered in Pacific — a 3-hour apparent gap on
-        # the same incident. The third milestone ("D4H incident request
+        # the same incident. The last milestone ("D4H incident request
         # filed at dispatch time") stays D4H-description-only — it's a
         # placeholder for the upcoming create, not a dispatcher-facing
         # milestone (the actual "D4H incident created" entry is appended
         # later, after the D4H POST succeeds).
-        d4h_event_log.extend(_d4h_dispatch_milestones[:2])
+        d4h_event_log.extend(_d4h_dispatch_milestones[:2 + len(_off_call_lines)])
         _ocr_text_for_d4h = _inject_dispatch_milestones_into_event_log(
             ocr_text, _d4h_dispatch_milestones
         )
@@ -9166,6 +9458,7 @@ async def send_notification(
         # idempotency check (doc.get("slack_dm_sent_user_ids")) would read
         # empty and fire duplicate DMs to already-DM'd responders.
         slack_dm_sent_user_ids=dm_sent_user_ids,
+        off_call_excluded_names=off_call_excluded_names,
     )
     # Fold the Slack channel-provisioning outcome in (Step 6 guard). Like the
     # D4H fields, new_incident_doc() defaulted these to "ok"/None; overwrite

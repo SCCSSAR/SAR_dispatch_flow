@@ -60,7 +60,25 @@ PII_ARG_NAMES = frozenset({
     "addr", "addr_part", "addr_geo",
     "canonical_name", "_officer_raw", "officer_raw",
     "gm_lat", "gm_lng", "res_lat", "res_lng",
+    # D4H off-call exclusion (2026-09): member/contact name carriers.
+    "display_name", "excluded", "picked_off_call", "unmatched",
+    "off_call", "_off_call_lines", "group_members",
+    "plan", "off_call_plan", "d4h_event_log", "_d4h_dispatch_milestones",
 })
+
+# Key / attribute access that reads a person's name off a row or a plan:
+# ``mc["display_name"]``, ``m.get("name")``, ``plan.excluded``. The AST walker
+# cannot see these through PII_ARG_NAMES (the receiver is not a PII Name), so
+# they are matched by the constant key or the attribute itself. A reference
+# that sits inside a ``len(...)`` call is a COUNT, not the value, and is exempt
+# — that is how _build_off_call_plan's summary line logs.
+PII_KEY_CONSTS = frozenset({"name", "display_name", "firstName", "lastName", "ref"})
+PII_ATTRS = frozenset({"excluded", "picked_off_call", "unmatched", "display_name", "__dict__"})
+# Whole-object names: a bare reference is flagged (the repr carries names), but
+# a field read such as ``plan.mode`` is judged by the field — its name-carrying
+# fields are in PII_ATTRS. Scoped to these two so ``address.strip()`` and
+# ``group_members.values()`` stay flagged by the plain Name rule.
+PII_OBJECT_NAMES = frozenset({"plan", "off_call_plan"})
 
 # Baseline counts. PR-A.1 (2026-05) established this floor; each cleanup PR
 # in cluster A reduces it.
@@ -85,6 +103,19 @@ PII_ARG_NAMES = frozenset({
 #     args are status strings ("yes"/"no"/"geocoded"), not address values.
 #   - caltopo.py:439 ("CalTopo seed source | ... residence=%s ...") — args are
 #     bool() flags, not address values.
+#
+# Known limitations of the key/attribute extension (2026-09, off-call):
+#   - ``plan`` / ``off_call_plan`` are caught as WHOLE objects only when the
+#     variable is literally so named: ``logger.info("%s", plan)``, ``str(plan)``,
+#     ``vars(plan)``, ``getattr(plan, "excluded")``, ``dataclasses.asdict(plan)``
+#     and an f-string of it all flag; ``plan.mode`` does not. NOT caught, left
+#     to review: the same shapes on an alias (``p = plan``) or on a member/
+#     contact ROW logged whole (``str(mc)``, ``vars(m)``), and a name read
+#     through a variable key (``m[key]``).
+#   - ``["name"]`` / ``.get("name")`` / ``"ref"`` now also flag EB GROUP names
+#     and OCEAN#s (zero sites today). A future legitimate ``g["name"]`` log is
+#     a documented false positive to record HERE — never a reason to raise
+#     BASELINE without one.
 BASELINE = {
     # Format-string patterns
     "lat_lng_precision":     0,
@@ -104,33 +135,70 @@ BASELINE = {
     "res_lng":               0,
     "res_address_p1":        0,
     "res_address_geocode":   0,
+    # D4H off-call exclusion (2026-09): names may reach the Event Log, never a log.
+    "display_name":          0,
+    "excluded":              0,
+    "picked_off_call":       0,
+    "unmatched":             0,
+    "off_call":              0,
+    "_off_call_lines":       0,
+    "group_members":         0,
+    "plan":                  0,
+    "off_call_plan":         0,
+    "d4h_event_log":         0,
+    "_d4h_dispatch_milestones": 0,
 }
+
+
+def _walk_outside_len(node):
+    """ast.walk, but never descend into a ``len(...)`` call — a count of a PII
+    list is not the list."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "len":
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _walk_outside_len(child)
 
 
 def _arg_pii_names(arg_node):
     """Yield PII var names referenced as Name nodes anywhere in this arg's subtree.
 
     Catches bare ``address``, ``address[:80]``, ``f"{lkp_address}"``, etc.
-    Does NOT match the string literal ``"address"`` (no Name node).
+    Does NOT match the string literal ``"address"`` (no Name node), and does
+    not look inside ``len(...)``.
     """
-    for sub in ast.walk(arg_node):
-        if isinstance(sub, ast.Name) and sub.id in PII_ARG_NAMES:
+    field_reads = {id(sub.value) for sub in _walk_outside_len(arg_node)
+                   if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name)
+                   and sub.value.id in PII_OBJECT_NAMES}
+    for sub in _walk_outside_len(arg_node):
+        if isinstance(sub, ast.Name) and sub.id in PII_ARG_NAMES and id(sub) not in field_reads:
             yield sub.id
 
 
-def _is_ack_name_arg(arg_node):
-    """True if arg is a ``<obj>.get("name")`` call shape."""
-    if isinstance(arg_node, ast.Call) and isinstance(arg_node.func, ast.Attribute):
-        if arg_node.func.attr == "get" and len(arg_node.args) >= 1:
-            first = arg_node.args[0]
-            if isinstance(first, ast.Constant) and first.value == "name":
+def _is_pii_key_access(arg_node):
+    """True if anywhere in the arg (outside ``len(...)``) a name is read off a
+    row or a plan: ``.get(<PII_KEY_CONSTS>)``, ``[<PII_KEY_CONSTS>]``, or an
+    attribute in PII_ATTRS."""
+    for sub in _walk_outside_len(arg_node):
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+            if sub.func.attr == "get" and sub.args:
+                first = sub.args[0]
+                if isinstance(first, ast.Constant) and first.value in PII_KEY_CONSTS:
+                    return True
+        elif isinstance(sub, ast.Subscript):
+            if isinstance(sub.slice, ast.Constant) and sub.slice.value in PII_KEY_CONSTS:
                 return True
+        elif isinstance(sub, ast.Attribute) and sub.attr in PII_ATTRS:
+            return True
     return False
 
 
 def _scan_file(path):
     """Yield (lineno, hit_labels, fmt_string) for every flagged logger call."""
-    tree = ast.parse(path.read_text())
+    yield from _scan_tree(ast.parse(path.read_text()))
+
+
+def _scan_tree(tree):
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
@@ -150,7 +218,7 @@ def _scan_file(path):
             if pat.search(fmt):
                 hits.append(label)
         for a in node.args[1:]:
-            if _is_ack_name_arg(a):
+            if _is_pii_key_access(a):
                 hits.append("responder_name_arg")
             for name in _arg_pii_names(a):
                 hits.append(name)
@@ -209,3 +277,23 @@ class TestPIILogPatternFloor:
             f"category was reviewed and accepted — add it to BASELINE in "
             f"backend/test_pii_log_patterns.py."
         )
+
+    def test_scanner_sees_key_and_attribute_name_access(self):
+        """The scanner itself: a name read through a subscript, an attribute
+        or a join of one is flagged, and so is a whole plan; a len() of the
+        list (attribute or bare Name) and a scalar field read are not."""
+        src = (
+            'logger.info("x %s", plan.excluded)\n'
+            'logger.info("x %s", mc["display_name"])\n'
+            'logger.info("x %s", ", ".join(p.unmatched))\n'
+            'logger.info("x %d", len(plan.excluded))\n'
+            'logger.info("x %d", len(excluded))\n'
+            'logger.info("x %s", excluded)\n'
+            'logger.info("x %s", plan)\n'
+            'logger.info("x %s", plan.mode)\n'
+            'logger.info("x %s", plan.__dict__)\n'
+        )
+        hits = {lineno: labels for lineno, labels, _ in _scan_tree(ast.parse(src))}
+        assert hits == {1: ["responder_name_arg"], 2: ["responder_name_arg"],
+                        3: ["responder_name_arg"], 6: ["excluded"], 7: ["plan"],
+                        9: ["responder_name_arg"]}

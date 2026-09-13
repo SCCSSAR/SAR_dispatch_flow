@@ -147,6 +147,7 @@ def new_incident_doc(
     contact_email_map: Optional[dict],    # contact_id → [emails]; Slack invite fallback
     slack_dm_sent_user_ids: Optional[list[str]] = None,  # VIP-breakthrough DM recipients (PR #566/#568 feature)
     followup_notification_ids: Optional[list[str]] = None,  # #612 Standard follow-ups sent under this event
+    off_call_excluded_names: Optional[list[str]] = None,  # D4H off-call members NOT paged (tally line)
 ) -> dict[str, Any]:
     """Build the initial Firestore doc body for a new incident.
 
@@ -199,6 +200,13 @@ def new_incident_doc(
         # per-YES additions — that path has no overwriting .set() to work
         # around. Bug + fix: PR-after-#568.
         "slack_dm_sent_user_ids":    list(slack_dm_sent_user_ids or []),
+        # D4H off-call members who were NOT paged, rendered as the 🚫 line of
+        # the #active-incidents tally on every poll-cycle re-render. Only
+        # populated when the exclusion was actually applied (plan mode
+        # "excluded"); page_all / draft / all_off_call modes leave it empty because those
+        # people WERE paged and the tally must not say otherwise — the Event
+        # Log carries the nuance.
+        "off_call_excluded_names":   list(off_call_excluded_names or []),
         # #612 Gap A — every Standard follow-up notification sent under this
         # event, appended via ArrayUnion by /send-followup-notification the
         # moment each id is obtained (Cluster C).

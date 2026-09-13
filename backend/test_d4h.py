@@ -4195,3 +4195,150 @@ class TestInvolvedPersonLastSeenProductionParity:
         assert last_seen < qn, (
             "the last-seen paragraph no longer leads involvementNotes"
         )
+
+
+# --- Mirror --- off-call parse (D4H "Add Off-Call" = duty type OFF). Keep in
+# sync with backend/d4h.py::_parse_off_call_response.
+def _parse_off_call_response(json_body: dict) -> list[dict]:
+    out: list[dict] = []
+    seen: set = set()
+    for duty in json_body.get("results", []) or []:
+        member = duty.get("member") or {}
+        member_id = member.get("id")
+        if not member_id or member_id in seen:
+            continue
+        seen.add(member_id)
+        out.append({
+            "member_id": member_id,
+            "ref":       str(member.get("ref") or "").strip(),
+            "name":      str(member.get("name") or "").strip(),
+        })
+    return out
+
+
+class TestParseOffCallResponse:
+    def _row(self, mid, ref="305", name="Burns, Bill", **extra):
+        return {"type": "OFF", "notes": "MEDICAL - do not print", "role": {"id": 1},
+                "member": {"id": mid, "ref": ref, "name": name, **extra}}
+
+    def test_one_entry_per_member_even_with_overlapping_periods(self):
+        body = {"results": [self._row(1), self._row(1), self._row(2, ref="185", name="Black, Kris")]}
+        out = _parse_off_call_response(body)
+        assert [m["member_id"] for m in out] == [1, 2]
+
+    def test_ref_and_name_are_stripped_strings_and_none_safe(self):
+        body = {"results": [self._row(7, ref=None, name=None), self._row(8, ref=" 218 ", name="Mateos,  Miguel")]}
+        out = _parse_off_call_response(body)
+        assert out[0]["ref"] == "" and out[0]["name"] == ""
+        assert out[1]["ref"] == "218"
+
+    def test_notes_and_role_are_never_carried(self):
+        out = _parse_off_call_response({"results": [self._row(1)]})
+        assert set(out[0]) == {"member_id", "ref", "name"}
+
+    def test_empty_and_missing_results(self):
+        assert _parse_off_call_response({}) == []
+        assert _parse_off_call_response({"results": None}) == []
+
+
+class TestOffCallProductionParity:
+    """d4h.py is not importable here (httpx). Exec the pure parser out of the
+    production source and run the SAME fixtures against it, so the mirror
+    cannot drift silently (the #756 lesson)."""
+
+    @staticmethod
+    def _src() -> str:
+        return (Path(__file__).parent / "d4h.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _fn(src: str, name: str) -> str:
+        tree = ast.parse(src)
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return ast.get_source_segment(src, node)
+        raise AssertionError(f"{name} not found in d4h.py")
+
+    def _prod_parser(self):
+        ns: dict = {}
+        exec(self._fn(self._src(), "_parse_off_call_response"), ns)
+        return ns["_parse_off_call_response"]
+
+    def test_production_parser_matches_mirror_on_fixtures(self):
+        prod = self._prod_parser()
+        t = TestParseOffCallResponse()
+        for body in (
+            {"results": [t._row(1), t._row(1), t._row(2, ref="185")]},
+            {"results": [t._row(7, ref=None, name=None)]},
+            {}, {"results": None},
+        ):
+            assert prod(body) == _parse_off_call_response(body)
+
+    # -- Executed page loop: get_off_call_now runs out of the production source
+    # against a recording transport, so the query params, the timeout, the
+    # pagination stop rules and the page cap are all tested by BEHAVIOUR.
+    def _run_loop(self, page_for, total_size, calls: list) -> list:
+        from types import SimpleNamespace
+        src = self._src()
+        consts = {
+            k: ast.literal_eval(re.search(rf"^{k} = (.+)$", src, re.M).group(1))
+            for k in ("OFF_CALL_DUTY_TYPE", "OFF_CALL_TIMEOUT_S", "OFF_CALL_MAX_PAGES")
+        }
+
+        def _safe_http_call(method, url, op_label, **kw):
+            calls.append({"method": method, "url": url, **kw})
+            # A loop that loses `page += 1` re-serves page 0 forever and never
+            # meets the empty-page stop; fail loudly instead of hanging pytest.
+            assert len(calls) <= 2 * consts["OFF_CALL_MAX_PAGES"], "runaway page loop"
+            body = {"results": page_for(kw["params"]["page"]), "totalSize": total_size}
+            return SimpleNamespace(json=lambda: body)
+
+        ns: dict = {
+            "httpx": SimpleNamespace(get="GET"),
+            "BASE_URL": "https://x", "TEAM_ID": 1775,
+            "_auth_header": lambda: {},
+            "_format_d4h_datetime": lambda dt: "STAMP",
+            "_log_and_raise_for_status": lambda resp, op: None,
+            "_safe_http_call": _safe_http_call,
+            **consts,
+        }
+        for name in ("_extract_records", "_parse_off_call_response", "get_off_call_now"):
+            exec(self._fn(src, name), ns)
+        return ns["get_off_call_now"](datetime(2026, 9, 12, tzinfo=timezone.utc))
+
+    def test_loop_queries_type_off_overlapping_now_and_pages_to_total_size(self):
+        t = TestParseOffCallResponse()
+        pages = [[t._row(i) for i in range(1, 251)], [t._row(1)]]  # 250 + 1 (a dup)
+        calls: list = []
+        out = self._run_loop(lambda n: pages[n] if n < len(pages) else [], 251, calls)
+        assert [c["params"]["page"] for c in calls] == [0, 1]
+        for n, c in enumerate(calls):
+            assert c["method"] == "GET" and c["url"] == "https://x/team/1775/duties"
+            # `after` = duties ENDING after now, `before` = duties STARTING
+            # before now — the same instant in both selects "off-call NOW".
+            assert c["params"] == {"type": "OFF", "after": "STAMP", "before": "STAMP",
+                                   "page": n, "size": 250}
+            assert c["timeout"] == 5.0
+        assert out == _parse_off_call_response({"results": pages[0] + pages[1]})
+        assert [m["member_id"] for m in out] == list(range(1, 251))
+
+    def test_loop_stops_on_empty_page_when_total_size_unknown(self):
+        t = TestParseOffCallResponse()
+        pages = [[t._row(1), t._row(2), t._row(3)], []]
+        calls: list = []
+        out = self._run_loop(lambda n: pages[n], None, calls)
+        assert len(calls) == 2
+        assert [m["member_id"] for m in out] == [1, 2, 3]
+
+    def test_loop_page_cap_bounds_round_trips(self):
+        t = TestParseOffCallResponse()
+        calls: list = []
+        out = self._run_loop(lambda n: [t._row(n * 250 + i) for i in range(1, 251)],
+                             100000, calls)
+        assert len(calls) == 4  # OFF_CALL_MAX_PAGES, pinned below
+        assert len(out) == 1000
+
+    def test_off_call_constants(self):
+        src = self._src()
+        assert 'OFF_CALL_DUTY_TYPE = "OFF"' in src
+        assert re.search(r"^OFF_CALL_TIMEOUT_S = 5\.0", src, re.M)
+        assert re.search(r"^OFF_CALL_MAX_PAGES = 4$", src, re.M)
