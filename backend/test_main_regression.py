@@ -13378,3 +13378,144 @@ class TestPlanOffCallExclusionProductionParity:
         cf = prod(**{**base, **cases[-1]})
         assert (cf.excluded, cf.picked_off_call, cf.unmatched) == (
             ["contact 42", "Zed Adams"], ["bill burns"], ["Alpha, A", "zulu, Z"])
+
+
+# ---------------------------------------------------------------------------
+# D4H off-call exclusion — /send-notification orchestration (Task 4).
+# ---------------------------------------------------------------------------
+
+class TestOffCallStepOrdering:
+    """The off-call plan is READ-ONLY and must be computed before the Firestore
+    skeleton (Step 1.5) and before the EB event (Step 4): it is PR 2's 422
+    gate input, and a gate after the skeleton makes every resend a 409.
+    target_group_ids must stay the dispatcher's SELECTION for Step 9."""
+
+    @staticmethod
+    def _handler() -> str:
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        start = src.find("async def send_notification(")
+        assert start != -1
+        end = src.find("\n@app.", start + 1)
+        assert end > start
+        return src[start:end]
+
+    @staticmethod
+    def _strip_comments(s: str) -> str:
+        return "\n".join(l.split("#")[0] for l in s.splitlines())
+
+    def test_plan_is_built_after_routing_and_before_skeleton_and_eb_event(self):
+        h = self._strip_comments(self._handler())
+        i_route = h.index("decision = _route_send(")
+        i_plan = h.index("off_call_plan, _prefetched_group_members = await _build_off_call_plan(")
+        i_skel = h.index(".document(event_id).create(")
+        i_eb = h.index("eb_module.create_notification_event")
+        assert i_route < i_plan < i_skel < i_eb
+
+    def test_step5_sends_the_plan_not_the_selection(self):
+        h = self._strip_comments(self._handler())
+        for anchor in ("eb_module.send_notification_live", "eb_module.create_notification_template"):
+            seg = h[h.index(anchor):]
+            seg = seg[:seg.index("category_id=category_id")]
+            assert "target_contact_ids=off_call_plan.send_contact_ids" in seg, anchor
+            assert "target_group_ids=off_call_plan.send_group_ids" in seg, anchor
+            assert "target_group_ids=target_group_ids" not in seg, anchor
+
+    def test_step9_still_iterates_dispatcher_selected_groups(self):
+        # The step headers ARE comments, so slice on the raw text, then strip.
+        raw = self._handler()
+        step9 = self._strip_comments(raw[raw.index("# ---- Step 9:"):raw.index("# ---- Step 10:")])
+        assert "for gid in target_group_ids:" in step9
+        assert "off_call_plan.send_group_ids" not in step9
+        assert "_prefetched_group_members.get(gid)" in step9
+
+    def test_no_second_routing_or_split_after_the_move(self):
+        h = self._strip_comments(self._handler())
+        assert h.count("decision = _route_send(") == 1
+        assert h.count("target_group_ids = [") == 1
+        assert h.count("target_contact_ids = [") == 1
+
+
+class TestBuildOffCallPlanFailsOpen:
+    """A D4H outage, a group fetch failure, or a bug in the planner itself must
+    degrade to today's group send — never stop a callout. And the helper logs
+    COUNTS only (core privacy guarantee #3)."""
+
+    @staticmethod
+    def _fn():
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        fn = next(n for n in tree.body
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "_build_off_call_plan")
+        return src, fn
+
+    @staticmethod
+    def _try_wrapping(src, fn, needle: str):
+        """The ast.Try whose BODY contains `needle` and which has a bare
+        `except Exception` handler — None when the call is unguarded or the
+        handler is narrower."""
+        for t in ast.walk(fn):
+            if not isinstance(t, ast.Try):
+                continue
+            if not any(isinstance(h.type, ast.Name) and h.type.id == "Exception" for h in t.handlers):
+                continue
+            if any(needle in ast.get_source_segment(src, s) for s in t.body):
+                return t
+        return None
+
+    def test_d4h_read_group_fetch_and_planner_are_each_guarded(self):
+        """A guard is the try/except AND what its handler does. Reviewer
+        mutation 2026-09-12: replacing either handler body with `pass` left
+        the presence-only version 7/7 green (the planner is total, so a
+        swallowed D4H failure still produces a plan — just a wrong one:
+        `off_call` stays None, `failure` stays "", and `excluded` silently
+        empty). Assert the recovery each handler exists to perform."""
+        src, fn = self._fn()
+        recovery = {
+            "get_off_call_now": "failure = type(exc).__name__",
+            "list_group_member_contacts": "failed_group_ids.append(gid)",
+            "_plan_off_call_exclusion(": 'mode="failed"',
+        }
+        for needle, expected in recovery.items():
+            t = self._try_wrapping(src, fn, needle)
+            assert t is not None, needle
+            handler = next(h for h in t.handlers
+                           if isinstance(h.type, ast.Name) and h.type.id == "Exception")
+            body = "\n".join(ast.get_source_segment(src, s) for s in handler.body)
+            body = "\n".join(l.split("#")[0] for l in body.splitlines())
+            assert expected in body, (needle, body)
+
+    def test_failed_plan_carries_exception_class_name_only(self):
+        src, fn = self._fn()
+        code = "\n".join(l.split("#")[0] for l in ast.get_source_segment(src, fn).splitlines())
+        assert "failure=type(exc).__name__" in code or "failure = type(exc).__name__" in code
+        # The fail-open fallback must send the dispatcher's selection as groups.
+        assert 'mode="failed"' in code
+
+    @staticmethod
+    def _refs_outside_len(node) -> list[str]:
+        """Every Name id / Attribute attr reachable from `node` that is NOT
+        inside a len(...) call — a count is fine, the value behind it is not."""
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "len":
+            return []
+        out = []
+        if isinstance(node, ast.Attribute):
+            out.append(node.attr)
+        elif isinstance(node, ast.Name):
+            out.append(node.id)
+        for child in ast.iter_child_nodes(node):
+            out.extend(TestBuildOffCallPlanFailsOpen._refs_outside_len(child))
+        return out
+
+    def test_logs_counts_only(self):
+        src, fn = self._fn()
+        banned = {"display_name", "excluded", "unmatched", "picked_off_call",
+                  "send_contact_ids", "name", "ref", "off_call", "group_members", "emails"}
+        seen = 0
+        for call in ast.walk(fn):
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) \
+               and isinstance(call.func.value, ast.Name) and call.func.value.id == "logger":
+                seen += 1
+                for arg in list(call.args) + [kw.value for kw in call.keywords]:
+                    leaked = banned & set(self._refs_outside_len(arg))
+                    assert not leaked, (leaked, ast.get_source_segment(src, call))
+        assert seen >= 3  # D4H failure, group failure, the summary line

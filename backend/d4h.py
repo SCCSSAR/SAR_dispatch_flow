@@ -1467,7 +1467,7 @@ def get_off_call_now(now: datetime) -> list[dict]:
     """Members with an off-call (type=OFF) duty period overlapping `now`.
 
     Single paginated GET; raises D4HClientError / D4HServerError like every
-    other helper here. The CALLER (main.py Step 0.6) is the fail-open
+    other helper here. The CALLER (main.py Step 0.7) is the fail-open
     boundary — this function does not swallow.
     """
     op_label = "d4h.get_off_call_now"

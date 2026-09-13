@@ -3753,6 +3753,75 @@ def _plan_off_call_exclusion(
                        send_contact_ids=send_contacts, send_group_ids=send_groups, **common)
 
 
+async def _build_off_call_plan(
+    *,
+    decision: SendDecision,
+    page_all: bool,
+    picked_contact_ids: list[str],
+    selected_group_ids: list[str],
+) -> tuple[OffCallPlan, dict[str, list[dict]]]:
+    """Read D4H off-call + expand the selected EB groups, then plan the send.
+
+    Fail OPEN at every step: a D4H outage, an unset token, a slow group
+    lookup, or a bug in the planner itself must never stop a callout — the
+    plan degrades to today's group send and the Event Log says so (Task 5).
+    Returns the per-group member lists too so Step 9 reuses them instead of
+    re-fetching after the EB send. Logs COUNTS only — never names.
+
+    Group expansion runs in draft mode as well: a draft keeps groups, but the
+    Event Log still names who is off-call so the dispatcher can remove them
+    by hand in Everbridge (#599/#600).
+    """
+    import everbridge as eb_module
+    loop = asyncio.get_running_loop()
+    t0 = time.monotonic()
+    off_call: list[dict] | None = None
+    failure = ""
+    try:
+        off_call = await loop.run_in_executor(
+            None,
+            functools.partial(d4h.get_off_call_now, datetime.datetime.now(datetime.timezone.utc)),
+        )
+    except Exception as exc:  # fail open — includes RuntimeError (token unset)
+        failure = type(exc).__name__
+        logger.warning("off-call check failed (%s) — no one excluded", failure)
+    group_members: dict[str, list[dict]] = {}
+    failed_group_ids: list[str] = []
+    if off_call is not None:
+        for gid in selected_group_ids:
+            try:
+                # list_group_member_contacts is pageSize=1000, unpaged; it now
+                # bounds who gets PAGED, not just the tally (68 contacts today).
+                group_members[gid] = await loop.run_in_executor(
+                    None,
+                    functools.partial(eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid),
+                )
+            except Exception as exc:
+                failed_group_ids.append(gid)
+                logger.warning("group expansion failed for group %s (%s) — sent as a group",
+                               gid, type(exc).__name__)
+    try:
+        plan = _plan_off_call_exclusion(
+            action=decision.action, page_all=page_all,
+            picked_contact_ids=picked_contact_ids, selected_group_ids=selected_group_ids,
+            off_call=off_call, group_members=group_members,
+            failed_group_ids=failed_group_ids, failure=failure,
+        )
+    except Exception as exc:  # a planner bug must not block a dispatch either
+        logger.warning("off-call planner raised %s — no one excluded", type(exc).__name__)
+        plan = OffCallPlan(
+            mode="failed", send_contact_ids=sorted(set(picked_contact_ids)),
+            send_group_ids=list(selected_group_ids), failure=type(exc).__name__,
+        )
+    logger.info(
+        "off-call plan: mode=%s off_call=%d excluded=%d picked_off_call=%d unmatched=%d "
+        "failed_groups=%d latency_ms=%d",
+        plan.mode, len(off_call or []), len(plan.excluded), len(plan.picked_off_call),
+        len(plan.unmatched), len(plan.failed_group_ids), int((time.monotonic() - t0) * 1000),
+    )
+    return plan, group_members
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic helpers used by the /send-notification orchestration (Task 1.10b).
 # Adding them now (Task 1.10a) so they're testable in isolation; the
@@ -8444,6 +8513,30 @@ async def send_notification(
     # Rate limit (separate, tighter cap than /ocr per design Section 4 §5)
     await check_rate_limits(dispatcher.get("email", ""))
 
+    # ---- Step 0.6: Mode-aware routing + target split (pure) -----------------
+    # Moved above Step 1 (2026-09-12) so the off-call plan below — and PR 2's
+    # 422 confirmation gate on it — run before the Firestore skeleton and
+    # every side effect. Was Steps 2/3; the numbering below is kept.
+    decision = _route_send(selected_target_ids)
+    target_contact_ids = [
+        _strip_target_prefix(t) for t in decision.target_ids if not _is_group(t)
+    ]
+    target_group_ids = [
+        _strip_target_prefix(t) for t in decision.target_ids if _is_group(t)
+    ]
+
+    # ---- Step 0.7: D4H off-call exclusion (read-only, fails open) ----------
+    # Everbridge ignores excludedContactIds on a group send (Gotcha 8), so a
+    # live send is EXPANDED to member contactIds minus off-call members.
+    # target_group_ids stays the dispatcher's SELECTION: Step 9 keys the
+    # per-group tally and the D4H K9/UAS joins on it, never on the payload.
+    off_call_plan, _prefetched_group_members = await _build_off_call_plan(
+        decision=decision,
+        page_all=bool(body.get("page_all_selected")),
+        picked_contact_ids=target_contact_ids,
+        selected_group_ids=target_group_ids,
+    )
+
     # ---- Step 1: Compose canonical event_name + Firestore key --------------
     event_name = _compose_event_name_with_hhmm(event_name_human)
     event_id = _slugify_for_firestore(event_name)
@@ -8478,17 +8571,6 @@ async def send_notification(
                 "event_id includes an HHMM stamp) and retry."
             ),
         )
-
-    # ---- Step 2: Mode-aware routing decision (Task 1.9) --------------------
-    decision = _route_send(selected_target_ids)
-
-    # ---- Step 3: Split target IDs into contacts vs groups ------------------
-    target_contact_ids = [
-        _strip_target_prefix(t) for t in decision.target_ids if not _is_group(t)
-    ]
-    target_group_ids = [
-        _strip_target_prefix(t) for t in decision.target_ids if _is_group(t)
-    ]
 
     # ---- Step 4: Create Everbridge event (shared by both paths) ------------
     import everbridge as eb_module
@@ -8527,8 +8609,8 @@ async def send_notification(
                 event_name=event_name,
                 title=notif_title,
                 body=notif_body,
-                target_contact_ids=target_contact_ids,
-                target_group_ids=target_group_ids,
+                target_contact_ids=off_call_plan.send_contact_ids,
+                target_group_ids=off_call_plan.send_group_ids,
                 category_id=category_id,
             ),
         )
@@ -8548,8 +8630,8 @@ async def send_notification(
                 event_name=event_name,
                 title=notif_title,
                 body=notif_body,
-                target_contact_ids=target_contact_ids,
-                target_group_ids=target_group_ids,
+                target_contact_ids=off_call_plan.send_contact_ids,
+                target_group_ids=off_call_plan.send_group_ids,
                 category_id=category_id,
             ),
         )
@@ -9001,7 +9083,9 @@ async def send_notification(
         for gid in target_group_ids:
             gname = gid_to_name.get(gid, gid)
             try:
-                member_contacts = await loop.run_in_executor(
+                # Reuse the Step 0.7 expansion; fetch only for a group whose
+                # expansion failed there (or was skipped after a D4H failure).
+                member_contacts = _prefetched_group_members.get(gid) or await loop.run_in_executor(
                     None,
                     functools.partial(
                         eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid
