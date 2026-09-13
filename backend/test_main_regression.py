@@ -13428,7 +13428,10 @@ class TestOffCallStepOrdering:
         step9 = self._strip_comments(raw[raw.index("# ---- Step 9:"):raw.index("# ---- Step 10:")])
         assert "for gid in target_group_ids:" in step9
         assert "off_call_plan.send_group_ids" not in step9
-        assert "_prefetched_group_members.get(gid)" in step9
+        # Reuse is by MEMBERSHIP: `.get(gid) or …` re-fetched a group whose
+        # expansion succeeded with [] (rubric Q6, falsy fallthrough).
+        assert "if gid in _prefetched_group_members:" in step9
+        assert "_prefetched_group_members.get(gid)" not in step9
 
     def test_no_second_routing_or_split_after_the_move(self):
         h = self._strip_comments(self._handler())

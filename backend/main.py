@@ -3666,7 +3666,11 @@ def _plan_off_call_exclusion(
     - ANY off-call period excludes from EVERY selected group, whatever the role.
       Duty notes are never read, here or upstream in d4h.get_off_call_now().
     - A member picked BY NAME (individual contact) while off-call is still paged,
-      and reported in `picked_off_call`.
+      and reported in `picked_off_call` — ONLY when that contact is also a
+      member of a selected group, because the list is derived from `by_id`.
+      An off-call pick in none of the selected groups is paged and NOT
+      reported: accepted gap (a per-contact D4H lookup would be needed),
+      pinned by `test_picked_contact_outside_groups_is_sent_and_not_reported`.
     - `page_all` (dispatcher override) sends the groups exactly as selected but
       still reports who would have been excluded.
     - Draft mode (`action != "send_live"`, personal-dev safe mode) keeps the
@@ -9145,12 +9149,17 @@ async def send_notification(
             try:
                 # Reuse the Step 0.7 expansion; fetch only for a group whose
                 # expansion failed there (or was skipped after a D4H failure).
-                member_contacts = _prefetched_group_members.get(gid) or await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid
-                    ),
-                )
+                # Membership, not truthiness: an expansion that succeeded with
+                # [] (an empty EB group) is a result, not a miss (rubric Q6).
+                if gid in _prefetched_group_members:
+                    member_contacts = _prefetched_group_members[gid]
+                else:
+                    member_contacts = await loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, gid
+                        ),
+                    )
                 for mc in member_contacts:
                     cid = mc["contact_id"]
                     contact_group_map.setdefault(cid, []).append(gname)
