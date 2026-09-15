@@ -817,17 +817,34 @@ def _parse_group_members_response(json_body: dict) -> list[str]:
 
 
 def _parse_group_member_contacts_response(json_body: dict) -> list[dict]:
-    """Return [{contact_id, emails}] from GET /contacts/groups/{orgId}.
+    """Return [{contact_id, emails, external_id, ocean, display_name}] from
+    GET /contacts/groups/{orgId}.
 
     Same endpoint as _parse_group_members_response but also extracts email
-    addresses from `paths` so the caller can build a contact_id → emails map
-    for Slack invite lookups without relying on poll-response callResultByPaths.
+    addresses from `paths` (contact_id → emails map for Slack invite lookups
+    without relying on poll-response callResultByPaths), plus — for the
+    off-call exclusion (2026-09-12) — the OCEAN# parsed from externalId (the
+    join key to D4H `member.ref`) and a display name for the Event Log /
+    tally line. Server-side only: this projection is never returned to the
+    browser and never logged.
     """
     raw = json_body.get("page", {}).get("data", []) or []
-    return [
-        {"contact_id": str(c["id"]), "emails": _extract_paths_emails(c)}
-        for c in raw if c.get("id")
-    ]
+    out = []
+    for c in raw:
+        if not c.get("id"):
+            continue
+        contact_id = str(c["id"])
+        first = (c.get("firstName") or "").strip()
+        last = (c.get("lastName") or "").strip()
+        name = f"{first} {last}".strip()
+        out.append({
+            "contact_id":   contact_id,
+            "emails":       _extract_paths_emails(c),
+            "external_id":  c.get("externalId") or "",
+            "ocean":        _parse_ocean_from_external_id(c.get("externalId")),
+            "display_name": name or f"contact {contact_id}",
+        })
+    return out
 
 
 def _extract_id_from_post_response(json_body: dict) -> str:
@@ -1279,7 +1296,7 @@ def list_group_members(org_id: str, group_id: str) -> list[str]:
 
 
 def list_group_member_contacts(org_id: str, group_id: str) -> list[dict]:
-    """Fetch [{contact_id, emails}] for group members.
+    """Fetch [{contact_id, emails, external_id, ocean, display_name}] for group members.
 
     Same endpoint and params as list_group_members() but calls
     _parse_group_member_contacts_response so the caller gets email addresses

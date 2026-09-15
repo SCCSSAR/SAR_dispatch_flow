@@ -634,6 +634,16 @@ def format_groups_requested(group_names: list[str]) -> str:
     return f"Groups requested by dispatcher: {', '.join(group_names)}"
 
 
+def format_off_call_excluded(names: list[str]) -> str:
+    """Send-time line in the #active-incidents tally naming members who were
+    NOT paged because they are off-call in D4H (2026-09-12). Names arrive as
+    'First Last' from the Everbridge contact record (not D4H's 'Last, First'),
+    so ', ' is unambiguous here. Persisted on the incident doc
+    (off_call_excluded_names) so every poll-cycle re-render keeps the line.
+    """
+    return f"🚫 Unavailable in D4H (not paged): {', '.join(names)}"
+
+
 def to_conversational_name(name: str) -> str:
     """Convert a 'Last, First' name string to 'First Last' for human display.
 
