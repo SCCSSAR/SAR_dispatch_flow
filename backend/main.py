@@ -8716,7 +8716,7 @@ async def send_notification(
     # staging_address reaches "" whenever the frontend's `^1\.` staging regex
     # misses the textarea — a dispatcher who hand-edits or removes the
     # "Staging Area for Resources:" line produces exactly that. With empty
-    # inputs format_staging_message renders the literal `Staging: <|> (<|G>)`,
+    # inputs format_staging_message renders the literal `STAGING: <|> (<|G>)`,
     # and before this guard that string would have been posted AND PINNED.
     # Pre-#673 the same emptiness was a near-blank trailing line at the bottom
     # of an otherwise-useful welcome; splitting staging out is what promotes it
