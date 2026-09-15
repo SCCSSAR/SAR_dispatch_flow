@@ -198,7 +198,7 @@ def format_staging_message(
 ) -> str:
     """Mirror of backend/slack.py::format_staging_message() (issue #673)."""
     staging_address = _mrkdwn_escape(staging_address)
-    lines = [f"STAGING: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|G>)"]
+    lines = [f"STAGING: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|Google Maps>)"]
     if unverified:
         lines.append(STAGING_UNVERIFIED_WARNING)
     if unmapped:
@@ -747,9 +747,10 @@ class TestFormatStagingMessage:
             format_staging_message(**kw)
 
     def test_google_link_format(self):
-        # Compact 'G' label keeps the line scannable on phone screens.
+        # Spelled out (ops#862): on the 2026-09-11 callout a team member did
+        # not know what the old compact `(G)` meant, so the link went unused.
         kw = self._kwargs()
-        assert f"(<{kw['staging_google_url']}|G>)" in format_staging_message(**kw)
+        assert f"(<{kw['staging_google_url']}|Google Maps>)" in format_staging_message(**kw)
 
     def test_is_a_single_line(self):
         # One line, one pin, one thing to delete when it is wrong.
@@ -1014,7 +1015,7 @@ class TestSlackMrkdwnEscaping:
             staging_apple_url="https://maps.apple.com/?q=123%20Main",
             staging_google_url="https://www.google.com/maps/search/123%20Main",
         )
-        assert "STAGING: <https://maps.apple.com/?q=123%20Main|123 Main St&gt; &lt;https://evil.example|tap&gt;> (<https://www.google.com/maps/search/123%20Main|G>)" in out
+        assert "STAGING: <https://maps.apple.com/?q=123%20Main|123 Main St&gt; &lt;https://evil.example|tap&gt;> (<https://www.google.com/maps/search/123%20Main|Google Maps>)" in out
 
     def test_a_plain_address_is_byte_identical(self):
         """Content-preserving: the common case renders exactly as before, so
@@ -1155,7 +1156,7 @@ class TestWelcomeAndStagingProductionParity:
         prod = self._code_only(self._fn("format_staging_message"))
         assert (
             'lines = [f"STAGING: <{staging_apple_url}|{staging_address}> '
-            '(<{staging_google_url}|G>)"]'
+            '(<{staging_google_url}|Google Maps>)"]'
         ) in prod, (
             "slack.py::format_staging_message no longer renders the shape this "
             "file mirrors. Responders tap this link — the text IS the maps "
