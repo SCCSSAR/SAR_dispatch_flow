@@ -10297,7 +10297,7 @@ class TestStagingMessageWiring:
         staging_address reaches "" whenever the frontend's `^1\\.` staging regex
         misses the textarea — a dispatcher who hand-edits the "Staging Area for
         Resources:" line out of the summary produces exactly that. Unguarded,
-        format_staging_message renders the literal `Staging: <|> (<|G>)` and it
+        format_staging_message renders the literal `STAGING: <|> (<|Google Maps>)` and it
         gets posted AND PINNED. Pre-#673 that emptiness was a near-blank
         trailing line at the bottom of the welcome; the split is what promotes
         it to a prominent pin, so the guard ships with the split.
@@ -10311,7 +10311,7 @@ class TestStagingMessageWiring:
         guard = "if staging_address_present and slack_channel_id:"
         assert guard in block, (
             "The staging post is no longer guarded on having a staging "
-            "address — an empty dispatch pins the literal 'Staging: <|> (<|G>)'."
+            "address — an empty dispatch pins the literal 'STAGING: <|> (<|Google Maps>)'."
         )
         assert block.index("staging_address_present = bool(") < block.index(guard), (
             "The guard variable is computed after it is used."

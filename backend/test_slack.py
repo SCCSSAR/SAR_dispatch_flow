@@ -199,7 +199,7 @@ def format_staging_message(
 ) -> str:
     """Mirror of backend/slack.py::format_staging_message() (issue #673)."""
     staging_address = _mrkdwn_escape(staging_address)
-    lines = [f"Staging: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|G>)"]
+    lines = [f"STAGING: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|Google Maps>)"]
     if unverified:
         lines.append(STAGING_UNVERIFIED_WARNING)
     if unmapped:
@@ -622,7 +622,7 @@ class TestFormatPinnedWelcome:
         # on its own when a dispatch goes out with the wrong location. Folding
         # it back in removes the only correction path responders have.
         msg = format_pinned_welcome(**self._kwargs())
-        assert "Staging:" not in msg
+        assert "staging:" not in msg.lower()
         assert "maps.apple.com" not in msg
 
     def test_caltopo_url_NOT_in_welcome(self):
@@ -753,16 +753,24 @@ class TestFormatStagingMessage:
             format_staging_message(**kw)
 
     def test_google_link_format(self):
-        # Compact 'G' label keeps the line scannable on phone screens.
+        # Spelled out (ops#862): on the 2026-09-11 callout a team member did
+        # not know what the old compact `(G)` meant, so the link went unused.
         kw = self._kwargs()
-        assert f"(<{kw['staging_google_url']}|G>)" in format_staging_message(**kw)
+        assert f"(<{kw['staging_google_url']}|Google Maps>)" in format_staging_message(**kw)
 
     def test_is_a_single_line(self):
         # One line, one pin, one thing to delete when it is wrong.
         assert "\n" not in format_staging_message(**self._kwargs())
 
     def test_starts_with_the_staging_label(self):
-        assert format_staging_message(**self._kwargs()).startswith("Staging:")
+        """All caps so it is findable at a glance (Damian, 2026-09-13).
+
+        On the 2026-09-11 SCCSO Cedar callout a responder scanned past the
+        staging pin — a park name, not a street address, reads like prose
+        after `Staging:`. Mixed case also matched every other label in the
+        channel (Wearing:, Notes:, Contact:), so nothing marked this one out.
+        """
+        assert format_staging_message(**self._kwargs()).startswith("STAGING:")
 
     def test_address_text_is_verbatim(self):
         """THE TEXT IS THE QUERY.
@@ -786,7 +794,7 @@ class TestFormatStagingMessage:
         msg = format_staging_message(**self._kwargs(unverified=True))
         lines = msg.split("\n")
         assert len(lines) == 2
-        assert lines[0].startswith("Staging:")
+        assert lines[0].startswith("STAGING:")
         assert lines[1] == STAGING_UNVERIFIED_WARNING
 
     def test_warning_is_actionable_and_does_not_ask_for_adjudication(self):
@@ -820,7 +828,7 @@ class TestFormatStagingMessage:
         msg = format_staging_message(**self._kwargs(unverified=True, unmapped=True))
         lines = msg.split("\n")
         assert len(lines) == 3
-        assert lines[0].startswith("Staging:")
+        assert lines[0].startswith("STAGING:")
         assert lines[1] == STAGING_UNVERIFIED_WARNING
         assert lines[2] == STAGING_UNMAPPED_WARNING
 
@@ -953,7 +961,7 @@ class TestWelcomeNotesLine:
     def test_staging_still_absent(self):
         """#673 must survive #670 — staging is its own pinned message."""
         msg = format_pinned_welcome(**self._kwargs(notes="wanders at night"))
-        assert "Staging:" not in msg
+        assert "staging:" not in msg.lower()
 
 
 
@@ -1013,7 +1021,7 @@ class TestSlackMrkdwnEscaping:
             staging_apple_url="https://maps.apple.com/?q=123%20Main",
             staging_google_url="https://www.google.com/maps/search/123%20Main",
         )
-        assert "Staging: <https://maps.apple.com/?q=123%20Main|123 Main St&gt; &lt;https://evil.example|tap&gt;> (<https://www.google.com/maps/search/123%20Main|G>)" in out
+        assert "STAGING: <https://maps.apple.com/?q=123%20Main|123 Main St&gt; &lt;https://evil.example|tap&gt;> (<https://www.google.com/maps/search/123%20Main|Google Maps>)" in out
 
     def test_a_plain_address_is_byte_identical(self):
         """Content-preserving: the common case renders exactly as before, so
@@ -1092,7 +1100,7 @@ class TestSlackMrkdwnEscapingProductionParity:
     def test_staging_label_is_escaped_and_urls_are_not(self):
         code = self._code_only(self._fn("format_staging_message"))
         assert "staging_address = _mrkdwn_escape(staging_address)" in code
-        assert code.index("staging_address = _mrkdwn_escape(") < code.index('lines = [f"Staging: ')
+        assert code.index("staging_address = _mrkdwn_escape(") < code.index('lines = [f"STAGING: ')
         assert "_mrkdwn_escape(staging_apple_url)" not in code
         assert "_mrkdwn_escape(staging_google_url)" not in code, (
             "escaping a URL breaks the link responders tap — the URLs are "
@@ -1153,8 +1161,8 @@ class TestWelcomeAndStagingProductionParity:
         """
         prod = self._code_only(self._fn("format_staging_message"))
         assert (
-            'lines = [f"Staging: <{staging_apple_url}|{staging_address}> '
-            '(<{staging_google_url}|G>)"]'
+            'lines = [f"STAGING: <{staging_apple_url}|{staging_address}> '
+            '(<{staging_google_url}|Google Maps>)"]'
         ) in prod, (
             "slack.py::format_staging_message no longer renders the shape this "
             "file mirrors. Responders tap this link — the text IS the maps "
@@ -1179,7 +1187,7 @@ class TestWelcomeAndStagingProductionParity:
                 f"{const} is no longer used; the wording is agreed copy, not "
                 f"ad-hoc text."
             )
-            assert prod.index('lines = [f"Staging:') < prod.index(gate), (
+            assert prod.index('lines = [f"STAGING:') < prod.index(gate), (
                 "The warning is applied before the staging link is built."
             )
         assert prod.index("if unverified:") < prod.index("if unmapped:"), (
@@ -1202,7 +1210,7 @@ class TestWelcomeAndStagingProductionParity:
     def test_production_welcome_no_longer_builds_a_staging_line(self):
         """#673's actual invariant, asserted on code with comments stripped."""
         code = self._code_only(self._fn("format_pinned_welcome"))
-        assert "Staging:" not in code, (
+        assert "staging:" not in code.lower(), (
             "slack.py::format_pinned_welcome builds a staging line again. "
             "Folding staging back into the welcome removes the only path a "
             "human has to correct a wrong staging location — the bot authored "
@@ -1858,7 +1866,7 @@ class TestWelcomeRequestLine:
     def test_staging_still_absent(self):
         """#673 must survive this change too."""
         msg = format_pinned_welcome(**self._kwargs(request="K9"))
-        assert "Staging:" not in msg
+        assert "staging:" not in msg.lower()
 
 
 class TestWelcomeWearingLine:

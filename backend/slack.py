@@ -472,7 +472,7 @@ def format_staging_message(
 
     Rendered:
 
-        Staging: <apple_url|staging_address> (<google_url|G>)
+        STAGING: <apple_url|staging_address> (<google_url|Google Maps>)
 
     THE TEXT IS THE QUERY. staging_apple_url / staging_google_url are built by
     the frontend as maps.apple.com/?q=<TEXT> and google.com/maps/search/<TEXT>
@@ -512,7 +512,7 @@ def format_staging_message(
     them not to trust it until Dispatch confirms is.
     """
     staging_address = _mrkdwn_escape(staging_address)
-    lines = [f"Staging: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|G>)"]
+    lines = [f"STAGING: <{staging_apple_url}|{staging_address}> (<{staging_google_url}|Google Maps>)"]
     # Two INDEPENDENT conditions, deliberately not merged into one sentence.
     # They co-occur (a remote LKP that also disagrees with the officer's
     # coordinate — live on 2026-08-01), and they call for different scepticism:
