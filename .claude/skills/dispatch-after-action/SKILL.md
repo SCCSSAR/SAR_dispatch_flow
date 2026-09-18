@@ -92,7 +92,7 @@ $GCLOUD logging read \
   --format="value(timestamp,jsonPayload.message,resource.labels.revision_name)"
 ```
 
-**Pass `--configuration=` on every command in this review, with values from `deploy.env`.** `--project` alone runs as whichever config is *active*, so the other environment's query comes back `PERMISSION_DENIED`, which looks like an auth failure but isn't one (2026-09-17). Also write the flags out in full: under zsh, a `C="--project … --configuration …"` variable is **not** word-split, so gcloud gets one unrecognized argument.
+**Pass `--configuration=` on every gcloud query in this review (logs, revisions, secrets), with values from `deploy.env`.** The config-switching commands in the preflight above are the only exception. `--project` alone runs as whichever config is *active*, so the other environment's query comes back `PERMISSION_DENIED`, which looks like an auth failure but isn't one (2026-09-17). Also write the flags out in full: under zsh, a `C="--project … --configuration …"` variable is **not** word-split, so gcloud gets one unrecognized argument.
 
 Timestamps are UTC — convert to Pacific before showing them, or a 2026-07-19T05:44Z hit will look like the wrong day (it's the evening of 07-18 PT). **The event name in this line is truncated to 40 characters** (`event[:40]` in the handler), so `'2026-07-18 XXSO Joseph D. Grant County P'` is log truncation, not an event-name bug — don't report it as one.
 
@@ -137,7 +137,7 @@ print(lo, hi)
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND "create-map request" AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=50 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=50 \
   --format="value(timestamp,jsonPayload.message,resource.labels.revision_name)"
 ```
 
@@ -150,7 +150,7 @@ The single highest-value pull: every application log line for the ~10 minutes ar
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND timestamp>="<ocr_start>" AND timestamp<="<createmap+90s>" AND jsonPayload.message!=""' \
-  --project <PROJECT> --limit=300 --format="value(timestamp,severity,jsonPayload.message)"
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=300 --format="value(timestamp,severity,jsonPayload.message)"
 ```
 
 Read the full geocode URLs. `httpx` logs every outbound request at INFO, so the Nominatim / Google Maps / Geoapify / CalTopo / EB / D4H / Slack calls are all here with their **query strings and coordinates** — which is how you check geocode sanity (below) and spot label bleed-through such as a staging entry geocoded as `q=CalTopo Map ID:, CA`.
@@ -170,7 +170,7 @@ It surfaces OOMs (`Memory limit` in `textPayload`), cold-start `startup rss_base
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND ("OCR request received" OR "OCR request complete" OR "startup rss_baseline_mib" OR "Memory limit") AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=50 --format="value(timestamp,jsonPayload.message,textPayload)"
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=50 --format="value(timestamp,jsonPayload.message,textPayload)"
 ```
 
 Read: `total_ms` (dispatcher-perceived wait), `content_length` (upload size), `delta_mib`, `gc_recovered_mib`, any OOM at all (one reopens #519), and whether a cold start immediately preceded the upload (it inflates `total_ms`).
@@ -180,7 +180,7 @@ Read: `total_ms` (dispatcher-perceived wait), `content_length` (upload size), `d
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND ("Staging source compare" OR "Staging sequential" OR "Staging fallback" OR "Geoapify staging candidates" OR "Overpass staging candidates" OR "apply-staging-override") AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=200 --format="value(timestamp,jsonPayload.message)"
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=200 --format="value(timestamp,jsonPayload.message)"
 ```
 
 Parse with regex, not field position: `geoapify_ms=(\d+)`, `overpass_ms=(\d+)`, `geoapify_count=(\d+)`, `geoapify_ok=(True|False)`, `radius_m=(\d+)`, and from the override line `outcome=(\w+)`, `nearby_count=(\d+)`, `mode=(\w+)`.
@@ -197,7 +197,7 @@ Sanity baseline (2026-07-18 soak): Geoapify typically sub-second, ~500 ms; one r
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND severity>=WARNING AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=200 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=200 \
   --format="value(timestamp,severity,jsonPayload.message,textPayload,httpRequest.status,httpRequest.requestUrl)"
 ```
 
@@ -224,8 +224,8 @@ Triage each hit as **expected-and-benign**, **known** (cite the issue, count the
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND ("Feature flags loaded" OR "App version:") AND timestamp>="<day-start>"' \
-  --project <PROJECT> --limit=20 --format="value(timestamp,resource.labels.revision_name,jsonPayload.message)"
-$GCLOUD run revisions list --service dispatch-console --project <PROJECT> --region us-central1 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=20 --format="value(timestamp,resource.labels.revision_name,jsonPayload.message)"
+$GCLOUD run revisions list --service dispatch-console --project <PROJECT> --configuration=<GCLOUD_CONFIG> --region us-central1 \
   --format="table(metadata.name,metadata.creationTimestamp)" --limit=6
 ```
 
@@ -304,10 +304,10 @@ Start from the CalTopo map id in the report header, then **ask whether the field
 One signed GET. CalTopo is **one team across both environments**, so either project's `caltopo-*` secrets work; use whichever environment's gcloud auth is current. The raw response contains the find location, so it is saved into the report directory, never printed.
 
 ```bash
-G=/opt/homebrew/share/google-cloud-sdk/bin/gcloud; P=<project>
-export CALTOPO_TEAM_ID="$($G secrets versions access latest --secret caltopo-team-id --project $P)" \
-       CALTOPO_CREDENTIAL_ID="$($G secrets versions access latest --secret caltopo-credential-id --project $P)" \
-       CALTOPO_CREDENTIAL_SECRET="$($G secrets versions access latest --secret caltopo-credential-secret --project $P)"
+G=/opt/homebrew/share/google-cloud-sdk/bin/gcloud; P=<project>; C=<gcloud_config>
+export CALTOPO_TEAM_ID="$($G secrets versions access latest --secret caltopo-team-id --project $P --configuration=$C)" \
+       CALTOPO_CREDENTIAL_ID="$($G secrets versions access latest --secret caltopo-credential-id --project $P --configuration=$C)" \
+       CALTOPO_CREDENTIAL_SECRET="$($G secrets versions access latest --secret caltopo-credential-secret --project $P --configuration=$C)"
 python3 - <MAP_ID> <REPORT_DIR> <<'EOF'
 import ast, base64, datetime as dt, hashlib, hmac, json, math, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 map_id, out_dir = sys.argv[1], sys.argv[2]
