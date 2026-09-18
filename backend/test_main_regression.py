@@ -13677,3 +13677,69 @@ class TestOffCallTallyWiring:
             and any("format_off_call_excluded(" in ast.get_source_segment(src, s) for s in n.body)
         ]
         assert len(gated) == 1
+
+
+class TestCreateDocRssTelemetry:
+    """ops#851 measurement. Every September OOM followed a successful
+    `/create-doc` on the same instance (4 of 5 callouts; the one callout whose
+    create-doc 401'd never OOM'd). `gdocs.create_incident_doc` builds two
+    discovery services per call, which may leave a one-time RSS step that
+    CPython keeps in its arenas. Nothing logged RSS around the call, so the
+    hypothesis could not be tested. These pins read the production handler
+    via `ast` and check ORDER: pre is read before the executor call, post
+    after it, `gc.collect()` between post and post_gc, and the success log
+    line carries all three values."""
+
+    def _fn(self):
+        src = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "create_doc")
+        return src, fn
+
+    @staticmethod
+    def _assign_line(fn, target, call_src):
+        hits = [
+            n.lineno for n in ast.walk(fn)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == target for t in n.targets)
+            and isinstance(n.value, ast.Call)
+            and ast.unparse(n.value) == call_src
+        ]
+        assert len(hits) == 1, f"expected one `{target} = {call_src}` in create_doc, got {hits}"
+        return hits[0]
+
+    def test_reads_bracket_the_gdocs_call_in_order(self):
+        _, fn = self._fn()
+        executor = [
+            n.lineno for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "run_in_executor"
+        ]
+        assert len(executor) == 1, executor
+        pre = self._assign_line(fn, "_rss_pre_mib", "_rss_mib()")
+        post = self._assign_line(fn, "_rss_post_mib", "_rss_mib()")
+        collected = self._assign_line(fn, "_gc_collected", "gc.collect()")
+        post_gc = self._assign_line(fn, "_rss_post_gc_mib", "_rss_mib()")
+        assert pre < executor[0] < post < collected < post_gc
+
+    def test_success_log_carries_all_three_readings(self):
+        _, fn = self._fn()
+        logs = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and ast.unparse(n.func) == "logger.info"
+            and n.args and isinstance(n.args[0], ast.Constant)
+            and isinstance(n.args[0].value, str)
+            and n.args[0].value.startswith("Google Doc created")
+        ]
+        assert len(logs) == 1, logs
+        fmt = logs[0].args[0].value
+        for field in ("rss_pre_mib=", "rss_post_mib=", "rss_post_gc_mib=",
+                      "gc_recovered_mib=", "gc_collected="):
+            assert field in fmt, field
+        arg_names = {n.id for a in logs[0].args[1:] for n in ast.walk(a) if isinstance(n, ast.Name)}
+        assert {"_rss_pre_mib", "_rss_post_mib", "_rss_post_gc_mib", "_gc_collected"} <= arg_names
+        # Same clamp as /ocr (G.LOW item 2): concurrent polls can allocate
+        # between the two reads and make the difference negative.
+        assert any(
+            ast.unparse(a) == "max(0, _rss_post_mib - _rss_post_gc_mib)" for a in logs[0].args[1:]
+        )

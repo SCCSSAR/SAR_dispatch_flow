@@ -6710,6 +6710,10 @@ async def create_doc(
 
     logger.info("create-doc request | sub=%s event=%r", user_sub, event_name[:40])
 
+    # ops#851: every September OOM followed a /create-doc on the same
+    # instance. create_incident_doc builds two discovery services per call;
+    # these reads measure whether that leaves an RSS step behind.
+    _rss_pre_mib = _rss_mib()
     try:
         # create_incident_doc is synchronous (google-api-python-client uses httplib2)
         # — run in thread pool to avoid blocking the async event loop.
@@ -6733,11 +6737,20 @@ async def create_doc(
     # to PII-containing content in Cloud Run logs.  The full URL is returned to
     # the frontend but should not appear in the operational log stream.
     doc_id = doc_url.split("/d/")[1].split("/")[0] if "/d/" in doc_url else "unknown"
+    _rss_post_mib = _rss_mib()
+    _gc_collected = gc.collect()
+    _rss_post_gc_mib = _rss_mib()
     logger.info(
-        "Google Doc created | sub=%s total_ms=%d doc_id=%s",
+        "Google Doc created | sub=%s total_ms=%d doc_id=%s "
+        "rss_pre_mib=%d rss_post_mib=%d rss_post_gc_mib=%d gc_recovered_mib=%d gc_collected=%d",
         user_sub,
         int((time.monotonic() - t0) * 1000),
         doc_id,
+        _rss_pre_mib,
+        _rss_post_mib,
+        _rss_post_gc_mib,
+        max(0, _rss_post_mib - _rss_post_gc_mib),
+        _gc_collected,
     )
     return JSONResponse({"doc_url": doc_url})
 
