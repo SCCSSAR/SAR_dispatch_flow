@@ -88,9 +88,11 @@ Don't ask "which dispatch?" cold — show them the list. Unbounded by incident w
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND "create-map request" AND timestamp>="<14d-ago-UTC>"' \
-  --project <PROJECT> --limit=100 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=100 \
   --format="value(timestamp,jsonPayload.message,resource.labels.revision_name)"
 ```
+
+**Pass `--configuration=` on every gcloud query in this review (logs, revisions, secrets), with values from `deploy.env`.** The config-switching commands in the preflight above are the only exception. `--project` alone runs as whichever config is *active*, so the other environment's query comes back `PERMISSION_DENIED`, which looks like an auth failure but isn't one (2026-09-17). Also write the flags out in full: under zsh, a `C="--project … --configuration …"` variable is **not** word-split, so gcloud gets one unrecognized argument.
 
 Timestamps are UTC — convert to Pacific before showing them, or a 2026-07-19T05:44Z hit will look like the wrong day (it's the evening of 07-18 PT). **The event name in this line is truncated to 40 characters** (`event[:40]` in the handler), so `'2026-07-18 XXSO Joseph D. Grant County P'` is log truncation, not an event-name bug — don't report it as one.
 
@@ -135,11 +137,11 @@ print(lo, hi)
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND "create-map request" AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=50 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=50 \
   --format="value(timestamp,jsonPayload.message,resource.labels.revision_name)"
 ```
 
-`create-map request | sub=… event='<Event Name>'` is the one line every successful dispatch emits regardless of revision or staging source. **There is no happy-path "dispatch complete" log line** — `/send-notification` emits warnings only and nothing on success. So Pull A anchors the whole timeline, and dispatch-time facts (EB event id, Slack channel, tally ts) come from the Firestore incident doc, not from logs. See "Could not measure."
+`create-map request | sub=… event='<Event Name>'` is the one line every successful dispatch emits regardless of revision or staging source. **There is no happy-path "dispatch complete" log line** — `/send-notification` emits warnings only and nothing on success. So Pull A anchors the whole timeline, and dispatch-time facts (EB event id, Slack channel, tally ts) come from the Firestore incident doc, not from logs. See "Could not measure." **That doc is deleted about 24 hours after polling ends**: it carries `expire_at = last_poll_at + 24 h`, so it 404'd on 2026-09-17 for a 09-15 callout. **Read it in the first review session, within a day of Everbridge closing, and save the JSON into the report directory** (Firestore REST `GET …/documents/incidents/<event_id>` with a gcloud access token). The `Send: event_id=… notif=… channel=…` INFO line gives the ids, and the `#active-incidents` tally message (✅ confirmed / ❌ declined / ⏳ no response, plus per-group names) is the durable reconciliation source.
 
 ### Pull B — the dispatch itself, in full
 
@@ -148,7 +150,7 @@ The single highest-value pull: every application log line for the ~10 minutes ar
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND timestamp>="<ocr_start>" AND timestamp<="<createmap+90s>" AND jsonPayload.message!=""' \
-  --project <PROJECT> --limit=300 --format="value(timestamp,severity,jsonPayload.message)"
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=300 --format="value(timestamp,severity,jsonPayload.message)"
 ```
 
 Read the full geocode URLs. `httpx` logs every outbound request at INFO, so the Nominatim / Google Maps / Geoapify / CalTopo / EB / D4H / Slack calls are all here with their **query strings and coordinates** — which is how you check geocode sanity (below) and spot label bleed-through such as a staging entry geocoded as `q=CalTopo Map ID:, CA`.
@@ -168,7 +170,7 @@ It surfaces OOMs (`Memory limit` in `textPayload`), cold-start `startup rss_base
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND ("OCR request received" OR "OCR request complete" OR "startup rss_baseline_mib" OR "Memory limit") AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=50 --format="value(timestamp,jsonPayload.message,textPayload)"
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=50 --format="value(timestamp,jsonPayload.message,textPayload)"
 ```
 
 Read: `total_ms` (dispatcher-perceived wait), `content_length` (upload size), `delta_mib`, `gc_recovered_mib`, any OOM at all (one reopens #519), and whether a cold start immediately preceded the upload (it inflates `total_ms`).
@@ -178,7 +180,7 @@ Read: `total_ms` (dispatcher-perceived wait), `content_length` (upload size), `d
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND ("Staging source compare" OR "Staging sequential" OR "Staging fallback" OR "Geoapify staging candidates" OR "Overpass staging candidates" OR "apply-staging-override") AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=200 --format="value(timestamp,jsonPayload.message)"
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=200 --format="value(timestamp,jsonPayload.message)"
 ```
 
 Parse with regex, not field position: `geoapify_ms=(\d+)`, `overpass_ms=(\d+)`, `geoapify_count=(\d+)`, `geoapify_ok=(True|False)`, `radius_m=(\d+)`, and from the override line `outcome=(\w+)`, `nearby_count=(\d+)`, `mode=(\w+)`.
@@ -195,7 +197,7 @@ Sanity baseline (2026-07-18 soak): Geoapify typically sub-second, ~500 ms; one r
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND severity>=WARNING AND timestamp>="<lo>" AND timestamp<="<hi>"' \
-  --project <PROJECT> --limit=200 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=200 \
   --format="value(timestamp,severity,jsonPayload.message,textPayload,httpRequest.status,httpRequest.requestUrl)"
 ```
 
@@ -222,8 +224,8 @@ Triage each hit as **expected-and-benign**, **known** (cite the issue, count the
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND ("Feature flags loaded" OR "App version:") AND timestamp>="<day-start>"' \
-  --project <PROJECT> --limit=20 --format="value(timestamp,resource.labels.revision_name,jsonPayload.message)"
-$GCLOUD run revisions list --service dispatch-console --project <PROJECT> --region us-central1 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=20 --format="value(timestamp,resource.labels.revision_name,jsonPayload.message)"
+$GCLOUD run revisions list --service dispatch-console --project <PROJECT> --configuration=<GCLOUD_CONFIG> --region us-central1 \
   --format="table(metadata.name,metadata.creationTimestamp)" --limit=6
 ```
 
@@ -254,6 +256,10 @@ Run these every time, whether or not the dispatcher mentions anything. Each exis
 9. **CalTopo marker sanity.** Exactly one `cp`; LKP `placemark2`; residence `hut` present even on geocode failure; no marker on Null Island; officer entry blue `point` unless sole entry (wilderness case). **Also check for markers far outside the search area** — a bad LKP geocode leaves the LKP/residence markers stranded even after a staging override re-anchors staging, and on 2026-07-24 another dispatcher deleted one by hand as a distractor.
 10. **Deployed version vs HEAD.** Pull A's revision and the `App version:` line against `VERSION` and `git log`. State any gap explicitly.
 11. **Form-version prefix in the event log.** Entry 2 must read `v1 Intake form processed…` or `v2 …`. A v2 form misread as v1 produces wrong checkbox answers with no other diagnostic trail.
+12. **Event Name year vs the form's other dates.** Compare the year in the Event Name against the Last Seen date, any MUPS date, and the Event Number prefix (`26-…`). On 2026-09-15 the Date of Request read `2020` while the same form said `26` in three other places, and nobody noticed during the incident (ops#724, 3rd occurrence).
+13. **Officer staging that was KEPT far from the LKP.** `Staging Pass B … officer address far from LKP — kept` means the #773 guard trusted the officer's text. Read what the officer actually wrote on the form. A single word that points at another field (`Residence`) gets geocoded as a *place name*: on 2026-09-15 it became a hotel 11.7 mi away (ops#866). Reproduce the geocode with just the word + city; that query carries no subject data.
+14. **Is the bot's staging pin still in the incident channel?** Since #673 the order is welcome → staging → CalTopo. If staging is missing, check Pull E for `Staging message skipped`. No such WARNING means it *was* posted and later deleted, usually by an admin correcting staging (the designed recovery path; first live use 2026-09-15). Note any hand-posted replacement link: it bypasses the "staging text IS the maps query" rule.
+15. **Memory growth during polling.** An OOM that follows ~50–60 min of `/poll-incident` is ops#851. Record the post-OCR `rss_post_gc_mib`, the minutes from EB send to OOM, and the number of polls in between, so the per-poll growth can be computed. **Also check for a `/create-doc` on the SAME instance** (`labels.instanceId` on the request logs): every September OOM followed a successful one by 16–57 min, and a callout whose create-doc 401'd polled a full hour on one instance without an OOM (2026-09-18). A trace with a create-doc in it is not a pure poll-path measurement.
 
 ## Step 2 — The interview, three rounds
 
@@ -298,10 +304,10 @@ Start from the CalTopo map id in the report header, then **ask whether the field
 One signed GET. CalTopo is **one team across both environments**, so either project's `caltopo-*` secrets work; use whichever environment's gcloud auth is current. The raw response contains the find location, so it is saved into the report directory, never printed.
 
 ```bash
-G=/opt/homebrew/share/google-cloud-sdk/bin/gcloud; P=<project>
-export CALTOPO_TEAM_ID="$($G secrets versions access latest --secret caltopo-team-id --project $P)" \
-       CALTOPO_CREDENTIAL_ID="$($G secrets versions access latest --secret caltopo-credential-id --project $P)" \
-       CALTOPO_CREDENTIAL_SECRET="$($G secrets versions access latest --secret caltopo-credential-secret --project $P)"
+G=/opt/homebrew/share/google-cloud-sdk/bin/gcloud; P=<project>; C=<gcloud_config>
+export CALTOPO_TEAM_ID="$($G secrets versions access latest --secret caltopo-team-id --project $P --configuration=$C)" \
+       CALTOPO_CREDENTIAL_ID="$($G secrets versions access latest --secret caltopo-credential-id --project $P --configuration=$C)" \
+       CALTOPO_CREDENTIAL_SECRET="$($G secrets versions access latest --secret caltopo-credential-secret --project $P --configuration=$C)"
 python3 - <MAP_ID> <REPORT_DIR> <<'EOF'
 import ast, base64, datetime as dt, hashlib, hmac, json, math, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 map_id, out_dir = sys.argv[1], sys.argv[2]
@@ -476,7 +482,7 @@ State plainly anything the logs surfaced that didn't come up — a fallback they
 Also state what you **could not** measure, and why. Known gaps as of 2026-07-24:
 
 - **No end-to-end dispatch-duration telemetry.** The product's premise is 20-35 min → 2-3 min, and there is no completion log line, so only OCR→create-map is derivable. Any post-dispatch correction tail is entirely invisible. Offer to file an issue for a `send-notification complete | total_ms=…` line.
-- **No log of which staging entry was chosen** (only `/apply-staging-override` outcome/mode when an override happens).
+- **No log of which staging entry was chosen** (only `/apply-staging-override` outcome/mode when an override happens). **The CalTopo map answers it after the fact:** a `cp` at index 0 whose description is `Dispatcher-specified staging` with no `/apply-staging-override` log line means the dispatcher promoted a list entry with the pick-list's **Use this**, which runs entirely in the browser. The title keeps the promoted entry's own text (e.g. "Officer-designated…"), so trust the description, not the title.
 - **No log of textarea edits**, so OCR-correction counts are self-reported.
 - **Slack channel membership and tally text** need Slack API or Firestore reads, not Cloud Run logs.
 
