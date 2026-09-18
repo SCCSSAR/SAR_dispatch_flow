@@ -88,9 +88,11 @@ Don't ask "which dispatch?" cold — show them the list. Unbounded by incident w
 ```bash
 $GCLOUD logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=dispatch-console AND "create-map request" AND timestamp>="<14d-ago-UTC>"' \
-  --project <PROJECT> --limit=100 \
+  --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=100 \
   --format="value(timestamp,jsonPayload.message,resource.labels.revision_name)"
 ```
+
+**Pass `--configuration=` on every command in this review, with values from `deploy.env`.** `--project` alone runs as whichever config is *active*, so the other environment's query comes back `PERMISSION_DENIED`, which looks like an auth failure but isn't one (2026-09-17). Also write the flags out in full: under zsh, a `C="--project … --configuration …"` variable is **not** word-split, so gcloud gets one unrecognized argument.
 
 Timestamps are UTC — convert to Pacific before showing them, or a 2026-07-19T05:44Z hit will look like the wrong day (it's the evening of 07-18 PT). **The event name in this line is truncated to 40 characters** (`event[:40]` in the handler), so `'2026-07-18 XXSO Joseph D. Grant County P'` is log truncation, not an event-name bug — don't report it as one.
 
@@ -139,7 +141,7 @@ $GCLOUD logging read \
   --format="value(timestamp,jsonPayload.message,resource.labels.revision_name)"
 ```
 
-`create-map request | sub=… event='<Event Name>'` is the one line every successful dispatch emits regardless of revision or staging source. **There is no happy-path "dispatch complete" log line** — `/send-notification` emits warnings only and nothing on success. So Pull A anchors the whole timeline, and dispatch-time facts (EB event id, Slack channel, tally ts) come from the Firestore incident doc, not from logs. See "Could not measure."
+`create-map request | sub=… event='<Event Name>'` is the one line every successful dispatch emits regardless of revision or staging source. **There is no happy-path "dispatch complete" log line** — `/send-notification` emits warnings only and nothing on success. So Pull A anchors the whole timeline, and dispatch-time facts (EB event id, Slack channel, tally ts) come from the Firestore incident doc, not from logs. See "Could not measure." **That doc may be gone by review time** (404 on 2026-09-17, two days after the callout). The `Send: event_id=… notif=… channel=…` INFO line gives the ids, and the `#active-incidents` tally message (✅ confirmed / ❌ declined / ⏳ no response, plus per-group names) is the durable reconciliation source.
 
 ### Pull B — the dispatch itself, in full
 
@@ -254,6 +256,10 @@ Run these every time, whether or not the dispatcher mentions anything. Each exis
 9. **CalTopo marker sanity.** Exactly one `cp`; LKP `placemark2`; residence `hut` present even on geocode failure; no marker on Null Island; officer entry blue `point` unless sole entry (wilderness case). **Also check for markers far outside the search area** — a bad LKP geocode leaves the LKP/residence markers stranded even after a staging override re-anchors staging, and on 2026-07-24 another dispatcher deleted one by hand as a distractor.
 10. **Deployed version vs HEAD.** Pull A's revision and the `App version:` line against `VERSION` and `git log`. State any gap explicitly.
 11. **Form-version prefix in the event log.** Entry 2 must read `v1 Intake form processed…` or `v2 …`. A v2 form misread as v1 produces wrong checkbox answers with no other diagnostic trail.
+12. **Event Name year vs the form's other dates.** Compare the year in the Event Name against the Last Seen date, any MUPS date, and the Event Number prefix (`26-…`). On 2026-09-15 the Date of Request read `2020` while the same form said `26` in three other places, and nobody noticed during the incident (ops#724, 3rd occurrence).
+13. **Officer staging that was KEPT far from the LKP.** `Staging Pass B … officer address far from LKP — kept` means the #773 guard trusted the officer's text. Read what the officer actually wrote on the form. A single word that points at another field (`Residence`) gets geocoded as a *place name*: on 2026-09-15 it became a hotel 11.7 mi away (ops#866). Reproduce the geocode with just the word + city; that query carries no subject data.
+14. **Is the bot's staging pin still in the incident channel?** Since #673 the order is welcome → staging → CalTopo. If staging is missing, check Pull E for `Staging message skipped`. No such WARNING means it *was* posted and later deleted, usually by an admin correcting staging (the designed recovery path; first live use 2026-09-15). Note any hand-posted replacement link: it bypasses the "staging text IS the maps query" rule.
+15. **Memory growth during polling.** An OOM that follows ~50–60 min of nothing but `/poll-incident` is ops#851. Record the post-OCR `rss_post_gc_mib`, the minutes from EB send to OOM, and the number of polls in between, so the per-poll growth can be computed.
 
 ## Step 2 — The interview, three rounds
 
