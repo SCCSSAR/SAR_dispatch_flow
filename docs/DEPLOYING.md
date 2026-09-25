@@ -54,6 +54,31 @@ Notes feature.
 API enablement is not instant. If a later step reports that an API "has not been used in
 project ... before or it is disabled", wait one minute and repeat the step.
 
+### Disable Vertex AI prompt caching
+
+Google caches Gemini prompts by default, and from 2026-10-15 the cache can be written to
+disk for up to 24 hours on Gemini 3.x and newer models. The form image and subject details
+are part of the prompt, so turn caching off before you process a form:
+
+```bash
+curl -sS -X PATCH \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  "https://<region>-aiplatform.googleapis.com/v1/projects/<your-project-id>/cacheConfig" \
+  -d '{"name":"projects/<your-project-id>/cacheConfig","disableCache":true}'
+```
+
+Then read it back:
+
+```bash
+curl -sS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://<region>-aiplatform.googleapis.com/v1/projects/<your-project-id>/cacheConfig"
+```
+
+The response must include `"disableCache": true`. The PATCH response does not show the
+field, so it proves nothing. Terraform does not manage this setting. See
+[SECURITY.md](../SECURITY.md) for why it matters.
+
 ---
 
 ## 3. Create the Firestore database

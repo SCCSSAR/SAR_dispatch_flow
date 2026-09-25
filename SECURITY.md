@@ -355,6 +355,8 @@ A new assessment should be run when:
   changes
 - A new Firestore collection is introduced, or the retention policy / TTL on an
   existing collection changes
+- The Gemini model (`gemini_model`) changes, or a new GCP project is stood up. Confirm
+  `cacheConfig` still reads `disableCache: true` (see GCP Infrastructure Hardening)
 
 History of cleared triggers (PDF ingest, `/create-doc`, Everbridge + Slack, Vertex AI
 SDK migration, and D4H live activation) is preserved in the Assessment record table below.
@@ -568,6 +570,21 @@ projects are kept in approximate parity.
 
 These changes were identified via Aikido findings #261–#264 (April 2026) and are now
 part of the standard new-environment setup in [docs/DEPLOYING.md](docs/DEPLOYING.md).
+
+**Vertex AI prompt caching (disabled via the API, not Terraform):**
+- Implicit caching is off: `projects/<id>/cacheConfig` reads `disableCache: true`. Google
+  holds cached prompts in memory by default, and from 2026-10-15 its Durable Caching rollout
+  can write them to disk for up to 24 hours on Gemini 3.x and newer models. The prompt
+  carries the form image and subject details, so either would break "Form images are never
+  stored" above. At a few dispatches a week the cache almost never hits, so turning it off
+  costs nothing measurable.
+- Google's suggested opt-out, `retentionConfig: {retentionType: EPHEMERAL}`, returned 400
+  (`Unknown name "retentionConfig"`) on 2026-09-24 and is absent from the published v1 and
+  v1beta1 schemas. Disabling the cache is the control that exists today.
+- Terraform does not manage this setting, so a new project starts with caching ON. Setup is
+  step 2 of [docs/DEPLOYING.md](docs/DEPLOYING.md).
+- Verify with a GET, never the PATCH response, which omits the field. A GET showing only
+  `name` means caching is ON: the API leaves out fields at their default value.
 
 ### Rate Limiting
 
