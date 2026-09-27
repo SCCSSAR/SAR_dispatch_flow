@@ -153,7 +153,7 @@ $GCLOUD logging read \
   --project <PROJECT> --configuration=<GCLOUD_CONFIG> --limit=300 --format="value(timestamp,severity,jsonPayload.message)"
 ```
 
-Read the full geocode URLs. `httpx` logs every outbound request at INFO, so the Nominatim / Google Maps / Geoapify / CalTopo / EB / D4H / Slack calls are all here with their **query strings and coordinates** — which is how you check geocode sanity (below) and spot label bleed-through such as a staging entry geocoded as `q=CalTopo Map ID:, CA`.
+Read the full geocode URLs. `httpx` logs every outbound request at INFO, so the Nominatim / Google Maps / Geoapify / CalTopo / EB / D4H / Slack calls are all here with their **query strings and coordinates** — which is how you check geocode sanity (below) and spot label bleed-through such as a staging entry geocoded as `q=CalTopo Map ID:, CA`. **Since the #23 redactor, the values of `q`, `address`, `filter`, `bias` and the Census `x`/`y` read `REDACTED`**: the host, path and status survive, the query text and coordinates do not. So these lines still prove *which* provider answered, but no longer *what* it was asked or where it answered.
 
 ### Pull C — OCR latency and memory
 
@@ -243,7 +243,7 @@ An hour of EB polling produces ~240 `poll_task[post_discovery] ENQUEUED` lines p
 
 Run these every time, whether or not the dispatcher mentions anything. Each exists because it has failed before, silently, in a way the dispatcher couldn't see.
 
-1. **Geocode sanity — does the LKP coordinate actually land in the requested city?** Take the Nominatim/Google Maps query string from Pull B and the returned lat/lng, and check they agree. **This is the check that would have caught the worst finding this project has recorded.** On 2026-07-24 an LKP whose two-word street name had been written as one word returned a coordinate in a **different city ~8 miles away**: the one-word form does not exist in the requested city, and Nominatim matched a same-named street elsewhere while ignoring both the city and the ZIP that were present in the query. `_house_number_consistent()` passed because the wrong city had that house number too, and Google Maps — the spelling-correction fallback — is only consulted on Nominatim *failure*, never on a confident *wrong answer*. Cross-check the staging candidates' city names against the LKP's expected city; a list of addresses in a city nobody mentioned is the tell.
+1. **Geocode sanity — does the LKP coordinate actually land in the requested city?** Logs can no longer answer this (Pull B, #23 redaction), so read the positions off the **CalTopo map** instead (the Step 2.5b snippet works on any map, found or not). Check that the LKP and Residence markers sit where their titles say, and that every staging marker is in the same city as the LKP; the distance column makes a stranded marker obvious. On 2026-09-25 this was the only route available. **This is the check that would have caught the worst finding this project has recorded.** On 2026-07-24 an LKP whose two-word street name had been written as one word returned a coordinate in a **different city ~8 miles away**: the one-word form does not exist in the requested city, and Nominatim matched a same-named street elsewhere while ignoring both the city and the ZIP that were present in the query. `_house_number_consistent()` passed because the wrong city had that house number too, and Google Maps — the spelling-correction fallback — is only consulted on Nominatim *failure*, never on a confident *wrong answer*. Cross-check the staging candidates' city names against the LKP's expected city; a list of addresses in a city nobody mentioned is the tell.
 2. **Did the dispatcher have to correct or retract anything after dispatching?** Ask explicitly (Round 3) and look for the signature: repeated `apply-staging-override` lines, a re-edited event name, or an EB/Slack correction. On 2026-07-24 a stale city string survived the dispatcher's manual edits into the Everbridge body and **responders were paged to the wrong city** — the tool logged nothing wrong at all. No log line will ever surface this class; only the question will.
 3. **A responder replied YES but never landed in the Slack channel.** Two distinct causes, don't conflate them:
    - `no_eb_email` — the EB contact has no email, so there was nothing to look up. Handled by design: not invited, ⚠️ posted to the channel, dispatcher adds manually. **Live-validated on a real callout 2026-07-24 and praised by the dispatcher.** The fix is an ops one (add the responder's `@sccssar.org` email to their EB contact), not code.
@@ -337,10 +337,10 @@ def when(p):
     return dt.datetime.fromtimestamp(ms / 1000, PT).strftime("%Y-%m-%d %H:%M") if ms else "?"
 for f in markers:
     p = f["properties"]
-    tag = "FIND" if re.search(r"\b(subject|mp)\s+found\b", p.get("title", ""), re.I) else \
+    tag = "FIND" if re.search(r"\b(subject|mp)\s+(found|location)\b", p.get("title", ""), re.I) else \
           "LKP " if p.get("marker-symbol") == consts["SYMBOL_LKP"] else "    "
     print(tag, repr(p.get("title", ""))[:48], p.get("marker-symbol"), when(p))
-finds = [f for f in markers if re.search(r"\b(subject|mp)\s+found\b", f["properties"].get("title", ""), re.I)]
+finds = [f for f in markers if re.search(r"\b(subject|mp)\s+(found|location)\b", f["properties"].get("title", ""), re.I)]
 lkps = [f for f in markers if f["properties"].get("marker-symbol") == consts["SYMBOL_LKP"]]
 if len(finds) == 1 and len(lkps) == 1:   # anything else: ask the human (2.5c)
     (lng1, lat1), (lng2, lat2) = lkps[0]["geometry"]["coordinates"][:2], finds[0]["geometry"]["coordinates"][:2]
@@ -352,7 +352,7 @@ if len(finds) == 1 and len(lkps) == 1:   # anything else: ask the human (2.5c)
 EOF
 ```
 
-The FIND pattern matches a marker titled **"Subject Found" or "MP Found"** (the team convention; either can mean alive or deceased). Timestamps use `-originally-created-on`, which survives a map copy; the plain `-created-on` resets to the copy time.
+The FIND pattern matches a marker titled **"Subject Found", "MP Found", "Subject Location" or "MP Location"** (the team labels it either way, and either can mean alive or deceased). Do not ask the team to rename a marker to suit this regex; widen the regex. On 2026-09-25 the dispatcher renamed "Subject Location" to "Subject Found" so the old pattern would match, which hid the gap. Timestamps use `-originally-created-on`, which survives a map copy; the plain `-created-on` resets to the copy time.
 
 ### 2.5c Confirm with the human
 
