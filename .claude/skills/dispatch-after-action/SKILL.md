@@ -1,6 +1,6 @@
 ---
 name: dispatch-after-action
-description: Guided after-action review of ONE Dispatch Turbo callout or live dispatch test. Reads Cloud Run logs first (latency, memory, staging provider, geocode sanity, warnings), then interviews the dispatcher in three rounds across intake/OCR, staging, Slack, D4H, CalTopo, process, corrections, and feature asks — then writes a findings report to gitignored research/ and drafts (never auto-files) GitHub issues. On a real callout that ended in a find, it also reads the incident map for the find location and produces the values for D4H's Lost Behavior (LPB) tab. Trigger on "after action", "AAR", "post-callout review", "debrief the dispatch", "lessons learned", "we had a callout", "we had a real dispatch", "post-mortem the dispatch". Scope is the Dispatch Turbo SOFTWARE only — not incident management, search tactics, or field operations.
+description: Guided after-action review of ONE Dispatch Turbo callout or live dispatch test. Reads Cloud Run logs first (latency, memory, staging provider, geocode sanity, warnings), then interviews the dispatcher in three rounds across intake/OCR, staging, Slack, D4H, CalTopo, process, corrections, and feature asks — then writes a findings report to gitignored research/ and drafts (never auto-files) GitHub issues, plus a short paste-ready summary for the D4H incident's admins-only Private Data field. On a real callout that ended in a find, it also reads the incident map for the find location and produces the values for D4H's Lost Behavior (LPB) tab. Trigger on "after action", "AAR", "post-callout review", "debrief the dispatch", "lessons learned", "we had a callout", "we had a real dispatch", "post-mortem the dispatch". Scope is the Dispatch Turbo SOFTWARE only — not incident management, search tactics, or field operations.
 ---
 
 # Dispatch Turbo — After-Action Review
@@ -30,7 +30,7 @@ It does **not** cover incident management, search strategy, team assignments, fi
 ## Hard rules
 
 1. **Read-only against both environments.** Never run `build-dev.sh` / `build-sccssar-dev.sh`, never deploy, never `terraform apply`. This is an observation task. Fixes that come out of it go through the normal branch → commit → PR → Bill-merges → build workflow in a *separate* session or a later step, never inline here.
-2. **PII stays in `research/`.** Real callouts carry subject name, DOB, physical description, home address, and reporting-party contact info — and the Event Name itself embeds street plus agency. **Responder and team-member names count too** (a named responder who was missed, declined, or needed a manual add is still a person). The full report is written to gitignored `research/after-action/` (see Step 5). Anything that flows *outward* — GitHub issues, MEMORY.md, CLAUDE.md, `docs/release-notes.md`, PR bodies — must be PII-free: describe the *shape* of the input ("a v2 JPEG whose residence line omitted the city and whose street name was written as one word"), never the content. This is the "No PII in logs" guarantee (CLAUDE.md Critical Privacy & Security #3) extended to after-action artifacts; the repo is bound for public release (issue #332) and git history is permanent.
+2. **PII stays in `research/`.** Real callouts carry subject name, DOB, physical description, home address, and reporting-party contact info — and the Event Name itself embeds street plus agency. **Responder and team-member names count too** (a named responder who was missed, declined, or needed a manual add is still a person). The full report is written to gitignored `research/after-action/` (see Step 5). Anything that flows *outward* — GitHub issues, MEMORY.md, CLAUDE.md, `docs/release-notes.md`, PR bodies — must be PII-free: describe the *shape* of the input ("a v2 JPEG whose residence line omitted the city and whose street name was written as one word"), never the content. This is the "No PII in logs" guarantee (CLAUDE.md Critical Privacy & Security #3) extended to after-action artifacts; the repo is bound for public release (issue #332) and git history is permanent. The one exception is the D4H summary (Step 5), which goes into an admins-only D4H field and may name internals; it still carries no subject detail and no responder names.
 3. **Do not file GitHub issues without explicit confirmation.** Draft the bodies, show them, wait for a yes. Filing creates visible tickets others act on. See `feedback_no_premature_issue_filing` — this rule has been violated before. When a review produces many issues, show them in ONE batch for a single go/no-go rather than one round-trip per issue.
 4. **Don't classify a dispatch as "real" or "test" on your own.** Ask. Event names get reused across testing sessions and a mutual-aid callout can look like a typo (the 2026-07-18 out-of-county mutual-aid dispatch was a real callout that looked like noise).
 5. **Distinguish "new" from "known."** Before writing up any finding as novel, grep MEMORY.md, CLAUDE.md, `docs/release-notes.md`, and `gh issue list --state all --search "<term>"`. A rediscovered known issue is still worth a line in the report ("recurred, N-th occurrence") but it is not a new issue, and filing it as one creates duplicates.
@@ -532,6 +532,7 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 | Slack channel vs YES count | | gap? |
 | D4H ATTENDING vs YES count | | gap? |
 | Manual interventions | | enumerate them |
+| Upload → EB send | | log-measured: `/ocr` request → `/send-notification` request. The ONE timing the D4H summary trends use; always record it |
 | Perceived time to dispatch | | plus any correction tail |
 | CalTopo | | map id, marker count, latency |
 
@@ -563,7 +564,26 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 |---|---|---|---|
 
 ## Out of scope — passed along
+
+## D4H summary (paste-ready)
+<see "The D4H summary section" below>
 ```
+
+### The D4H summary section
+
+The last section of `report.md` is a short summary Bill pastes into the D4H incident's **Private Data** field (labelled **Secure** once saved). D4H limits that field to administrators, which in practice means the dispatchers, so it may name Turbo internals and ops issue numbers. The API does not expose the field (spec 7.5.2), so the paste is manual by design; Bill is already in the record for the LPB tab.
+
+Rules:
+
+- **Plain ASCII only.** No `·`, em dashes, curly quotes or emoji. On 2026-09-27 every `·` pasted into D4H as `¬∑`, because `pbcopy` read UTF-8 as Mac Roman. Use `|` as the separator. Check with `LC_ALL=C grep -n '[^ -~]'` before handover.
+- **No subject detail and no find data.** Both are already in the D4H record (involved person, LPB tab). **No responder names** — a lesson is never about a person.
+- **Fixed layout, about 15 lines:**
+  1. `Dispatch Turbo review, <review date> | v<deployed version>` — a fixed string, so D4H search finds every review.
+  2. `Dispatch: <upload → EB send> upload to page | <#1 staging used, or what was used instead>, <N> overrides | EB / D4H / Slack matched <a> / <b> / <c>` — the same three facts every time.
+  3. `For dispatchers and Plans:` — at most three takeaways. Each must give someone something **new** to do (the Session Rule #11d call-to-action test); standing advice is cut. Nothing speculative: a lesson the dispatcher is still unsure of waits for a second occurrence. Field feedback about how to read Turbo's output (e.g. map markers) belongs here. If nothing passes, write `No new actions.`
+  4. `Turbo changes:` — what is being done, each with a plain status (fixed in vX, planned, deferred to <date>, third-party / no action) and its `(ops#N)` where one exists. Internals such as an OOM belong here, stated by their user-visible effect first.
+  5. `Trends, last <N> real callouts (<first> to <last>):` — three fixed lines: upload → EB send (median and range), #1 staging used as-is (`k of N`), EB / D4H / Slack matched exactly (`k of N`). An optional fourth line for ONE recurring field-visible issue with a running count; omit it when nothing recurs. Compute from earlier reports' `## D4H summary` sections first, then their Measurements tables. Real callouts only, never tests. Write `n/a` or `about` where an older report measured something different — never guess a number.
+
 
 Then write the **PII-free** distillates:
 
@@ -575,6 +595,12 @@ Then write the **PII-free** distillates:
 Repo-file edits go on a branch, chained in one Bash call per Session Rule #14. Never `git add -A`. Never self-merge.
 
 ## Step 6 — Close out
+
+Copy the D4H summary to the clipboard and tell Bill to paste it into the incident's Private Data field:
+
+```bash
+sed -n '/^## D4H summary/,$p' research/after-action/<dir>/report.md | sed '1d' | LANG=en_US.UTF-8 pbcopy
+```
 
 Restore the original gcloud config. Report in-session: headline, alerts, findings table, what got filed versus drafted, what's still open. Then the copy-pasteable next-session prompt (Session Rule #11a) naming the immediate next action.
 
