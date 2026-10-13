@@ -76,6 +76,7 @@ from incidents import followup_tombstone_is_dead
 from image_validation import validate_jpeg_bytes, validate_jpeg_upload
 from rate_limit import check_rate_limits
 from secret_health import get_all_token_health
+from egress_ip import startup_egress_ip
 from gemini import extract_incident_summary, extract_staging_and_koester
 from pdf_extract import (
     is_pdf,
@@ -4132,6 +4133,10 @@ async def lifespan(app: FastAPI):
     # in this value across deploys indicates the import/init surface has
     # grown (new dependencies, larger module-level state). See scripts/oom-check.
     logger.info("startup rss_baseline_mib=%d", _rss_mib())
+    # Observed egress address (ops#875). Runs in the executor under a 3 s cap
+    # and never raises. The expected value is the Terraform output `egress_ip`;
+    # a Google pool address here means the revision lost its VPC egress setting.
+    logger.info("startup egress_ip=%s", await startup_egress_ip())
     # Config preflight. A WARNING, not a hard failure: OCR, CalTopo and Docs do
     # not need Everbridge, and refusing to boot would take the whole console down
     # for a missing EB variable. The individual EB guards still raise at use.
