@@ -13743,3 +13743,66 @@ class TestCreateDocRssTelemetry:
         assert any(
             ast.unparse(a) == "max(0, _rss_post_mib - _rss_post_gc_mib)" for a in logs[0].args[1:]
         )
+
+
+class TestStartupEgressIpLogging:
+    """ops#875: the lifespan logs the observed egress address once per instance.
+
+    main.py is not importable under local pytest, so this parses it with `ast`.
+    The log call must be a DIRECT statement of `lifespan` (not inside a branch
+    that may never run), must await `startup_egress_ip()` (the wall-clock-capped
+    wrapper, not the raw blocking probe), and must sit after the Firestore
+    warmup and before `yield`, so it runs once per instance before traffic.
+    """
+
+    @staticmethod
+    def _module() -> ast.Module:
+        return ast.parse((Path(__file__).parent / "main.py").read_text(encoding="utf-8"))
+
+    @classmethod
+    def _lifespan(cls) -> ast.AsyncFunctionDef:
+        return next(
+            n for n in cls._module().body
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "lifespan"
+        )
+
+    @staticmethod
+    def _is_egress_log(stmt: ast.stmt) -> bool:
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            return False
+        call = stmt.value
+        if ast.unparse(call.func) != "logger.info" or len(call.args) != 2:
+            return False
+        fmt, val = call.args
+        return (
+            isinstance(fmt, ast.Constant)
+            and fmt.value == "startup egress_ip=%s"
+            and isinstance(val, ast.Await)
+            and isinstance(val.value, ast.Call)
+            and ast.unparse(val.value.func) == "startup_egress_ip"
+        )
+
+    def test_lifespan_logs_capped_egress_probe_exactly_once(self):
+        body = self._lifespan().body
+        assert sum(self._is_egress_log(s) for s in body) == 1
+
+    def test_egress_log_runs_after_firestore_warmup_and_before_yield(self):
+        body = self._lifespan().body
+        egress = next(i for i, s in enumerate(body) if self._is_egress_log(s))
+        warm = next(
+            i for i, s in enumerate(body)
+            if "_warm_firestore_clients" in ast.unparse(s)
+        )
+        yld = next(
+            i for i, s in enumerate(body)
+            if isinstance(s, ast.Expr) and isinstance(s.value, ast.Yield)
+        )
+        assert warm < egress < yld
+
+    def test_wrapper_is_imported_from_its_own_module(self):
+        assert any(
+            isinstance(n, ast.ImportFrom)
+            and n.module == "egress_ip"
+            and any(a.name == "startup_egress_ip" and a.asname is None for a in n.names)
+            for n in self._module().body
+        )
