@@ -373,18 +373,19 @@ One line per D4H Lost Behavior field, in D4H's order, with the value and where i
 | Initial Planning Point | **Starts as Turbo's dispatch location**, which is the intake's first guess (D4H takes it from the incident location; 6 m apart on #03766). **Move it to the 2.5c IPP whenever that differs.** D4H never updates it on its own: on #03768 it still held the intake address, so D4H reported 4.95 mi against 5.32 mi from the PLS the incident actually used |
 | Population Density / Terrain / Eco-Region Domain | **Pre-filled by 2.5f**, then confirmed with the human. Eco-region is **Temperate** for Santa Clara County (Bailey: Mediterranean division = Humid Temperate) |
 | Subject Category, Fitness, Experience, Equipment | Category from the intake's LPB section; ask for the rest |
-| Total Time Lost | Intake `Last Seen At` → find. Needs a date on the last-seen value; ask if it is time-only |
-| Total Search Time | Everbridge send → find |
+| Total Time Lost | Last seen → find, measured from the **same sighting the IPP uses**: if the incident learned a later sighting, both move to it (#03787: an 11:15 police contact, not the intake's 10:05). Needs a date on the last-seen value; ask if it is time-only. **Typed by hand as whole hours**, not computed: round the sheet's value |
+| Total Search Time | Everbridge send → find. **Typed by hand as whole hours**, not computed: round the sheet's value |
 | Find Location | FIND marker, decimal degrees. **Enter the coordinates, not only an address:** on #03780 the find address was entered but the pin stayed on the IPP, so D4H stored a zero distance and showed Distance and Bearing as "-" |
 | Find Elevation, Find Feature, Mobility | Ask. Find Feature is a D4H dropdown: record D4H's own term, never a guessed one |
 
 **Marker time is a proxy for find time.** The FIND marker's creation time is when someone *placed* it, which can lag the find. Present it as a suggestion, and take the human's time when they have one.
 
-**Read the tab back after saving, before admins lock the incident.** D4H keeps what its form stored, which is not always what was typed: in the September incidents reviewed 2026-10-12, the tab disagreed with the AAR in a different way on every incident that had a find. Reopen the tab and check its computed values against this sheet:
+**Read the tab back after saving, before admins lock the incident.** D4H keeps what its form stored, which is not always what was typed: in the September incidents reviewed 2026-10-12, the tab disagreed with the AAR in a different way on every incident that had a find. Reopen the incident and check these against this sheet:
 
 - **Distance From IPP and Bearing Travelled** match 2.5c, allowing for D4H's display rounding. A **"-"** means the find pin never moved off the IPP. A **different number** means the IPP is still Turbo's dispatch location, or the find pin is off.
 - **Eco-Region Domain** reads Temperate. #03780 and #03783 both read **Dry**; whether that is the dropdown's default is unverified, so check it every time.
-- **Search Time and Time Lost** match the sheet. If Search Time differs, record both values: on #03780 D4H showed 7 h against the sheet's 16.4 h, and which D4H times it is computed from is unverified.
+- **Search Time and Time Lost** equal the sheet's values rounded to whole hours. D4H computes neither; both are hand-typed, which is how #03780 came to hold 7 h against the sheet's 16.4 h and #03787 was first entered as 4 h / 13 h against 5 h / 10 h.
+- **The incident's basic-info location matches the tab's IPP.** D4H keeps them as two separate fields and never syncs them. On #03787 the IPP was corrected while the incident location stayed at `[0, 0]` from the vendor outage, so the map and the tab disagreed by 7,900 mi. The location is readable through the API (`location.coordinates`, lng first), so compare it with the 2.5c IPP rather than by eye.
 
 **If the LPB tab was already filled in before the review, compare the same way.** Compute IPP → find from D4H's own coordinates and compare with the map. On 2026-09-09 they disagreed by 0.11 mi (1.13 mi in D4H, 1.24 mi on the map) because D4H's find location had resolved to a street name with no house number while the map marker was placed in the field. Recommend the map coordinates, and say which record should be corrected.
 
