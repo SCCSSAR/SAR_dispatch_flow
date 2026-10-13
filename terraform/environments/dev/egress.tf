@@ -74,3 +74,54 @@ resource "google_compute_router_nat" "egress" {
     filter = "ERRORS_ONLY"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Shared VPC: this project hosts the org's one egress address. The drone
+# tracker projects attach as service projects and point their Cloud Run
+# service at the subnet above. A service project can attach to ONE host, and
+# host and service projects must be in the same organization
+# (saferfuturesbydesign.com).
+#
+# Enabling the host needs roles/compute.xpnAdmin at the ORG, granted by hand
+# (org IAM is outside the project-IAM-via-Terraform rule; recorded in ops#875).
+# ---------------------------------------------------------------------------
+
+resource "google_compute_shared_vpc_host_project" "egress" {
+  project = var.project_id
+}
+
+# Kept beside the resources that consume it so the Shared VPC unit reads in
+# one place.
+variable "egress_service_projects" {
+  description = "Project IDs of every service project that uses the shared egress subnet. Each needs Compute Network User on the subnet for its Cloud Run service agent."
+  type        = set(string)
+  default = [
+    "skydio-tracker-dev-25092716",
+    "skydio-tracker-25092708-prod",
+  ]
+}
+
+# Project numbers are looked up rather than written down: the service agent's
+# email is built from the number, and a hand-kept ID -> number map can drift.
+data "google_project" "egress_service" {
+  for_each   = var.egress_service_projects
+  project_id = each.key
+}
+
+resource "google_compute_shared_vpc_service_project" "egress" {
+  for_each        = var.egress_service_projects
+  host_project    = google_compute_shared_vpc_host_project.egress.project
+  service_project = each.key
+}
+
+# Per-subnet binding, not project-level, so a service project can use this one
+# subnet and nothing else in the host.
+resource "google_compute_subnetwork_iam_member" "egress_service_agents" {
+  for_each   = var.egress_service_projects
+  project    = var.project_id
+  region     = var.region
+  subnetwork = google_compute_subnetwork.egress.name
+  role       = "roles/compute.networkUser"
+  member     = "serviceAccount:service-${data.google_project.egress_service[each.key].number}@serverless-robot-prod.iam.gserviceaccount.com"
+  depends_on = [google_compute_shared_vpc_service_project.egress]
+}
