@@ -376,7 +376,9 @@ One line per D4H Lost Behavior field, in D4H's order, with the value and where i
 | Total Time Lost | Last seen → find, measured from the **same sighting the IPP uses**: if the incident learned a later sighting, both move to it (#03787: an 11:15 police contact, not the intake's 10:05). Needs a date on the last-seen value; ask if it is time-only. **Typed by hand as whole hours**, not computed: round the sheet's value |
 | Total Search Time | Everbridge send → find. **Typed by hand as whole hours**, not computed: round the sheet's value |
 | Find Location | FIND marker, decimal degrees. **Enter the coordinates, not only an address:** on #03780 the find address was entered but the pin stayed on the IPP, so D4H stored a zero distance and showed Distance and Bearing as "-" |
-| Find Elevation, Find Feature, Mobility | Ask. Find Feature is a D4H dropdown: record D4H's own term, never a guessed one |
+| Find Elevation, Find Feature | Ask. Find Feature is a D4H dropdown: record D4H's own term, never a guessed one |
+| Mobility | Hours the subject was actually **moving**, last seen → stopped or found, rest excluded (ISRID 2016 p. 51: moves 10 h, sleeps 5 h, moves 3 h = 13). Knowable only from a subject found alive who can say, or a cognitively impaired subject still moving when found. **Leave it blank when unknown; never estimate.** It feeds ISRID's mobility model, and D4H shows no hover text for it |
+| Outcome *(Involved tab, not the LPB tab)* | One of D4H's four: Life Saved, Person Assisted, Not Located, Deceased. ISRID's Minimum Dataset needs well / injured / DOA / no trace, and D4H's alive options cannot say which, so also write **"Found well"** or **"Found injured"** in the LPB tab's General Comments (ISRID 2016 p. 53: injured = more than minor cuts, any hypothermia, or a carry-out) |
 
 **Marker time is a proxy for find time.** The FIND marker's creation time is when someone *placed* it, which can lag the find. Present it as a suggestion, and take the human's time when they have one.
 
