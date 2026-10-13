@@ -20,3 +20,8 @@ output "docker_image_path" {
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/dispatch-console/dispatch-console:latest"
   sensitive   = true
 }
+
+output "egress_ip" {
+  description = "Reserved static egress address (Cloud NAT). Send this to CalTopo and D4H; it never changes unless the address resource is released."
+  value       = google_compute_address.egress.address
+}
