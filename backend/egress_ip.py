@@ -68,6 +68,38 @@ async def startup_egress_ip(total_s: float = 3.0, probe=observed_egress_ip) -> s
         return "unavailable:timeout"
 
 
+
+def _got_http_answer(result: str) -> bool:
+    """True when the probe reached the echo service and got any HTTP response.
+    Only exception-type failures (timeout, URLError, resets) mean no path out."""
+    return not result.startswith("unavailable:") or result in (
+        "unavailable:empty", "unavailable:not_ipv4",
+    ) or result.startswith("unavailable:http_")
+
+
+class EgressGate:
+    """Startup gate for /health, the Cloud Run startup probe (ops#875).
+
+    With Direct VPC egress + Cloud NAT an instance can pass its startup probe
+    30-44 s before outbound connections work (measured 2026-10-13), so it would
+    take requests whose geocoding and vendor calls then fail. Closed until the
+    first proof of connectivity, or until `cap_s` so an echo-service outage can
+    only delay startup, never prevent it. Never closes again once open, so the
+    liveness probe, which also reads /health, cannot be failed by it.
+    """
+
+    def __init__(self, cap_s: float = 60.0, clock=time.monotonic):
+        self._cap_s = cap_s
+        self._clock = clock
+        self._start = clock()
+        self._connected = False
+
+    def mark_connected(self) -> None:
+        self._connected = True
+
+    def is_open(self) -> bool:
+        return self._connected or self._clock() - self._start >= self._cap_s
+
 async def log_egress_ip_when_ready(
     log,
     deadline_s: float = 120.0,
@@ -75,10 +107,14 @@ async def log_egress_ip_when_ready(
     probe=observed_egress_ip,
     clock=time.monotonic,
     sleep=asyncio.sleep,
+    on_connected=None,
 ) -> str:
     """Retry the probe until it returns an address or the deadline passes, then
     log ONE line: the address (or the last failure), the elapsed time since
     this task started, and the attempt count.
+
+    `on_connected` is called after every attempt that got an HTTP answer at all,
+    which proves outbound connectivity even when the echo service misbehaves.
     """
     start = clock()
     attempts = 0
@@ -86,6 +122,11 @@ async def log_egress_ip_when_ready(
         attempts += 1
         result = await startup_egress_ip(probe=probe)
         elapsed = clock() - start
+        if on_connected is not None and _got_http_answer(result):
+            try:
+                on_connected()
+            except Exception:  # noqa: BLE001 — the gate's cap still opens it
+                pass
         if not result.startswith("unavailable:") or elapsed >= deadline_s:
             break
         await sleep(interval_s)

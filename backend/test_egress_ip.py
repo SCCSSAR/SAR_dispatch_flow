@@ -18,6 +18,7 @@ import pytest
 
 from egress_ip import (
     EGRESS_ECHO_URL,
+    EgressGate,
     log_egress_ip_when_ready,
     observed_egress_ip,
     startup_egress_ip,
@@ -189,3 +190,84 @@ def test_ready_defaults_cover_the_documented_delay():
     sig = inspect.signature(log_egress_ip_when_ready)
     assert sig.parameters["deadline_s"].default == 120.0
     assert sig.parameters["interval_s"].default == 3.0
+
+
+# --- EgressGate + on_connected: hold the instance until egress works --------
+# /health (the Cloud Run startup probe) answers 503 until the gate opens, so
+# an instance takes no traffic while outbound connections still fail. The gate
+# opens on the first proof of connectivity, or at the cap so an echo-service
+# outage can only delay startup, never prevent it. Once open it stays open.
+
+def test_gate_closed_until_connected():
+    now = [0.0]
+    g = EgressGate(cap_s=60.0, clock=lambda: now[0])
+    now[0] = 30.0
+    assert not g.is_open()
+    g.mark_connected()
+    assert g.is_open()
+
+
+def test_gate_opens_at_cap_without_connectivity():
+    now = [0.0]
+    g = EgressGate(cap_s=60.0, clock=lambda: now[0])
+    now[0] = 59.9
+    assert not g.is_open()
+    now[0] = 60.0
+    assert g.is_open()
+
+
+def test_gate_default_cap_is_sixty_seconds():
+    assert inspect.signature(EgressGate).parameters["cap_s"].default == 60.0
+
+
+def _connected_calls(results):
+    now = [0.0]
+    calls = []
+
+    async def fake_sleep(s):
+        now[0] += s
+
+    seq = iter(results)
+    asyncio.run(log_egress_ip_when_ready(
+        lambda *a: None,
+        deadline_s=20.0,
+        probe=lambda: next(seq),
+        clock=lambda: now[0],
+        sleep=fake_sleep,
+        on_connected=lambda: calls.append(now[0]),
+    ))
+    return calls
+
+
+def test_on_connected_fires_on_first_address():
+    assert _connected_calls(["unavailable:timeout", "203.0.113.10"]) == [3.0]
+
+
+def test_on_connected_fires_on_an_http_error_status():
+    # An HTTP answer, even a 503, proves the path out works; startup must not
+    # wait on the echo service's own health.
+    calls = _connected_calls(["unavailable:timeout", "unavailable:http_503"] + ["unavailable:http_503"] * 10)
+    assert calls and calls[0] == 3.0
+
+
+@pytest.mark.parametrize("answer", ["unavailable:not_ipv4", "unavailable:empty"])
+def test_on_connected_fires_on_a_malformed_200(answer):
+    assert _connected_calls(["unavailable:timeout", answer] + [answer] * 10)[0] == 3.0
+
+
+@pytest.mark.parametrize("failure", ["unavailable:timeout", "unavailable:URLError", "unavailable:ConnectionResetError"])
+def test_on_connected_never_fires_without_an_http_answer(failure):
+    assert _connected_calls([failure] * 20) == []
+
+
+def test_on_connected_failure_does_not_stop_the_log_line():
+    logged = []
+
+    def bad():
+        raise RuntimeError("boom")
+
+    asyncio.run(log_egress_ip_when_ready(
+        lambda *a: logged.append(a), probe=lambda: "203.0.113.10",
+        clock=lambda: 0.0, on_connected=bad,
+    ))
+    assert logged and logged[0][1] == "203.0.113.10"

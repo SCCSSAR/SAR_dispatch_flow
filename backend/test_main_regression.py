@@ -13759,7 +13759,11 @@ class TestStartupEgressIpLogging:
     `yield`. Nothing in `lifespan` may await the probe.
     """
 
-    _CREATE = "app.state.egress_ip_task = asyncio.create_task(log_egress_ip_when_ready(logger.info))"
+    _GATE = "app.state.egress_gate = EgressGate()"
+    _CREATE = (
+        "app.state.egress_ip_task = asyncio.create_task(log_egress_ip_when_ready("
+        "logger.info, on_connected=app.state.egress_gate.mark_connected))"
+    )
     _CANCEL = "app.state.egress_ip_task.cancel()"
 
     @staticmethod
@@ -13790,6 +13794,11 @@ class TestStartupEgressIpLogging:
         )
         assert creates[0] < first_await
 
+    def test_gate_created_once_before_the_task(self):
+        body = [ast.unparse(s) for s in self._lifespan().body]
+        assert body.count(self._GATE) == 1
+        assert body.index(self._GATE) < body.index(self._CREATE)
+
     def test_task_cancelled_after_yield(self):
         body = self._lifespan().body
         yld = self._yield_index(body)
@@ -13807,9 +13816,26 @@ class TestStartupEgressIpLogging:
         assert any(
             isinstance(n, ast.ImportFrom)
             and n.module == "egress_ip"
-            and any(a.name == "log_egress_ip_when_ready" and a.asname is None for a in n.names)
+            and {"log_egress_ip_when_ready", "EgressGate"}
+            <= {a.name for a in n.names if a.asname is None}
             for n in self._module().body
         )
+
+    def test_health_returns_503_until_gate_opens_then_ok(self):
+        fn = next(
+            n for n in self._module().body
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "health"
+        )
+        stmts = [s for s in fn.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+        assert len(stmts) == 2
+        guard, final = stmts
+        assert isinstance(guard, ast.If)
+        assert ast.unparse(guard.test) == "not app.state.egress_gate.is_open()"
+        assert [ast.unparse(x) for x in guard.body] == [
+            "return PlainTextResponse('starting', status_code=503)"
+        ]
+        assert not guard.orelse
+        assert ast.unparse(final) == "return PlainTextResponse('ok')"
 
 
 class TestCloudRunStaticEgressWiring:
@@ -13869,3 +13895,28 @@ class TestCloudRunStaticEgressWiring:
         ni = self._block(self._vpc_access(env), r"(?m)^\s*network_interfaces\s*\{")
         assert re.search(r"(?m)^\s*network\s*=\s*google_compute_network\.egress\.id\s*$", ni)
         assert re.search(r"(?m)^\s*subnetwork\s*=\s*google_compute_subnetwork\.egress\.id\s*$", ni)
+
+
+    @pytest.mark.parametrize("env", ["dev", "sccssar-dev"])
+    def test_startup_probe_budget_covers_the_egress_gate_cap(self, env):
+        """The startup probe must outlast the /health gate's cap plus container
+        start, or an echo-service outage makes instances that never go ready.
+        BOTH envs: the gate ships in the image, so sccssar-dev gets it on its
+        next build whether or not it has a VPC yet."""
+        import inspect
+        from egress_ip import EgressGate
+        cap = inspect.signature(EgressGate).parameters["cap_s"].default
+        tf = (Path(__file__).parent.parent / "terraform" / "environments" / env / "main.tf").read_text(encoding="utf-8")
+        tf = self._strip_comments(tf)
+        service = self._block(tf, r'resource "google_cloud_run_v2_service" "dispatch"\s*\{')
+        probe = self._block(service, r"(?m)^\s*startup_probe\s*\{")
+        assert re.search(r'path\s*=\s*"/health"', probe)
+
+        def num(key):
+            m = re.search(rf"(?m)^\s*{key}\s*=\s*(\d+)\s*$", probe)
+            assert m, key
+            return int(m.group(1))
+
+        budget = num("initial_delay_seconds") + num("failure_threshold") * num("period_seconds")
+        # 25 s headroom: container start to lifespan measured 7-13 s (2026-10-13).
+        assert budget >= cap + 25, (env, budget, cap)
