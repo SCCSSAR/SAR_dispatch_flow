@@ -361,7 +361,7 @@ The FIND pattern matches a marker titled **"Subject Found", "MP Found", "Subject
 ### 2.5c Confirm with the human
 
 - **Exactly one FIND:** confirm it is the find. **None or several:** show the marker list and ask. Never pick one yourself: a clue, a sighting or a second subject all look like a find to a regex.
-- **Measure from the IPP Plans actually used.** That is usually Turbo's LKP marker, but ask. If Plans moved the IPP, measure from theirs and record which.
+- **Measure from the IPP the incident ended up using, not the one it started with.** You get half the information you want at the start of an incident, and half of that is wrong. Turbo's LKP marker is the intake's location at dispatch, and the scene often learns a better PLS after the search starts (2026-09-10: the PLS turned out to be a restaurant learned on scene, not the intake's mall address). Ask whether Plans moved the IPP or the scene learned a better PLS. If either happened, measure from that point and record which.
 - The snippet prints distance (great-circle) and initial compass bearing from Turbo's LKP marker to the find, **only when there is exactly one of each**. If Plans used a different IPP, recompute from the saved JSON. Report miles first, then km.
 
 ### 2.5d The entry sheet (goes in the report)
@@ -370,17 +370,23 @@ One line per D4H Lost Behavior field, in D4H's order, with the value and where i
 
 | D4H field | Source |
 |---|---|
-| Initial Planning Point | **Already set:** D4H takes it from the incident location Turbo writes at dispatch (6 m apart on #03766). Verify it; change it only if Plans moved the IPP |
+| Initial Planning Point | **Starts as Turbo's dispatch location**, which is the intake's first guess (D4H takes it from the incident location; 6 m apart on #03766). **Move it to the 2.5c IPP whenever that differs.** D4H never updates it on its own: on #03768 it still held the intake address, so D4H reported 4.95 mi against 5.32 mi from the PLS the incident actually used |
 | Population Density / Terrain / Eco-Region Domain | **Pre-filled by 2.5f**, then confirmed with the human. Eco-region is **Temperate** for Santa Clara County (Bailey: Mediterranean division = Humid Temperate) |
 | Subject Category, Fitness, Experience, Equipment | Category from the intake's LPB section; ask for the rest |
 | Total Time Lost | Intake `Last Seen At` → find. Needs a date on the last-seen value; ask if it is time-only |
 | Total Search Time | Everbridge send → find |
-| Find Location | FIND marker, decimal degrees |
+| Find Location | FIND marker, decimal degrees. **Enter the coordinates, not only an address:** on #03780 the find address was entered but the pin stayed on the IPP, so D4H stored a zero distance and showed Distance and Bearing as "-" |
 | Find Elevation, Find Feature, Mobility | Ask. Find Feature is a D4H dropdown: record D4H's own term, never a guessed one |
 
 **Marker time is a proxy for find time.** The FIND marker's creation time is when someone *placed* it, which can lag the find. Present it as a suggestion, and take the human's time when they have one.
 
-**If the LPB tab is already filled in, compare.** Compute IPP → find from D4H's own coordinates and compare with the map. On 2026-09-09 they disagreed by 0.11 mi (1.13 mi in D4H, 1.24 mi on the map) because D4H's find location had resolved to a street name with no house number while the map marker was placed in the field. Recommend the map coordinates, and say which record should be corrected.
+**Read the tab back after saving, before admins lock the incident.** D4H keeps what its form stored, which is not always what was typed: in the September incidents reviewed 2026-10-12, the tab disagreed with the AAR in a different way on every incident that had a find. Reopen the tab and check its computed values against this sheet:
+
+- **Distance From IPP and Bearing Travelled** match 2.5c, allowing for D4H's display rounding. A **"-"** means the find pin never moved off the IPP. A **different number** means the IPP is still Turbo's dispatch location, or the find pin is off.
+- **Eco-Region Domain** reads Temperate. #03780 and #03783 both read **Dry**; whether that is the dropdown's default is unverified, so check it every time.
+- **Search Time and Time Lost** match the sheet. If Search Time differs, record both values: on #03780 D4H showed 7 h against the sheet's 16.4 h, and which D4H times it is computed from is unverified.
+
+**If the LPB tab was already filled in before the review, compare the same way.** Compute IPP → find from D4H's own coordinates and compare with the map. On 2026-09-09 they disagreed by 0.11 mi (1.13 mi in D4H, 1.24 mi on the map) because D4H's find location had resolved to a street name with no house number while the map marker was placed in the field. Recommend the map coordinates, and say which record should be corrected.
 
 ### 2.5f Environment pre-fill (Population Density, Terrain, Eco-Region)
 
@@ -559,7 +565,7 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 ## Log findings not seen by the dispatcher
 
 ## Find data (LPB)
-<Step 2.5: map read (id, copy or original), IPP used, distance/bearing, the D4H entry sheet, any D4H-vs-map disagreement, and whether the finds.csv row was appended. "Not found" or "test" in one line when skipped.>
+<Step 2.5: map read (id, copy or original), IPP used, distance/bearing, the D4H entry sheet, the read-back result, any D4H-vs-map disagreement, and whether the finds.csv row was appended. "Not found" or "test" in one line when skipped.>
 
 ## Could not measure
 
