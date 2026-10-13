@@ -13810,3 +13810,62 @@ class TestStartupEgressIpLogging:
             and any(a.name == "log_egress_ip_when_ready" and a.asname is None for a in n.names)
             for n in self._module().body
         )
+
+
+class TestCloudRunStaticEgressWiring:
+    """ops#875: the Turbo Cloud Run service routes ALL egress through the
+    static-IP subnet (Direct VPC egress + Cloud NAT).
+
+    A revision that loses this block silently returns to Google's shared,
+    rotating egress pool, the condition CalTopo's WAF blocked on 2026-10-02.
+    Reads the Terraform source with comments stripped, and brace-matches the
+    blocks, so the `vpc_access` must sit INSIDE this service's `template`, and
+    `egress` / the subnet must sit inside THAT `vpc_access`, not anywhere else
+    in the file. sccssar-dev is expected to fail until Task 7 gives it a network.
+    """
+
+    _ENVS = [
+        "dev",
+        pytest.param("sccssar-dev", marks=pytest.mark.xfail(strict=True, reason="Task 7 (ops#875)")),
+    ]
+
+    @staticmethod
+    def _strip_comments(tf: str) -> str:
+        out = []
+        for line in tf.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            out.append(re.sub(r"\s#\s.*$", "", line))
+        return "\n".join(out)
+
+    @staticmethod
+    def _block(src: str, header: str) -> str:
+        """Body of the first block whose opening line matches `header`, by
+        brace matching. Raises if absent, so a missing block fails loudly."""
+        m = re.search(header, src)
+        assert m, f"block not found: {header}"
+        depth, i = 0, src.index("{", m.start())
+        start = i
+        while True:
+            c = src[i]
+            depth += (c == "{") - (c == "}")
+            i += 1
+            if depth == 0:
+                return src[start + 1:i - 1]
+
+    def _vpc_access(self, env: str) -> str:
+        tf = (Path(__file__).parent.parent / "terraform" / "environments" / env / "main.tf").read_text(encoding="utf-8")
+        tf = self._strip_comments(tf)
+        service = self._block(tf, r'resource "google_cloud_run_v2_service" "dispatch"\s*\{')
+        template = self._block(service, r"(?m)^\s*template\s*\{")
+        return self._block(template, r"(?m)^\s*vpc_access\s*\{")
+
+    @pytest.mark.parametrize("env", _ENVS)
+    def test_all_traffic_egress(self, env):
+        assert re.search(r'(?m)^\s*egress\s*=\s*"ALL_TRAFFIC"\s*$', self._vpc_access(env))
+
+    @pytest.mark.parametrize("env", _ENVS)
+    def test_egress_uses_the_static_ip_network_and_subnet(self, env):
+        ni = self._block(self._vpc_access(env), r"(?m)^\s*network_interfaces\s*\{")
+        assert re.search(r"(?m)^\s*network\s*=\s*google_compute_network\.egress\.id\s*$", ni)
+        assert re.search(r"(?m)^\s*subnetwork\s*=\s*google_compute_subnetwork\.egress\.id\s*$", ni)

@@ -336,6 +336,21 @@ resource "google_cloud_run_v2_service" "dispatch" {
       max_instance_count = 3 # Hard cap — prevents runaway scaling costs
     }
 
+    # Static egress (ops#875): every outbound connection leaves through the
+    # egress subnet and its Cloud NAT address. ALL_TRAFFIC is required for a
+    # fixed address; PRIVATE_RANGES_ONLY would leave CalTopo and D4H on the
+    # shared pool. Google-API traffic (Vertex, Firestore, Secret Manager,
+    # Cloud Tasks) still takes Private Google Access and never touches the NAT.
+    # Removing this block is the rollback: the next revision returns to the
+    # shared pool. Pinned by TestCloudRunStaticEgressWiring.
+    vpc_access {
+      network_interfaces {
+        network    = google_compute_network.egress.id
+        subnetwork = google_compute_subnetwork.egress.id
+      }
+      egress = "ALL_TRAFFIC"
+    }
+
     containers {
       # Image path — update after first docker push
       image = "${var.region}-docker.pkg.dev/${var.project_id}/dispatch-console/dispatch-console:latest"
