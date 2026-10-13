@@ -6,15 +6,18 @@ egress address (Terraform output `egress_ip`) the EXPECTED value is known by
 construction; this records the OBSERVED one, so a revision that silently lost
 its VPC setting shows up as a Google pool address in the startup log.
 
-Must never raise and must be bounded: it runs inside the lifespan before the
-service accepts traffic. Any failure degrades to an 'unavailable:<reason>'
-string that is still worth logging.
+Must never raise and must never delay serving: it runs as a background task
+started from the lifespan, retrying because Google documents 30 s+ before
+outbound connections work on a cold instance with Direct VPC egress + Cloud
+NAT. The logged `after_ms` is that delay, measured per instance. Any failure
+degrades to an 'unavailable:<reason>' string that is still worth logging.
 
 Stdlib urllib rather than httpx so the module imports under the build's Step 0
 pytest, where httpx is not installed, and its tests actually run there.
 """
 import asyncio
 import ipaddress
+import time
 import urllib.error
 import urllib.request
 
@@ -63,3 +66,31 @@ async def startup_egress_ip(total_s: float = 3.0, probe=observed_egress_ip) -> s
         return await asyncio.wait_for(loop.run_in_executor(None, probe), total_s)
     except asyncio.TimeoutError:
         return "unavailable:timeout"
+
+
+async def log_egress_ip_when_ready(
+    log,
+    deadline_s: float = 120.0,
+    interval_s: float = 3.0,
+    probe=observed_egress_ip,
+    clock=time.monotonic,
+    sleep=asyncio.sleep,
+) -> str:
+    """Retry the probe until it returns an address or the deadline passes, then
+    log ONE line: the address (or the last failure), the elapsed time since
+    this task started, and the attempt count.
+    """
+    start = clock()
+    attempts = 0
+    while True:
+        attempts += 1
+        result = await startup_egress_ip(probe=probe)
+        elapsed = clock() - start
+        if not result.startswith("unavailable:") or elapsed >= deadline_s:
+            break
+        await sleep(interval_s)
+    try:
+        log("startup egress_ip=%s after_ms=%d attempts=%d", result, int(elapsed * 1000), attempts)
+    except Exception:  # noqa: BLE001 — a diagnostic must not raise out of a background task
+        pass
+    return result

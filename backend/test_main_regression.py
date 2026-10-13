@@ -13746,14 +13746,21 @@ class TestCreateDocRssTelemetry:
 
 
 class TestStartupEgressIpLogging:
-    """ops#875: the lifespan logs the observed egress address once per instance.
+    """ops#875: the lifespan logs the observed egress address once per instance,
+    from a BACKGROUND task, so serving never waits on it.
 
-    main.py is not importable under local pytest, so this parses it with `ast`.
-    The log call must be a DIRECT statement of `lifespan` (not inside a branch
-    that may never run), must await `startup_egress_ip()` (the wall-clock-capped
-    wrapper, not the raw blocking probe), and must sit after the Firestore
-    warmup and before `yield`, so it runs once per instance before traffic.
+    Direct VPC egress + Cloud NAT can take 30 s+ to pass traffic on a cold
+    instance (Google's documented limit), so the probe retries and records how
+    long that took. main.py is not importable under local pytest, so this
+    parses it with `ast`. The task must be created as a DIRECT statement of
+    `lifespan` before its first `await` (so `after_ms` counts from app start and
+    nothing serialises it behind the Firestore warmup), held on `app.state` (an
+    unreferenced task can be garbage-collected mid-flight), and cancelled after
+    `yield`. Nothing in `lifespan` may await the probe.
     """
+
+    _CREATE = "app.state.egress_ip_task = asyncio.create_task(log_egress_ip_when_ready(logger.info))"
+    _CANCEL = "app.state.egress_ip_task.cancel()"
 
     @staticmethod
     def _module() -> ast.Module:
@@ -13767,42 +13774,39 @@ class TestStartupEgressIpLogging:
         )
 
     @staticmethod
-    def _is_egress_log(stmt: ast.stmt) -> bool:
-        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
-            return False
-        call = stmt.value
-        if ast.unparse(call.func) != "logger.info" or len(call.args) != 2:
-            return False
-        fmt, val = call.args
-        return (
-            isinstance(fmt, ast.Constant)
-            and fmt.value == "startup egress_ip=%s"
-            and isinstance(val, ast.Await)
-            and isinstance(val.value, ast.Call)
-            and ast.unparse(val.value.func) == "startup_egress_ip"
-        )
-
-    def test_lifespan_logs_capped_egress_probe_exactly_once(self):
-        body = self._lifespan().body
-        assert sum(self._is_egress_log(s) for s in body) == 1
-
-    def test_egress_log_runs_after_firestore_warmup_and_before_yield(self):
-        body = self._lifespan().body
-        egress = next(i for i, s in enumerate(body) if self._is_egress_log(s))
-        warm = next(
-            i for i, s in enumerate(body)
-            if "_warm_firestore_clients" in ast.unparse(s)
-        )
-        yld = next(
+    def _yield_index(body) -> int:
+        return next(
             i for i, s in enumerate(body)
             if isinstance(s, ast.Expr) and isinstance(s.value, ast.Yield)
         )
-        assert warm < egress < yld
 
-    def test_wrapper_is_imported_from_its_own_module(self):
+    def test_task_created_once_as_direct_statement_before_any_await(self):
+        body = self._lifespan().body
+        creates = [i for i, s in enumerate(body) if ast.unparse(s) == self._CREATE]
+        assert len(creates) == 1
+        first_await = next(
+            i for i, s in enumerate(body)
+            if any(isinstance(n, ast.Await) for n in ast.walk(s))
+        )
+        assert creates[0] < first_await
+
+    def test_task_cancelled_after_yield(self):
+        body = self._lifespan().body
+        yld = self._yield_index(body)
+        assert [ast.unparse(s) for s in body[yld + 1:]].count(self._CANCEL) == 1
+
+    def test_lifespan_never_awaits_the_probe(self):
+        names = {"log_egress_ip_when_ready", "startup_egress_ip", "observed_egress_ip"}
+        for node in ast.walk(self._lifespan()):
+            if isinstance(node, ast.Await):
+                assert not (names & {
+                    n.id for n in ast.walk(node) if isinstance(n, ast.Name)
+                }), ast.unparse(node)
+
+    def test_helper_is_imported_from_its_own_module(self):
         assert any(
             isinstance(n, ast.ImportFrom)
             and n.module == "egress_ip"
-            and any(a.name == "startup_egress_ip" and a.asname is None for a in n.names)
+            and any(a.name == "log_egress_ip_when_ready" and a.asname is None for a in n.names)
             for n in self._module().body
         )
