@@ -18,6 +18,7 @@ import pytest
 
 from egress_ip import (
     EGRESS_ECHO_URL,
+    log_egress_ip_when_ready,
     observed_egress_ip,
     startup_egress_ip,
 )
@@ -115,3 +116,76 @@ def test_startup_total_bound_returns_timeout_instead_of_hanging():
 def test_startup_default_total_bound_is_three_seconds():
     sig = inspect.signature(startup_egress_ip)
     assert sig.parameters["total_s"].default == 3.0
+
+
+# --- log_egress_ip_when_ready: background retry until egress works ---------
+# Google documents 30 s+ before outbound connections work on a cold instance
+# with Direct VPC egress + Cloud NAT. The startup line must therefore retry
+# rather than report the first timeout, and must record how long it took.
+
+def _run_ready(results, deadline_s=120.0, interval_s=3.0):
+    """Drive the retry loop with a fake clock: each sleep advances time."""
+    now = [0.0]
+    sleeps = []
+    logged = []
+    seq = iter(results)
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+        now[0] += s
+
+    out = asyncio.run(log_egress_ip_when_ready(
+        lambda *a: logged.append(a),
+        deadline_s=deadline_s,
+        interval_s=interval_s,
+        probe=lambda: next(seq),
+        clock=lambda: now[0],
+        sleep=fake_sleep,
+    ))
+    return out, logged, sleeps
+
+
+def test_ready_first_attempt_logs_once_with_zero_wait():
+    out, logged, sleeps = _run_ready(["34.0.0.1"])
+    assert out == "34.0.0.1"
+    assert logged == [("startup egress_ip=%s after_ms=%d attempts=%d", "34.0.0.1", 0, 1)]
+    assert sleeps == []
+
+
+def test_ready_retries_through_failures_and_reports_elapsed():
+    out, logged, sleeps = _run_ready(
+        ["unavailable:timeout", "unavailable:URLError", "203.0.113.10"]
+    )
+    assert out == "203.0.113.10"
+    assert logged == [
+        ("startup egress_ip=%s after_ms=%d attempts=%d", "203.0.113.10", 6000, 3)
+    ]
+    assert sleeps == [3.0, 3.0]
+
+
+def test_ready_gives_up_at_deadline_and_logs_last_reason_once():
+    out, logged, sleeps = _run_ready(
+        ["unavailable:timeout"] * 10, deadline_s=10.0, interval_s=3.0
+    )
+    assert out == "unavailable:timeout"
+    # Attempts at t = 0, 3, 6, 9, 12; the deadline is checked after each one.
+    assert logged == [
+        ("startup egress_ip=%s after_ms=%d attempts=%d", "unavailable:timeout", 12000, 5)
+    ]
+    assert len(sleeps) == 4
+
+
+def test_ready_survives_a_failing_log_callback():
+    def bad_log(*a):
+        raise RuntimeError("handler down")
+
+    out = asyncio.run(log_egress_ip_when_ready(
+        bad_log, probe=lambda: "34.0.0.1", clock=lambda: 0.0,
+    ))
+    assert out == "34.0.0.1"
+
+
+def test_ready_defaults_cover_the_documented_delay():
+    sig = inspect.signature(log_egress_ip_when_ready)
+    assert sig.parameters["deadline_s"].default == 120.0
+    assert sig.parameters["interval_s"].default == 3.0
