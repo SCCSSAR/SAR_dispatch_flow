@@ -76,7 +76,7 @@ from incidents import followup_tombstone_is_dead
 from image_validation import validate_jpeg_bytes, validate_jpeg_upload
 from rate_limit import check_rate_limits
 from secret_health import get_all_token_health
-from egress_ip import log_egress_ip_when_ready
+from egress_ip import EgressGate, log_egress_ip_when_ready
 from gemini import extract_incident_summary, extract_staging_and_koester
 from pdf_extract import (
     is_pdf,
@@ -4121,7 +4121,12 @@ async def lifespan(app: FastAPI):
     # with the address and `after_ms`, that delay. The expected address is the
     # Terraform output `egress_ip`; a Google pool address means the revision
     # lost its VPC egress setting. Kept on app.state so it is not GC'd.
-    app.state.egress_ip_task = asyncio.create_task(log_egress_ip_when_ready(logger.info))
+    # The probe also opens the /health startup gate on the first HTTP answer:
+    # until then the instance must not take traffic it cannot serve.
+    app.state.egress_gate = EgressGate()
+    app.state.egress_ip_task = asyncio.create_task(
+        log_egress_ip_when_ready(logger.info, on_connected=app.state.egress_gate.mark_connected)
+    )
     # _warm_firestore_clients makes synchronous Firestore gRPC .get() calls
     # (the whole point — force lazy-init of the singleton + verify the
     # round-trip works before the first real request hits, per PR #527).
@@ -4231,8 +4236,15 @@ async def serve_frontend():
 async def health():
     """
     Unauthenticated health check — required by Cloud Run startup/liveness probes.
-    Returns no data beyond the 200 status code.
+    Returns no data beyond the status code.
+
+    503 only during startup, until outbound connections are proven to work
+    (ops#875: Direct VPC egress + Cloud NAT measured 30-44 s late on some cold
+    instances). The gate opens once and stays open, so the liveness probe,
+    which only starts after the startup probe passes, always reads 200.
     """
+    if not app.state.egress_gate.is_open():
+        return PlainTextResponse("starting", status_code=503)
     return PlainTextResponse("ok")
 
 

@@ -716,7 +716,10 @@ resource "google_cloud_run_v2_service" "dispatch" {
         http_get { path = "/health" }
         initial_delay_seconds = 10 # give cold start time to pull image + load Python deps
         period_seconds        = 5
-        failure_threshold     = 8 # up to 50s total (10 + 8*5) for worst-case cold start
+        # up to 90s total (10 + 16*5). /health answers 503 until outbound
+        # connections work or its 60s gate cap expires (ops#875), so this must
+        # outlast cap + container start. Pinned by TestCloudRunStaticEgressWiring.
+        failure_threshold = 16
       }
 
       liveness_probe {
