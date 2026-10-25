@@ -6,7 +6,7 @@ google-cloud-firestore==2.27.0
 google-genai==2.22.0
 Pillow==12.3.0
 httpx==0.28.1
-pymupdf==1.27.2.2
+pymupdf==1.28.2
 google-api-python-client==2.194.0
 google-auth-httplib2==0.3.0
 slack_sdk==3.41.0
