@@ -77,7 +77,7 @@ from image_validation import validate_jpeg_bytes, validate_jpeg_upload
 from rate_limit import check_rate_limits
 from secret_health import get_all_token_health
 from egress_ip import EgressGate, log_egress_ip_when_ready
-from gemini import extract_incident_summary, extract_staging_and_koester
+from gemini import extract_incident_summary, extract_staging_and_koester, range_ring_prompt_block
 from pdf_extract import (
     is_pdf,
     # #765 — the ONE age-from-DOB implementation. Aliased to the historical
@@ -297,15 +297,18 @@ def _subject_last_seen_wearing_value(summary: str) -> str:
 # Format, verified against real cached Gemini output rather than the prompt
 # template (36 of 37 corpus forms emit exactly three lines; one emits none):
 #
-#   2. Koester Statistics for this category:
-#   - 0.2 miles (0.3 km) — 25th percentile distance
-#   - 0.3 miles (0.5 km) — 50th percentile distance (median)
-#   - 0.6 miles (1.0 km) — 75th percentile distance
+#   2. Range Ring Distances (<source>):
+#   - 0.25 miles (0.4 km) — generic planning ring
+#   - 0.5 miles (0.8 km) — generic planning ring
+#   - 1.0 miles (1.6 km) — generic planning ring
 #
 # Do NOT hardcode three. The count is Gemini's and a category with more or
-# fewer percentiles must not silently lose a ring or fabricate one.
+# fewer percentiles must not silently lose a ring or fabricate one. A line marked
+# "(text only)" stays in the summary and is not drawn: range_rings.py adds that
+# marker to a table row with "draw": false. The old heading is still accepted
+# because a heading miss silently loses every ring.
 _LPB_SECTION_RE = re.compile(r"^LPB Range Ring Analysis\b", re.MULTILINE)
-_KOESTER_STATS_RE = re.compile(r"^\d+\.\s*Koester Statistics\b", re.MULTILINE)
+_RING_DISTANCES_RE = re.compile(r"^\d+\.\s*(?:Range Ring Distances|Koester Statistics)\b", re.MULTILINE)
 _NEXT_NUMBERED_HEADING_RE = re.compile(r"^\d+\.\s", re.MULTILINE)
 _RING_LINE_RE = re.compile(
     r"^-\s*([\d.]+)\s*miles?\s*\(\s*([\d.]+)\s*km\s*\)\s*[—-]\s*(.+?)\s*$",
@@ -313,8 +316,9 @@ _RING_LINE_RE = re.compile(
 )
 
 # A parse slip that reads a wrong number must not draw an authoritative-looking
-# circle. Koester's largest published percentile distances are well under this;
-# anything beyond it is a mis-parse, not a category.
+# circle. Anything beyond this is a mis-parse, not a category. Equal to
+# range_rings.MAX_RING_RADIUS_MI (pinned in test_range_rings.py); it is a literal
+# because the tests exec this block without main.py's imports.
 _MAX_RING_RADIUS_MI = 50.0
 
 
@@ -336,13 +340,13 @@ def _parse_lpb_range_rings(summary: str) -> list:
     unparseable. Never raises — a malformed LPB section must cost the rings, not
     the dispatch.
 
-    Scoped to the Koester Statistics BLOCK, not the whole summary, and bounded
+    Scoped to the Range Ring Distances BLOCK, not the whole summary, and bounded
     at the next numbered heading. An unscoped search for "N miles (N km)" would
     also match the Local Modifiers prose below it and the exclusion note, both of
     which quote distances that are not rings.
 
-    Labels keep the summary's own wording and are MILES-FIRST, per the "Koester
-    distances" Locked Decision — this string is what Plans reads on the map, and
+    Labels keep the summary's own wording and are MILES-FIRST, per the "Range-ring
+    distance format" Locked Decision — this string is what Plans reads on the map, and
     it should match what they read in the textarea.
     """
     if not summary:
@@ -351,7 +355,7 @@ def _parse_lpb_range_rings(summary: str) -> list:
     if not sec:
         return []
     body = summary[sec.end():]
-    stats = _KOESTER_STATS_RE.search(body)
+    stats = _RING_DISTANCES_RE.search(body)
     if not stats:
         return []
     block = body[stats.end():]
@@ -361,6 +365,8 @@ def _parse_lpb_range_rings(summary: str) -> list:
 
     rings, seen = [], set()
     for m in _RING_LINE_RE.finditer(block):
+        if "(text only)" in m.group(3):
+            continue
         try:
             miles = float(m.group(1))
         except ValueError:
@@ -382,7 +388,7 @@ def _parse_lpb_range_rings(summary: str) -> list:
             # because unlike a hand-drawn ring these three are only useful if
             # Plans can tell which is which without clicking.
             #
-            # Miles-only here does NOT contradict the "Koester distances"
+            # Miles-only here does NOT contradict the "Range-ring distance format"
             # Locked Decision: that governs the summary text, which still shows
             # "X.X mi (X.X km)". This is a map label with one unit and no room.
             "label": f"{m.group(1)}mi — {_shorten_percentile(m.group(3))}",
@@ -4127,6 +4133,9 @@ async def lifespan(app: FastAPI):
     app.state.egress_ip_task = asyncio.create_task(
         log_egress_ip_when_ready(logger.info, on_connected=app.state.egress_gate.mark_connected)
     )
+    # Loads the range-ring table now, so a bad RANGE_RING_TABLE secret logs at
+    # startup rather than during the first callout.
+    range_ring_prompt_block()
     # _warm_firestore_clients makes synchronous Firestore gRPC .get() calls
     # (the whole point — force lazy-init of the singleton + verify the
     # round-trip works before the first real request hits, per PR #527).
@@ -6303,7 +6312,7 @@ async def ocr(
         # map_data["lkp"] and the staging coordinates beside them. /create-map
         # receives `map_data` verbatim from the POST body and no summary text,
         # and the frontend sends the `_rawMapData` captured from this /ocr
-        # response — so a dispatcher who edits the Koester Statistics lines in
+        # response — so a dispatcher who edits the Range Ring Distances lines in
         # the textarea before clicking Create Map gets rings drawn from the
         # PRE-EDIT radii. Documented rather than fixed: closing it needs the
         # live textarea in the /create-map payload, which is a payload change

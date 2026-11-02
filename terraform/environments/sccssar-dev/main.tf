@@ -180,6 +180,7 @@ locals {
     "google-maps-api-key",
     "geoapify-api-key",
     "d4h-access-token",
+    "range-ring-table",
   ])
 
   dispatch_runner_viewer_secrets = toset([
@@ -362,6 +363,29 @@ resource "google_secret_manager_secret" "d4h_access_token" {
     ignore_changes = [labels]
   }
   depends_on = [google_project_service.apis]
+}
+
+# Optional range-ring table. Cloud Run cannot mount a secret with no version, so
+# Terraform writes only the "{}" placeholder, which means "use the generic rings".
+# The real table is added out of band with gcloud, so it never reaches tfvars or
+# Terraform state. See docs/architecture.md.
+resource "google_secret_manager_secret" "range_ring_table" {
+  secret_id = "range-ring-table"
+  replication {
+    auto {}
+  }
+  lifecycle {
+    ignore_changes = [labels]
+  }
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "range_ring_table" {
+  secret      = google_secret_manager_secret.range_ring_table.id
+  secret_data = "{}"
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -710,6 +734,15 @@ resource "google_cloud_run_v2_service" "dispatch" {
         name  = "EVERBRIDGE_SUPPRESSED_GROUP_IDS"
         value = var.everbridge_suppressed_group_ids
       }
+      env {
+        name = "RANGE_RING_TABLE"
+        value_source {
+          secret_key_ref {
+            secret  = "range-ring-table"
+            version = "latest"
+          }
+        }
+      }
 
 
       startup_probe {
@@ -738,6 +771,7 @@ resource "google_cloud_run_v2_service" "dispatch" {
     google_artifact_registry_repository.dispatch,
     google_secret_manager_secret_version.authorized_emails,
     google_secret_manager_secret_version.google_client_id,
+    google_secret_manager_secret_version.range_ring_table,
   ]
 }
 
