@@ -13920,3 +13920,305 @@ class TestCloudRunStaticEgressWiring:
         budget = num("initial_delay_seconds") + num("failure_threshold") * num("period_seconds")
         # 25 s headroom: container start to lifespan measured 7-13 s (2026-10-13).
         assert budget >= cap + 25, (env, budget, cap)
+
+
+class TestStagingEditGuard:
+    """ops#873: staging changed outside Address Override must block dispatch.
+
+    Live 2026-10-05 (sccssar-dev 1.11.75): the dispatcher hand-edited the
+    "Staging Area for Resources:" line to Richey Training Center. D4H took the
+    line; the Slack pin took recommendation #1 (index.html's `^1\\.` regex); the
+    CalTopo `cp` took map_data frozen at OCR. Three staging answers reached
+    responders and nothing warned the dispatcher.
+
+    Design (Bill, 2026-11-03): SNAPSHOT compare, not a three-way text match.
+    Turbo records the line and #1's location every time IT writes them (OCR
+    load, override apply, override clear, sample seeds); any difference at
+    dispatch time is by definition an edit outside Address Override. A
+    three-way match against map_data labels was rejected: those are cut to 60
+    chars and dropped when #1 has no coordinates, so it could block a
+    legitimate dispatch during a real callout.
+
+    The guard runs at the top of EVERY handler that locks the textarea, not
+    only Create Map and Send. Once locked, neither the textarea nor Address
+    Override can be edited, so a lock that slipped past the guard (the D4H or
+    Google Doc button clicked first) followed by a blocked Send would leave the
+    dispatcher unable either to fix staging or to dispatch.
+    """
+
+    SRC_PATH = Path(__file__).parent.parent / "frontend" / "index.html"
+
+    BASE = (
+        "Event Name: 2026-10-05 SJPD NICHOLSON\n"
+        "Staging Area for Resources: 1000 Example Ave, San Jose — Park\n"
+        "---\n"
+        "Staging Area Recommendations:\n"
+        "1. 1000 Example Ave, San Jose — Park. 0.1 mi from LKP.\n"
+        "2. 2000 Other St, San Jose — School. 0.4 mi from LKP.\n"
+        "---\n"
+    )
+
+    @classmethod
+    def _src(cls):
+        return cls.SRC_PATH.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _code(text):
+        """Strip `//` comments so prose naming an identifier cannot satisfy a pin."""
+        return "\n".join(
+            re.sub(r"(^|\s)//.*$", "", ln) for ln in text.splitlines()
+        )
+
+    @classmethod
+    def _fn(cls, name):
+        fn = re.search(rf"^  function {name}\(.*?\n  \}}$", cls._src(), re.M | re.S)
+        assert fn, f"{name} not found in index.html"
+        return fn.group(0)
+
+    @classmethod
+    def _diverged(cls, snapshot_text, current_text, snapshot_null=False):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        parts = [cls._fn(n) for n in (
+            "parseOcrResult", "_stagingSnapshotOf", "_stagingDivergedFrom",
+        )]
+        snap = "null" if snapshot_null else (
+            f"_stagingSnapshotOf({json.dumps(snapshot_text)})"
+        )
+        program = (
+            "\n".join(parts)
+            + f"\nconsole.log(JSON.stringify(_stagingDivergedFrom({snap}, "
+            + f"{json.dumps(current_text)})));"
+        )
+        out = subprocess.run(
+            [node, "-e", program], capture_output=True, text=True, timeout=30
+        )
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    # --- behaviour: executes the real JS -----------------------------------
+
+    def test_untouched_summary_does_not_block(self):
+        assert self._diverged(self.BASE, self.BASE) is False
+
+    def test_hand_edited_staging_line_blocks(self):
+        """The 2026-10-05 shape: line rewritten, #1 left alone."""
+        edited = self.BASE.replace(
+            "Staging Area for Resources: 1000 Example Ave, San Jose — Park",
+            "Staging Area for Resources: Richey Training Center",
+        )
+        assert self._diverged(self.BASE, edited) is True
+
+    def test_hand_edited_recommendation_one_blocks(self):
+        """#1 feeds the Slack maps link; the line alone is not the whole guard."""
+        edited = self.BASE.replace(
+            "1. 1000 Example Ave, San Jose", "1. 1500 Example Ave, San Jose"
+        )
+        assert self._diverged(self.BASE, edited) is True
+
+    def test_deleted_staging_line_blocks(self):
+        edited = self.BASE.replace(
+            "Staging Area for Resources: 1000 Example Ave, San Jose — Park\n", ""
+        )
+        assert self._diverged(self.BASE, edited) is True
+
+    def test_typing_into_a_blank_staging_line_blocks(self):
+        """Backend blanks the line when there is no #1. Typing a place there is
+        still a staging change the map and Slack will not follow."""
+        blank = self.BASE.replace(
+            "Staging Area for Resources: 1000 Example Ave, San Jose — Park",
+            "Staging Area for Resources:",
+        )
+        typed = blank.replace(
+            "Staging Area for Resources:",
+            "Staging Area for Resources: 600 Somewhere Rd",
+        )
+        assert self._diverged(blank, typed) is True
+
+    def test_edit_after_the_em_dash_on_recommendation_one_does_not_block(self):
+        """Prose after #1's em-dash never reaches the maps query, so editing it
+        changes no destination. Blocking it would be a false positive."""
+        edited = self.BASE.replace(
+            "— Park. 0.1 mi from LKP.", "— Park. Use the north lot."
+        )
+        assert self._diverged(self.BASE, edited) is False
+
+    def test_edits_elsewhere_in_the_summary_do_not_block(self):
+        edited = self.BASE.replace("NICHOLSON", "NICHOLS") + "Notes: typo fixed\n"
+        assert self._diverged(self.BASE, edited) is False
+
+    def test_whitespace_and_case_only_edit_does_not_block(self):
+        edited = self.BASE.replace(
+            "Staging Area for Resources: 1000 Example Ave, San Jose — Park",
+            "Staging Area for Resources:   1000 example ave,  San Jose — PARK  ",
+        )
+        assert self._diverged(self.BASE, edited) is False
+
+    def test_no_snapshot_fails_open(self):
+        """No snapshot means Turbo never wrote a summary this session; there is
+        nothing to compare against, and blocking would stop a page."""
+        assert self._diverged(None, self.BASE, snapshot_null=True) is False
+
+    # --- wiring: every lock is guarded ---------------------------------------
+
+    @classmethod
+    def _click_handlers(cls):
+        """Every click handler body, from its addEventListener line to the
+        closing `  });` at the same two-space indent."""
+        return re.findall(
+            r"^  document\.getElementById\('([\w-]+)'\)\.addEventListener\('click',"
+            r".*?\n  \}\);$",
+            cls._code(cls._src()),
+            re.M | re.S,
+        ), re.finditer(
+            r"^  document\.getElementById\('([\w-]+)'\)\.addEventListener\('click',"
+            r".*?\n  \}\);$",
+            cls._code(cls._src()),
+            re.M | re.S,
+        )
+
+    def test_every_handler_that_locks_the_textarea_guards_first(self):
+        _, handlers = self._click_handlers()
+        locking = []
+        for m in handlers:
+            body = m.group(0)
+            lock_at = body.find("lockTextarea()")
+            if lock_at == -1:
+                continue
+            locking.append(m.group(1))
+            guard = re.search(r"if \(_stagingGuardBlocks\(\)\) return;", body)
+            assert guard, f"#{m.group(1)} locks the textarea without the staging guard"
+            assert guard.start() < lock_at, (
+                f"#{m.group(1)}: guard must run BEFORE lockTextarea(), or a "
+                "blocked click leaves staging uneditable"
+            )
+            win = body.find("window.open(")
+            if win != -1:
+                assert guard.start() < win, (
+                    f"#{m.group(1)}: guard must run before window.open(), or a "
+                    "blocked click leaves an orphan blank tab"
+                )
+        # Derived completeness, with a floor so a broken finder cannot pass empty.
+        assert set(locking) >= {
+            "incident-map-btn", "everbridge-slack-btn", "everbridge-btn",
+            "gdoc-btn", "d4h-btn",
+        }, locking
+
+    def _guard_run(self, snapshot_text, current_text):
+        """Execute the real _stagingGuardBlocks against a stub DOM + alert."""
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        parts = [self._fn(n) for n in (
+            "parseOcrResult", "_stagingSnapshotOf", "_stagingDivergedFrom",
+            "_stagingGuardBlocks",
+        )]
+        program = (
+            "var alerts = [];\n"
+            "function alert(m) { alerts.push(String(m)); }\n"
+            f"var document = {{ getElementById: () => ({{ value: {json.dumps(current_text)} }}) }};\n"
+            + "\n".join(parts)
+            + f"\nvar _stagingWrittenByTurbo = _stagingSnapshotOf({json.dumps(snapshot_text)});\n"
+            + "var blocked = _stagingGuardBlocks();\n"
+            + "console.log(JSON.stringify({blocked: blocked, alerts: alerts}));"
+        )
+        out = subprocess.run(
+            [node, "-e", program], capture_output=True, text=True, timeout=30
+        )
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def test_guard_blocks_and_tells_the_dispatcher_how_to_fix_it(self):
+        edited = self.BASE.replace(
+            "Staging Area for Resources: 1000 Example Ave, San Jose — Park",
+            "Staging Area for Resources: Richey Training Center",
+        )
+        r = self._guard_run(self.BASE, edited)
+        assert r["blocked"] is True
+        assert len(r["alerts"]) == 1
+        assert "Address Override" in r["alerts"][0]
+
+    def test_guard_is_silent_when_staging_is_untouched(self):
+        r = self._guard_run(self.BASE, self.BASE)
+        assert r == {"blocked": False, "alerts": []}
+
+    # --- wiring: every Turbo write refreshes the snapshot ----------------------
+
+    # Writes that only append below the staging block AFTER the lock, or that
+    # target a different textarea. A new write that matches none of these must
+    # be classified by hand, which is the point.
+    _EXEMPT_RHS = (
+        r"^_insertEventLogEntries\(",            # Event Log appends
+        r"^ta\.value\.replace\(/\^\(CalTopo Map ID:\)",  # CalTopo ID line
+        r"^existing \+ `\\nIncident Log:",        # Google Doc URL line
+        r"^body$",                                 # #eb-body-textarea, not the summary
+    )
+
+    # Override CLEAR restores the snapshot saved with the backup instead of
+    # re-reading the textarea; see test_clear_override_restores_the_saved_snapshot.
+    _REFRESHES = (
+        "_stagingSnapshotRecord();",
+        "_stagingWrittenByTurbo = _stagingOverrideBackup.stagingSnapshot;",
+    )
+
+    def test_every_summary_write_refreshes_the_snapshot(self):
+        code = self._code(self._src())
+        writes = list(re.finditer(
+            r"^[ \t]*(?:if \(\w+\) )?"
+            r"(ta|_ta|resultTextarea|document\.getElementById\([\"']result-text[\"']\))"
+            r"\.value\s*=(?!=)\s*(.+?);[ \t]*$",
+            code, re.M,
+        ))
+        assert len(writes) >= 10, f"write finder looks broken: {len(writes)}"
+        must_refresh = 0
+        for w in writes:
+            rhs = w.group(2).strip()
+            if any(re.search(p, rhs) for p in self._EXEMPT_RHS):
+                continue
+            if rhs == '""':
+                continue  # clearResults; pinned separately
+            must_refresh += 1
+            nxt = re.match(r"\s*\n[ \t]*([^\n]*)", code[w.end():])
+            assert nxt and nxt.group(1).strip() in self._REFRESHES, (
+                f"summary write `{w.group(0).strip()}` is not followed by "
+                "_stagingSnapshotRecord(); the guard would block Turbo's own write"
+            )
+        # OCR load, override apply, override clear, two sample seeds.
+        assert must_refresh >= 5, must_refresh
+
+    def test_clear_results_drops_the_snapshot(self):
+        body = self._code(self._fn("clearResults"))
+        assert re.search(r"^\s*_stagingWrittenByTurbo = null;", body, re.M)
+
+    def test_snapshot_record_reads_the_summary_textarea(self):
+        body = self._code(self._fn("_stagingSnapshotRecord"))
+        assert re.search(
+            r"_stagingWrittenByTurbo = _stagingSnapshotOf\(", body
+        )
+        assert "result-text" in body
+
+    def test_clear_override_restores_the_saved_snapshot(self):
+        """The backup holds the textarea as it was at the FIRST override,
+        dispatcher hand edits included. Re-snapshotting after Clear would
+        bless a hand edit: edit the line, Apply Override, Clear Override, and
+        the guard would let the edited line through while map_data and #1 had
+        reverted to the OCR staging. So the backup carries the snapshot that
+        was live when it was taken, and Clear puts that one back."""
+        src = self._code(self._src())
+        backup = re.search(
+            r"_stagingOverrideBackup = \{\s*ocrText: ta\.value,.*?\n\s*\};",
+            src, re.S,
+        )
+        assert backup, "override backup literal not found"
+        assert re.search(
+            r"stagingSnapshot:\s*_stagingWrittenByTurbo\s*,", backup.group(0)
+        ), "backup must capture the snapshot live when it was taken"
+        revert = self._code(self._fn("_overrideRevertTextareaAndMapData"))
+        assert re.search(
+            r"^\s*_stagingWrittenByTurbo = _stagingOverrideBackup\.stagingSnapshot;",
+            revert, re.M,
+        )
+        assert "_stagingSnapshotRecord()" not in revert, (
+            "Clear must not re-read the textarea; that blesses a pre-override hand edit"
+        )

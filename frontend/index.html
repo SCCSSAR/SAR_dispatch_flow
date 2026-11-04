@@ -2233,12 +2233,15 @@
 
   // Issue #414 — canonical SAR facilities pinned at the top of the pick list.
   //
-  // `commit` is the string that is BOTH sent to /apply-staging-override and
-  // written into the "Staging Area for Resources:" line. That line is what
-  // Slack turns into the responders' tappable maps link (see the
-  // staging_apple_url / staging_google_url construction below — the URL is
-  // built from the TEXT, not from coordinates), so it must carry a navigable
-  // street address. A bare venue name would send every responder who taps the
+  // `commit` is the string sent to /apply-staging-override; the committed
+  // override then leads recommendation #1 and, in bare form, fills the
+  // "Staging Area for Resources:" line. Recommendation #1 up to its first
+  // em-dash is what Slack turns into the responders' tappable maps link
+  // (parseOcrResult's stagingRec, then the staging_apple_url /
+  // staging_google_url construction below — the URL is built from the TEXT,
+  // not from coordinates). This comment used to name the Staging Area line as
+  // the link source; it never was (ops#873). So `commit` must carry a
+  // navigable street address. A bare venue name would send every responder who taps the
   // link to whatever the maps app guesses: "Richey Center" alone resolves to
   // 2850 Quimby Rd, 24 km away. That is the #646 failure re-opened on the
   // responder side, where it hits the whole callout instead of one map.
@@ -2526,6 +2529,7 @@
     if (!_stagingOverrideBackup) return;
     const ta = document.getElementById("result-text");
     if (ta) ta.value = _stagingOverrideBackup.ocrText;
+    _stagingWrittenByTurbo = _stagingOverrideBackup.stagingSnapshot;
     _rawOcrText = _stagingOverrideBackup.ocrText;
     if (_rawMapData && Array.isArray(_stagingOverrideBackup.mapDataStaging)) {
       _rawMapData.staging = _stagingOverrideBackup.mapDataStaging;
@@ -2633,9 +2637,9 @@
        // that already carries that label DOUBLES it:
        //   "1000 Foxworthy Ave — Dispatcher-specified staging location
        //                       — Dispatcher-specified staging location"
-       // That string becomes the "Staging Area for Resources:" line, which is
-       // the responders' Slack maps-link query. Filtered on BOTH the type and
-       // the label because the two surfaces are populated independently.
+       // That string becomes recommendation #1, whose text up to the first
+       // em-dash is the responders' Slack maps-link query. Filtered on BOTH the
+       // type and the label because the two surfaces are populated independently.
        .filter((r) => r.type !== "dispatcher" &&
                       !r.text.includes(_DISPATCHER_OVERRIDE_LABEL));
   }
@@ -2944,11 +2948,15 @@
       // the project-canonical deep-copy pattern (see _rawMapData clone in
       // the Create Incident Map handler) and safe here because staging
       // entries are plain {address, lat, lng, ...} objects.
+      // ocrText keeps any hand edit made before this first override, so
+      // Clear must restore the snapshot live NOW rather than re-read the
+      // textarea, or it would bless that edit (ops#873).
       _stagingOverrideBackup = {
         ocrText: ta.value,
         mapDataStaging: _rawMapData && Array.isArray(_rawMapData.staging)
           ? JSON.parse(JSON.stringify(_rawMapData.staging))
           : null,
+        stagingSnapshot: _stagingWrittenByTurbo,
       };
     }
 
@@ -3111,6 +3119,7 @@
     newText = _insertEventLogEntries(newText, _entries);
 
     ta.value = newText;
+    _stagingSnapshotRecord();
     _rawOcrText = newText;
 
     _overrideClearResults();
@@ -3364,6 +3373,7 @@
       const seededOcr = _ebApplyOceanToSummary(_SAMPLE_OCR_TEXT);
       const ta = document.getElementById("result-text");
       if (ta) ta.value = seededOcr;
+      _stagingSnapshotRecord();
       _rawOcrText = seededOcr;
       _rawMapData = _SAMPLE_MAP_DATA;
 
@@ -3456,6 +3466,7 @@
     const seededOcr = _ebApplyOceanToSummary(_SAMPLE_OCR_TEXT);
     const ta = document.getElementById("result-text");
     if (ta) ta.value = seededOcr;
+    _stagingSnapshotRecord();
     _rawOcrText = seededOcr;
     _rawMapData = _SAMPLE_MAP_DATA;
     document.getElementById("results-card").style.display = "block";
@@ -3810,6 +3821,7 @@
 
       const resultTextarea = document.getElementById("result-text");
       resultTextarea.value = _rawOcrText;
+      _stagingSnapshotRecord();
       document.getElementById("results-card").style.display = "block";
       // scrollTop must be set AFTER display:block — setting it on a hidden element
       // (or before the browser has laid out the newly-visible card) is silently ignored,
@@ -3884,6 +3896,7 @@
   function clearResults() {
     unlockTextarea();   // Always unlock so the next form starts editable
     document.getElementById("result-text").value = "";
+    _stagingWrittenByTurbo = null;
     document.getElementById("results-card").style.display = "none";
     document.getElementById("copy-confirm").style.display = "none";
     document.getElementById("checkbox-warning").style.display = "none";
@@ -3977,6 +3990,60 @@
   function unlockTextarea() {
     document.getElementById('result-text').removeAttribute('readonly');
     _overrideSetLocked(false);
+  }
+
+  // ops#873 — staging edited outside Address Override blocks dispatch.
+  //
+  // Three consumers read staging from three places: D4H takes the
+  // "Staging Area for Resources:" line, the Slack maps link takes
+  // recommendation #1 (parseOcrResult's stagingRec), and the CalTopo `cp`
+  // takes _rawMapData. Turbo keeps all three in step whenever IT writes
+  // staging (OCR load, override apply/clear). A hand edit to the line or to #1
+  // updates one of them and nothing else; live 2026-10-05 that put three
+  // different staging answers in front of responders.
+  //
+  // So: snapshot the line and #1's location every time Turbo writes the
+  // summary, and refuse to lock the textarea if either has changed since.
+  // A snapshot, not a text match against _rawMapData labels (Bill,
+  // 2026-11-03): those labels are cut to 60 chars and missing when #1 had no
+  // coordinates, so matching them could block a correct dispatch mid-callout.
+  //
+  // The guard runs at the top of EVERY handler that calls lockTextarea().
+  // Once locked, neither the textarea nor Address Override can be edited, so a
+  // lock that got past the guard would leave a later blocked Send with no fix.
+  // Fails open with no snapshot: there is nothing to compare against.
+  let _stagingWrittenByTurbo = null;
+
+  function _stagingSnapshotOf(text) {
+    const norm = (s) => (s == null ? null : String(s).replace(/\s+/g, " ").trim().toLowerCase());
+    const t = String(text || "");
+    const line = t.match(/^Staging Area for Resources:[ \t]*(.*)$/m);
+    return {
+      line: line ? norm(line[1]) : null,
+      rec: norm(parseOcrResult(t).stagingRec),
+    };
+  }
+
+  function _stagingDivergedFrom(snapshot, text) {
+    if (!snapshot) return false;
+    const now = _stagingSnapshotOf(text);
+    return now.line !== snapshot.line || now.rec !== snapshot.rec;
+  }
+
+  function _stagingSnapshotRecord() {
+    const ta = document.getElementById("result-text");
+    _stagingWrittenByTurbo = _stagingSnapshotOf(ta ? ta.value : "");
+  }
+
+  function _stagingGuardBlocks() {
+    const ta = document.getElementById("result-text");
+    if (!_stagingDivergedFrom(_stagingWrittenByTurbo, ta ? ta.value : "")) return false;
+    alert(
+      "Staging was changed outside Address Override. Use Address Override so " +
+      "the map and Slack follow.\n\nTo keep the original staging, undo your " +
+      "edit to the \"Staging Area for Resources:\" line or to recommendation 1."
+    );
+    return true;
   }
 
   // Tracks the dispatch lockout so newly-rendered pick-list rows are born
@@ -4130,6 +4197,7 @@
   // paging people, a textarea edit makes the summary diverge from what was
   // actually sent, which is exactly what lockTextarea() exists to prevent.
   document.getElementById('everbridge-btn').addEventListener('click', () => {
+    if (_stagingGuardBlocks()) return;   // ops#873: before any lock or window.open
     lockTextarea();
     safeOpen('https://manager.everbridge.net/');
   });
@@ -4171,6 +4239,7 @@
   // (the fetch completing) which Safari allows. See Bug #205.
   document.getElementById('gdoc-btn').addEventListener('click', async () => {
     if (!_rawOcrText || !idToken) return;
+    if (_stagingGuardBlocks()) return;   // ops#873: before any lock or window.open
 
     // "View" state: doc was already created this session — just open the URL.
     if (_docUrl) { safeOpen(_docUrl); return; }
@@ -4274,6 +4343,7 @@
   // /incidents/view/{id} — NOT /team/incidents/{id}, which 404s.
   // See experiments/d4h/config.py::incident_url.
   document.getElementById('d4h-btn').addEventListener('click', () => {
+    if (_stagingGuardBlocks()) return;   // ops#873: before any lock or window.open
     lockTextarea();
     const btn = document.getElementById('d4h-btn');
     safeOpen(btn._d4hUrl || 'https://sccssar.team-manager.us.d4h.com/team/incidents');
@@ -4343,6 +4413,7 @@
   // then set mapWin.location.href once the fetch resolves. If the fetch fails, close
   // the window. This is the standard pattern for async-then-open across all browsers.
   document.getElementById('incident-map-btn').addEventListener('click', async () => {
+    if (_stagingGuardBlocks()) return;   // ops#873: before any lock or window.open
     // #622 follow-up: remember the pre-click lock state so the wrong-city
     // Cancel path can restore it exactly. lockTextarea() disables BOTH override
     // buttons via _overrideSetLocked(true) — and the wrong-city modal tells the
@@ -4578,6 +4649,7 @@
 
     const btn = document.getElementById('everbridge-slack-btn');
     if (btn.disabled) return;
+    if (_stagingGuardBlocks()) return;   // ops#873: before any lock or window.open
 
     // Synchronous blank-window open must precede every await (Safari).
     const deepWin = window.open('', '_blank');
