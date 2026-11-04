@@ -43,8 +43,19 @@ because the service starts from cold.
 2. Correct any field that is wrong.
 3. Read the event log at the top of the summary.
 
-The text area is editable, and what you leave in it is what gets dispatched. Downstream
-systems read the corrected text, not the original extraction.
+The text area is editable, and what you leave in it is what gets dispatched, with two
+exceptions:
+
+- **Change staging with Address Override, not by typing.** If you edit the
+  `Staging Area for Resources:` line or the address on recommendation 1, the dispatch
+  buttons stop and tell you to use Address Override. Undo the edit to keep the original
+  staging. Slack, the map and D4H each read staging from a different place, and a typed
+  edit never reaches all three. On the 5 October callout, that put three different
+  staging locations in front of responders.
+- **Map markers keep the extracted text.** Create Map takes your edits to the event name
+  and the subject's name. Every other marker label comes from the original extraction.
+  If you edit a recommendation after its dash, the summary and D4H show your text, and
+  the marker on the map does not.
 
 The event log records only corrections and failures, so a short log is a good sign. Read
 any warning it contains before you dispatch.
@@ -137,11 +148,11 @@ Two warnings can appear on the responder-facing staging message:
 
 Both warnings clear when you correct the underlying problem and dispatch again.
 
-> **Staging text is what responders' phones search for.** The staging line becomes a maps
-> query on the responder's device, so a friendly venue name that geocodes somewhere else
-> sends the whole callout to the wrong place. A street address is always safer than a
-> building's name. A decimal latitude and longitude works as a query; a raw UTM string does
-> not, which is why the app writes both.
+> **Staging text is what responders' phones search for.** Recommendation 1, up to its first
+> dash, becomes a maps query on the responder's device, so a friendly venue name that
+> geocodes somewhere else sends the whole callout to the wrong place. A street address is
+> always safer than a building's name. A decimal latitude and longitude works as a query; a
+> raw UTM string does not, which is why the app writes both.
 
 ---
 
