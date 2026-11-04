@@ -4773,7 +4773,7 @@ class TestNegativeAgeHintIsRepaired:
 
     NEG = (
         "Event Name: 2026-09-06 XXSO MAIN\n"
-        "DOB: 12/20/54 (-29 years old)\n"
+        "DOB: 11/11/54 (-29 years old)\n"
         "Missing Person: Jane Doe; at-risk: Dementia\n"
     )
 
@@ -4820,7 +4820,7 @@ class TestNegativeAgeHintIsRepaired:
         )
         assert pat, "_DOB_AGE_HINT_RE not found in main.py"
         rx = re.compile(pat.group(1), re.IGNORECASE)
-        m = rx.search("DOB: 12/20/54 (-29 years old)")
+        m = rx.search("DOB: 11/11/54 (-29 years old)")
         assert m and m.group(1) == "-29", "production still cannot see a negative hint"
 
 

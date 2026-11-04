@@ -779,7 +779,7 @@ class TestComputeAgeFromDobCanonical:
     """Exercises the REAL helper in pdf_extract, not a mirror.
 
     Live on sccssar-dev 2026-08-18 (FILLABLE-14, a dementia subject), this
-    module emitted `DOB: 12/20/54 (-29 years old)`. It did its own year
+    module emitted a DOB line reading `(-29 years old)`. It did its own year
     arithmetic with neither a century correction nor a negativity check, while
     main.py had both. Python's %y cutover is 1969-2068, so 2-digit years 27-68
     land in 2027-2068 and go negative -- i.e. subjects born 1927-1968, roughly
@@ -789,12 +789,12 @@ class TestComputeAgeFromDobCanonical:
     TODAY = datetime.date(2026, 9, 6)
 
     @pytest.mark.parametrize("dob,expected", [
-        ("12/20/54", 71),   # was -29 live
-        ("12/20/64", 61),   # was -39
+        ("11/11/54", 71),   # -29 under the old arithmetic
+        ("11/11/64", 61),   # was -39
         ("1/1/30", 96),     # was -4
-        ("12/20/27", 98),   # low edge of the broken 27-68 band
-        ("12/20/68", 57),   # high edge of the broken band
-        ("12/20/69", 56),   # first year %y already put in the past
+        ("11/11/27", 98),   # low edge of the broken 27-68 band
+        ("11/11/68", 57),   # high edge of the broken band
+        ("11/11/69", 56),   # first year %y already put in the past
         ("7/30/2000", 26),  # 4-digit control
         ("11/25/2009", 16),
     ])
@@ -809,7 +809,7 @@ class TestComputeAgeFromDobCanonical:
         assert pdf_extract.compute_age_from_dob(dob, self.TODAY) is None
 
     def test_same_year_future_date_returns_none_KNOWN_GAP(self):
-        """`12/20/26` -> None, not 99. Documented, not endorsed.
+        """`11/11/26` -> None, not 99. Documented, not endorsed.
 
         The century correction fires only on `parsed.year > today.year`, so a
         2-digit year EQUAL to the current year but a later month/day falls
@@ -818,7 +818,7 @@ class TestComputeAgeFromDobCanonical:
         so the next reader finds a decision rather than a surprise. None is
         safe (no hint beats a wrong hint); it is merely incomplete.
         """
-        assert pdf_extract.compute_age_from_dob("12/20/26", self.TODAY) is None
+        assert pdf_extract.compute_age_from_dob("11/11/26", self.TODAY) is None
         # the same 2-digit year EARLIER in the year is handled normally
         assert pdf_extract.compute_age_from_dob("1/20/26", self.TODAY) == 0
 
@@ -830,7 +830,7 @@ class TestComputeAgeFromDobCanonical:
 
     def test_strips_an_existing_hint_before_parsing(self):
         assert pdf_extract.compute_age_from_dob(
-            "12/20/54 (-29 years old)", self.TODAY) == 71
+            "11/11/54 (-29 years old)", self.TODAY) == 71
 
 
 class TestSyntheticSummaryAgeHint:
@@ -843,11 +843,11 @@ class TestSyntheticSummaryAgeHint:
         return next((l for l in out.splitlines() if l.startswith("DOB:")), None)
 
     def test_the_live_regression_case(self):
-        line = self._dob_line("12/20/54")
+        line = self._dob_line("11/11/54")
         assert "(-29" not in line
         assert "years old)" in line
         # the raw value the officer wrote is preserved
-        assert "12/20/54" in line
+        assert "11/11/54" in line
 
     def test_unparseable_dob_gets_no_hint_rather_than_a_wrong_one(self):
         """A missing hint is visibly missing; an impossible one reads as an answer."""
