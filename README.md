@@ -51,7 +51,7 @@ is re-entering a date of birth into a third system.
 5. **Two-click dispatch** to each downstream system:
    - 🔔 **Everbridge** — automated notification (group selection + OCEAN# auto-fill + send); polls for confirmed-YES responders. Also the team's **source-of-truth for member SAR email addresses** — the join key D4H and Slack look up against when matching responders
    - 💬 **Slack** — creates a private incident channel, posts welcome with MP info + CalTopo link, clickable staging links for Apple and Google Maps, auto-invites confirmed-YES responders, maintains a live tally in `#active-incidents`
-   - 🗺 **Create Incident Map** — creates a CalTopo map with LKP marker, residence marker, staging markers (Incident Command Post icon + alternates), and Koester LPB distances in the text
+   - 🗺 **Create Incident Map** — creates a CalTopo map with LKP marker, residence marker, staging markers (Incident Command Post icon + alternates), and LPB range-ring distances in the text
    - 📋 **D4H** — auto-creates the incident record, syncs per-YES attendance, attaches drone + K9 tabs (Phase 2 Selective mode), Involved Person info
    - 📋 **Google Docs** — (optional) opens a working document with above reference information, and shares with other dispatchers
    - 🗺 **Google Maps** — (optional) opens a reference map centered on the LKP
@@ -84,7 +84,7 @@ Everything below is live and in use on the team environment.
 - Automatic widened search when nothing navigable is found near the LKP, with a note to
   the dispatcher that the options are farther out than usual.
 - Dispatcher staging override by address, lat/lng, or UTM.
-- Koester LPB range-ring analysis, rendered as text, miles first.
+- LPB range-ring analysis using Koester subject categories, rendered as text, miles first, with distances from a generic default or your own table.
 
 **Dispatch**
 
@@ -244,8 +244,12 @@ but the core architecture is general-purpose.
 4. **Update staging tier logic** (`backend/main.py` — `_STAGING_TIER`) if your team
    prefers different venue types as primary staging areas.
 
-5. **Replace Koester percentile tables** in the prompt if your team uses different lost
-   person behavior statistics (or remove the LPB section entirely).
+5. **Set your range-ring distances.** Out of the box every subject category gets the
+   same generic 0.25, 0.5 and 1.0 mile rings, which are not statistics. To use a
+   dataset your team has the right to use, load it into the `range-ring-table` secret
+   in Secret Manager, which overrides the generic values without putting the data in
+   your repository. See
+   [Range-ring distances](docs/architecture.md#range-ring-distances).
 
 6. **Wire up your Everbridge, Slack and D4H credentials** when ready to activate the
    downstream integrations. Everbridge and Slack each have a mode flag (`safe`/`full` and

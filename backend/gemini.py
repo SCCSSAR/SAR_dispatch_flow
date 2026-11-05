@@ -10,6 +10,7 @@ to the browser — never persisted server-side.
 """
 
 import datetime
+import functools
 import logging
 import os
 import time
@@ -19,6 +20,8 @@ import time
 # the new google-genai SDK. The legacy vertexai SDK has been fully removed.
 from google import genai
 from google.genai import types
+
+from range_rings import load_ring_table, render_prompt_block
 
 logger = logging.getLogger(__name__)
 
@@ -386,7 +389,7 @@ If nothing was excluded, omit this section entirely.
 
 ---
 
-LPB Range Ring Analysis (Robert Koester — "Lost Person Behavior"):
+LPB Range Ring Analysis (subject categories: Robert Koester, "Lost Person Behavior"):
 
 1. Subject Category: Identify the single best-fit Koester category based on the subject \
 profile, at-risk factors, and LPB questionnaire answers. \
@@ -412,27 +415,7 @@ For ages 13-17 with no other diagnosis, use "Hiker" as the closest Koester categ
 and note the age in Key factors. \
 If the subject has a mental health diagnosis, use that diagnosis category instead.
 
-2. Koester Statistics for this category:
-   DESIGN DECISION (do not revert): miles appear FIRST — field teams think in miles, not km.
-   Format each distance line as: "- X.X miles (X.X km) — [percentile label]"
-   Example:
-   - 0.2 miles (0.3 km) — 25th percentile distance
-   - 0.3 miles (0.5 km) — 50th percentile distance (median)
-   - 0.6 miles (1.0 km) — 75th percentile distance
-   Use ONLY the following published Koester values — do NOT recall values from training data \
-   (values listed as mi / km for each percentile: 25th / 50th / 75th):
-     Dementia:               0.2 mi (0.3 km) / 0.3 mi (0.5 km) / 0.6 mi (1.0 km)
-     Mentally Ill:           0.7 mi (1.2 km) / 1.7 mi (2.8 km) / 4.0 mi (6.5 km)
-     Despondent:             0.4 mi (0.7 km) / 1.6 mi (2.5 km) / 3.6 mi (5.8 km)
-     Substance Intoxication: 0.2 mi (0.4 km) / 0.7 mi (1.2 km) / 2.4 mi (3.8 km)
-     Child 1-3:              0.1 mi (0.2 km) / 0.2 mi (0.4 km) / 0.6 mi (0.9 km)
-     Child 4-6:              0.2 mi (0.4 km) / 0.6 mi (0.9 km) / 1.4 mi (2.3 km)
-     Child 7-9:              0.3 mi (0.5 km) / 0.9 mi (1.5 km) / 3.3 mi (5.3 km)
-     Child 10-12:            0.3 mi (0.5 km) / 1.0 mi (1.6 km) / 3.2 mi (5.2 km)
-     Hiker:                  0.8 mi (1.3 km) / 3.0 mi (4.9 km) / 8.6 mi (13.8 km)
-     Climber:                0.8 mi (1.3 km) / 2.4 mi (3.9 km) / 5.5 mi (8.8 km)
-   Use exactly one decimal place for both mi and km — e.g., "0.3 mi (0.5 km)", \
-   never "0.31 mi" or "0.12 mi".
+__RANGE_RING_TABLE__
 
 3. Local Modifiers: In exactly one sentence, describe the terrain and environmental \
 factors at the LKP using specific terms from this list where applicable: \
@@ -448,6 +431,14 @@ Example: "Urban grid and major roads constrain travel to street corridors."
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=1)
+def range_ring_prompt_block() -> str:
+    """Item 2 of the LPB section. Loaded once per instance, on first use rather
+    than at import, because main.py configures logging after importing this
+    module and a bad secret has to reach the logs."""
+    return render_prompt_block(load_ring_table())
+
 
 async def extract_incident_summary(
     image_bytes: bytes,
@@ -481,6 +472,7 @@ async def extract_incident_summary(
     _now_pt = datetime.datetime.now(_PT)
     intake_timestamp = _now_pt.strftime("%Y-%m-%d %H:%M")
     prompt = SYSTEM_PROMPT.replace("__INTAKE_TIMESTAMP__", intake_timestamp)
+    prompt = prompt.replace("__RANGE_RING_TABLE__", range_ring_prompt_block())
 
     # Inject explicit day-of-week + time for staging exclusion rules.
     # Providing the day name directly prevents Gemini from having to calculate it from the date,
@@ -727,7 +719,7 @@ If nothing was excluded, omit this note entirely.
 
 ---
 
-LPB Range Ring Analysis (Robert Koester — "Lost Person Behavior"):
+LPB Range Ring Analysis (subject categories: Robert Koester, "Lost Person Behavior"):
 
 Use the pre-extracted subject profile above (DOB/age, at-risk factors, Q9 mental health \
 detail, Q6 at-risk reason) to identify the Koester category. The Q answers are 100% \
@@ -746,21 +738,7 @@ CHILD AGE BRACKET SELECTION: Child categories: 1-3, 4-6, 7-9, 10-12 (exact age r
 Age 13+: do NOT use any Child category. Ages 13-17 without diagnosis → use "Hiker". \
 If subject has a mental health diagnosis, use that category instead.
 
-2. Koester Statistics for this category:
-   DESIGN DECISION (do not revert): miles appear FIRST — field teams think in miles, not km.
-   Format each distance line as: "- X.X miles (X.X km) — [percentile label]"
-   Use ONLY these published Koester values (mi / km for 25th / 50th / 75th percentile):
-     Dementia:               0.2 mi (0.3 km) / 0.3 mi (0.5 km) / 0.6 mi (1.0 km)
-     Mentally Ill:           0.7 mi (1.2 km) / 1.7 mi (2.8 km) / 4.0 mi (6.5 km)
-     Despondent:             0.4 mi (0.7 km) / 1.6 mi (2.5 km) / 3.6 mi (5.8 km)
-     Substance Intoxication: 0.2 mi (0.4 km) / 0.7 mi (1.2 km) / 2.4 mi (3.8 km)
-     Child 1-3:              0.1 mi (0.2 km) / 0.2 mi (0.4 km) / 0.6 mi (0.9 km)
-     Child 4-6:              0.2 mi (0.4 km) / 0.6 mi (0.9 km) / 1.4 mi (2.3 km)
-     Child 7-9:              0.3 mi (0.5 km) / 0.9 mi (1.5 km) / 3.3 mi (5.3 km)
-     Child 10-12:            0.3 mi (0.5 km) / 1.0 mi (1.6 km) / 3.2 mi (5.2 km)
-     Hiker:                  0.8 mi (1.3 km) / 3.0 mi (4.9 km) / 8.6 mi (13.8 km)
-     Climber:                0.8 mi (1.3 km) / 2.4 mi (3.9 km) / 5.5 mi (8.8 km)
-   Use exactly one decimal place for both mi and km — never "0.31 mi" or "0.12 mi".
+__RANGE_RING_TABLE__
 
 3. Local Modifiers: In exactly one sentence, describe the terrain and environmental \
 factors at the LKP using specific terms where applicable: \
@@ -802,6 +780,7 @@ async def extract_staging_and_koester(
 
     current_daytime = _now_pt.strftime("%A, %H:%M PT")
     prompt = STAGING_KOESTER_PROMPT.replace("__CURRENT_DAYTIME__", current_daytime)
+    prompt = prompt.replace("__RANGE_RING_TABLE__", range_ring_prompt_block())
     prompt = prompt.replace("__SYNTHETIC_SUMMARY__", structured_context)
 
     coords_value = lkp_coords if lkp_coords else \

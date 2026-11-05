@@ -422,7 +422,7 @@ The **Create Incident Map** button triggers a POST to `/create-map`, which build
 3. Add staging markers (officer-designated + recommended alternates from Gemini output)
 4. Return the map URL to the frontend
 
-(Range rings were removed in Phase 1.5z2 — see the [Koester LPB Range Ring Analysis](#koester-lpb-range-ring-analysis) section for context. Distances appear as text in the Full Incident Summary only.)
+(Range rings are drawn only inside a hidden `Planning` folder — see the [Koester LPB Range Ring Analysis](#koester-lpb-range-ring-analysis) section.)
 
 **Marker types and symbols:**
 
@@ -918,13 +918,57 @@ Applied to Gemini's Pass 2 output, in order, before returning the response. Each
 
 ## Koester LPB Range Ring Analysis
 
-The LPB (Lost Person Behavior) Range Ring Analysis appears as the final section in the dispatcher's output. It uses Robert Koester's published *Lost Person Behavior* methodology to estimate how far the missing person may have traveled from the Last Known Position.
+The LPB (Lost Person Behavior) Range Ring Analysis appears as the final section in the dispatcher's output. It uses the subject categories from Robert Koester's *Lost Person Behavior* and shows how far from the Last Known Position to plan for.
 
-> **Note (Phase 1.5z2):** Range rings are no longer drawn on the CalTopo map. The Koester percentile distances appear as **text only** in the Full Incident Summary section of the dispatcher textarea — for search-management planning use. The `_add_ring()` helper was removed from `backend/caltopo.py` after dispatcher feedback that the rings cluttered the tactical map for field teams. See [docs/design-decisions.md](design-decisions.md) → "CalTopo / Range rings removed (issue #244)".
+> **Note:** The distances appear as text in the dispatcher textarea, and CalTopo draws them as rings inside a `Planning` folder that is hidden on page load. Field teams do not see them unless someone turns the folder on.
 
 ### How it works
 
-**This is a hardcoded lookup table, not a live database query.** The percentile distances for each Koester subject category are pre-populated in the Gemini prompt (`SYSTEM_PROMPT` in `backend/gemini.py`) as a structured reference table. Gemini does not look up these values externally — it reads them from the injected table in the prompt and outputs the correct values for the assigned category.
+**The distances come from a table, not from Gemini's recall.** `backend/range_rings.py` renders the table into both Gemini prompts (`SYSTEM_PROMPT` and `STAGING_KOESTER_PROMPT` in `backend/gemini.py`). Gemini picks the subject category and copies that category's lines.
+
+### Range-ring distances
+
+**Default:** every category gets the same generic rings of 0.25, 0.5 and 1.0 miles, labelled `generic planning ring`. They are round planning distances and not statistics. The project ships no statistical table because it publishes only data that is public or cited, and we found no openly licensed table that covers these categories.
+
+**Override:** set the `RANGE_RING_TABLE` environment variable, mounted from the `range-ring-table` Secret Manager secret, to use a dataset your team has the right to use. The table stays out of the repository, Terraform state and the logs. Do not commit it, and check its license before you load it.
+
+```json
+{
+  "source": "Name, edition and cut of your dataset",
+  "categories": {
+    "Dementia": [
+      {"label": "25th percentile", "miles": 1.5},
+      {"label": "50th percentile (median)", "miles": 2.5},
+      {"label": "75th percentile", "miles": 4.5},
+      {"label": "95th percentile", "miles": 9.5, "draw": false}
+    ]
+  }
+}
+```
+
+The numbers above are invented. `source` appears in the summary heading, and each `label` appears in the summary and on the map ring. Kilometers are computed from `miles`. A row with `"draw": false` appears in the text only, which suits a distance too large to plot. Drawn rows are capped at 50 miles.
+
+The override replaces the whole table, so include every category you want Gemini to choose from. Keep the names the prompt's age rules use, such as `Child 4-6` and `Hiker`.
+
+To load it:
+
+1. Run `terraform apply`, which creates the secret with a `{}` placeholder that means "no override".
+2. Check your file:
+
+   ```bash
+   python3 -c "import sys; sys.path.insert(0, 'backend'); from range_rings import parse_ring_table; t = parse_ring_table(open(sys.argv[1]).read()); print(len(t.categories), 'categories:', t.source)" table.json
+   ```
+
+3. Add it as a new version, keeping the file outside your repository:
+
+   ```bash
+   gcloud secrets versions add range-ring-table --data-file=table.json --project <your-project>
+   ```
+
+4. Deploy a new revision. Running instances keep the value they started with.
+5. Find `Range ring table | mode=override` in the logs, and upload a test form to see your `source` in the `2. Range Ring Distances` heading.
+
+If the value is malformed, the service uses the generic rings for the whole table and logs `Range ring table | mode=invalid` at ERROR, without the contents. To go back to the generic rings, add a version containing `{}`.
 
 **Subject category assignment:** Gemini determines the subject category from the intake form data:
 
@@ -934,13 +978,13 @@ The LPB (Lost Person Behavior) Range Ring Analysis appears as the final section 
 
 **Important age boundary:** Koester's Child categories max out at age 12. A 13-year-old subject is assigned to `Hiker` (the closest behavioral analog), NOT `Child 10-12`. Using Child 10-12 for a 13-year-old produces incorrect search distances.
 
-**Percentile distances:** For the assigned category, Gemini outputs the 25th, 50th, and 75th percentile search radii in **miles-first** format (`X.X mi (X.X km)`). This matches how SCCSSAR field teams communicate search radius over radio.
+**Distances:** For the assigned category, Gemini outputs that category's lines from the table in **miles-first** format (`X.X miles (X.X km)`). This matches how SCCSSAR field teams communicate search radius over radio.
 
 **Local modifiers:** Gemini appends a constrained set of local modifiers (terrain type, road density, etc.) using a fixed vocabulary list. Free-form adjectives are not permitted — this prevents phrasing variation between runs.
 
 ### Where the data flows
 
-1. **Gemini output** — The LPB section appears in the formatted text: category name, percentile distances with Koester labels, local modifiers. JPEG path: Gemini Pass 2. PDF path: `extract_staging_and_koester()` text-only call.
+1. **Gemini output** — The LPB section appears in the formatted text: category name, distances with the table's labels, local modifiers. JPEG path: Gemini Pass 2. PDF path: `extract_staging_and_koester()` text-only call.
 
 2. **Dispatcher textarea** — The Koester analysis is included in the summary textarea. Search managers use it for planning; it is not part of the Slack welcome message. (The two-section textarea layout it once sat in was retired in #614 — the textarea is now a single full summary.)
 
@@ -1127,9 +1171,9 @@ ambiguous, outputs `NOT ANSWERED (flag for follow-up)`.
 
 **Section 5 — LPB Range Ring Analysis**
 
-Robert Koester Lost Person Behavior methodology. Names the subject category, cites
-25th/50th/75th percentile distances in miles-first format (`X.X mi (X.X km)`), and lists
-local modifiers using a constrained vocabulary.
+Uses the subject categories from Robert Koester's Lost Person Behavior. Names the subject
+category, lists the distances for that category in miles-first format
+(`X.X miles (X.X km)`), and lists local modifiers using a constrained vocabulary.
 
 ### Machine-Readable Appended Line (legacy)
 
