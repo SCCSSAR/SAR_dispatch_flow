@@ -1276,6 +1276,17 @@ def list_contacts_with_dispatcher(
     return _parse_contacts_response(raw), _extract_dispatcher_ocean(raw, dispatcher_email)
 
 
+def list_contacts_with_emails(org_id: str) -> list[dict]:
+    """Fetch every contact as {contact_id, emails, external_id, ocean, display_name}.
+
+    Same projection as list_group_member_contacts, org-wide: /contacts/{orgId}
+    returns the same contact objects. Used by /send-notification Step 7b to
+    match off-call OCEAN#s to safe-list emails. Server-side only: never sent to
+    the browser and never logged.
+    """
+    return _parse_group_member_contacts_response(_fetch_contacts_raw(org_id))
+
+
 def list_group_members(org_id: str, group_id: str) -> list[str]:
     """Fetch contact IDs for a single group (PII-free: IDs only).
 

@@ -3636,6 +3636,7 @@ class OffCallPlan:
     unmatched: list[str] = dataclasses.field(default_factory=list)        # D4H names w/o usable Ref
     failed_group_ids: list[str] = dataclasses.field(default_factory=list)
     failure: str = ""                          # exception class name when mode == failed
+    off_call_oceans: tuple[str, ...] = ()      # matched OCEAN#s, sorted; Step 7b DM skip
 
 
 # The join key between D4H and Everbridge: the 3-digit OCEAN#. D4H `member.ref`
@@ -3738,6 +3739,7 @@ def _plan_off_call_exclusion(
     picked_off = sorted((mc["display_name"] for cid, mc in by_id.items()
                          if mc.get("ocean") in oceans and cid in picked_set), key=str.casefold)
     common = dict(excluded=excluded, picked_off_call=picked_off,
+                  off_call_oceans=tuple(sorted(oceans)),
                   unmatched=sorted(unmatched, key=str.casefold), failed_group_ids=failed)
     if action != "send_live":
         return OffCallPlan(mode="draft", send_contact_ids=picked,
@@ -3825,6 +3827,36 @@ async def _build_off_call_plan(
         len(plan.unmatched), len(plan.failed_group_ids), int((time.monotonic() - t0) * 1000),
     )
     return plan, group_members
+
+
+def _vip_dm_skip_emails(
+    plan: OffCallPlan, contacts: list[dict], picked_contact_ids: list[str],
+) -> set[str]:
+    """Lower-cased emails of off-call members who must NOT get the Step 7b
+    VIP-breakthrough DM (Bill, 2026-11-05: it breaks through Do Not Disturb,
+    so it is a page).
+
+    Only modes where off-call actually withheld the EB page skip: `excluded`,
+    and `nobody_excluded`, which is how an off-call member who sits in no
+    selected group (pre-added through @active_incident_management) arrives.
+    `page_all`, `all_off_call` (falls back to the group send), `draft` and
+    `failed` paged them, or might have, so they keep the DM. A member picked
+    by name was paged and warned, so keeps it too. So does everyone when any
+    group expansion failed: that group went out AS A GROUP, so an off-call
+    member in it was paged while the mode can still read `excluded`.
+    `contacts` is everbridge.list_contacts_with_emails(); the join is OCEAN#.
+    """
+    if (plan.mode not in ("excluded", "nobody_excluded") or not plan.off_call_oceans
+            or plan.failed_group_ids):
+        return set()
+    oceans, picked = set(plan.off_call_oceans), set(picked_contact_ids)
+    return {
+        e.strip().lower()
+        for c in contacts
+        if c.get("ocean") in oceans and c.get("contact_id") not in picked
+        for e in (c.get("emails") or [])
+        if e and e.strip()
+    }
 
 
 def _off_call_event_log_lines(
@@ -8860,9 +8892,29 @@ async def send_notification(
         # above, but that helper's contract lumps all emails together and
         # doesn't distinguish safe-list from active-incidents members. Keeping
         # its shape stable is worth the ~5-15 extra lookup calls here.
+        # Off-call members whose EB page was withheld don't get the DM either
+        # (Bill, 2026-11-05). Best effort, after the point of no return: any
+        # failure leaves the set empty and the DMs go out as before.
+        vip_dm_skip_emails: set[str] = set()
+        if off_call_plan.off_call_oceans:
+            try:
+                _contacts = await loop.run_in_executor(
+                    None,
+                    functools.partial(eb_module.list_contacts_with_emails, _EVERBRIDGE_ORG_ID),
+                )
+                vip_dm_skip_emails = _vip_dm_skip_emails(off_call_plan, _contacts, target_contact_ids)
+            except Exception as e:
+                logger.warning(
+                    "Step 7b off-call DM check failed (%s) — DMs sent as before",
+                    type(e).__name__,
+                )
+        dm_skipped_off_call = 0
         dm_eligible_uids: set[str] = set()
         for email in safe_list.get("allowed_emails", []):
             try:
+                if email.strip().lower() in vip_dm_skip_emails:
+                    dm_skipped_off_call += 1
+                    continue
                 uid = await loop.run_in_executor(
                     None,
                     functools.partial(slack_module.lookup_user_by_email, email),
@@ -8875,6 +8927,9 @@ async def send_notification(
                 continue
             if uid:
                 dm_eligible_uids.add(uid)
+        if dm_skipped_off_call:
+            logger.info("Step 7b: VIP DM skipped for %d off-call safe-list member(s)",
+                        dm_skipped_off_call)
         for user_id in initial_members:
             if user_id not in dm_eligible_uids:
                 continue
