@@ -14188,8 +14188,19 @@ class TestStagingEditGuard:
         assert must_refresh >= 5, must_refresh
 
     def test_clear_results_drops_the_snapshot(self):
+        """The null must come AFTER _ebResetForNewIncident(). That reset reaches
+        _overrideRevertTextareaAndMapData(), which writes the override backup's
+        snapshot back, so a null placed before it is undone whenever an override
+        was active and the previous incident's snapshot survives Clear."""
         body = self._code(self._fn("clearResults"))
-        assert re.search(r"^\s*_stagingWrittenByTurbo = null;", body, re.M)
+        null_at = re.search(r"^\s*_stagingWrittenByTurbo = null;", body, re.M)
+        reset_at = re.search(r"^\s*if \(typeof _ebResetForNewIncident === \"function\"\) "
+                             r"_ebResetForNewIncident\(\);", body, re.M)
+        assert null_at, "clearResults must drop the snapshot"
+        assert reset_at, "_ebResetForNewIncident() call site not found"
+        assert null_at.start() > reset_at.start(), (
+            "snapshot null runs before the reset that restores the backup's snapshot"
+        )
 
     def test_snapshot_record_reads_the_summary_textarea(self):
         body = self._code(self._fn("_stagingSnapshotRecord"))

@@ -3896,7 +3896,6 @@
   function clearResults() {
     unlockTextarea();   // Always unlock so the next form starts editable
     document.getElementById("result-text").value = "";
-    _stagingWrittenByTurbo = null;
     document.getElementById("results-card").style.display = "none";
     document.getElementById("copy-confirm").style.display = "none";
     document.getElementById("checkbox-warning").style.display = "none";
@@ -3917,6 +3916,9 @@
     // manual-confirm banner/poller all need an explicit teardown. See
     // _ebResetForNewIncident() for why each piece sticks otherwise.
     if (typeof _ebResetForNewIncident === "function") _ebResetForNewIncident();
+    // After the reset, not before: an active override's revert restores the
+    // backup's snapshot, which would undo an earlier null.
+    _stagingWrittenByTurbo = null;
     // #612 — tear down the follow-up composer.
     //
     // NOT cosmetic. _followupEventId points at the PREVIOUS incident; leaving it
