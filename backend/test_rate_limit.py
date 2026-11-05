@@ -46,7 +46,8 @@ class TestRunTxnWithRetry:
         assert result == "ok"
         assert txn_fn.call_count == 1
 
-    def test_retries_once_on_transaction_expired(self):
+    def test_retries_once_on_transaction_expired(self, monkeypatch):
+        monkeypatch.setattr("rate_limit.time.sleep", lambda s: None)
         db = MagicMock()
         ref = MagicMock()
         txn_fn = MagicMock(
@@ -77,28 +78,31 @@ class TestRunTxnWithRetry:
 
         assert txn_fn.call_count == 1
 
-    def test_second_failure_propagates(self):
-        # Policy: one retry, then give up. Never retry-loop forever.
+    def test_last_failure_propagates(self, monkeypatch):
+        # Policy: three attempts, then give up. Never retry-loop forever.
+        monkeypatch.setattr("rate_limit.time.sleep", lambda s: None)
         db = MagicMock()
         ref = MagicMock()
         txn_fn = MagicMock(
             side_effect=[
                 InvalidArgument("transaction has expired attempt 1"),
                 InvalidArgument("transaction has expired attempt 2"),
+                InvalidArgument("transaction has expired attempt 3"),
             ],
         )
 
-        with pytest.raises(InvalidArgument, match="attempt 2"):
+        with pytest.raises(InvalidArgument, match="attempt 3"):
             _run_txn_with_retry(db, txn_fn, ref, label="t")
 
-        assert txn_fn.call_count == 2
+        assert txn_fn.call_count == 3
 
     def test_marker_substring_is_stable(self):
         # If the GCP error format ever changes, this is the single point
         # of repair. Pin the literal so a silent string drift is loud.
         assert _EXPIRED_TXN_MARKER == "transaction has expired"
 
-    def test_each_attempt_constructs_a_fresh_transaction(self):
+    def test_each_attempt_constructs_a_fresh_transaction(self, monkeypatch):
+        monkeypatch.setattr("rate_limit.time.sleep", lambda s: None)
         # The whole point of retry is that the OLD transaction is dead.
         # Calling db.transaction() once and reusing it would defeat the fix.
         db = MagicMock()

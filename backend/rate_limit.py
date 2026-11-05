@@ -19,6 +19,8 @@ On global cap exceeded: raises HTTPException 503 (hides the reason from caller).
 import hashlib
 import logging
 import os
+import random
+import time
 from datetime import datetime, timezone
 from typing import Callable, TypeVar
 
@@ -41,9 +43,17 @@ T = TypeVar("T")
 # longer valid"). main.py's lifespan hook eagerly warms the client at
 # container startup; this retry is a defense-in-depth in case the warmup
 # is bypassed (local pytest, future code paths) or transiently fails.
+#
+# The same error also arrives on WARM instances, under a second after the
+# transaction began (personal-dev, 2026-11-04 and 11-05). One immediate retry
+# fixed it once and failed once (/everbridge-contacts 500), so retry up to
+# three attempts with a short jittered backoff. The sleep blocks the event loop,
+# as the Firestore calls themselves already do; worst case adds ~1.2 s.
 # ---------------------------------------------------------------------------
 
 _EXPIRED_TXN_MARKER = "transaction has expired"
+_TXN_MAX_ATTEMPTS = 3
+_TXN_RETRY_BACKOFF_S = (0.2, 0.6)   # one entry per retry, x0.5-1.5 jitter
 
 
 def _run_txn_with_retry(
@@ -53,22 +63,25 @@ def _run_txn_with_retry(
     *,
     label: str,
 ) -> T:
-    """Run a transactional function, retrying once on cold-start expiry.
+    """Run a transactional function, retrying on transaction expiry.
 
     Only retries on InvalidArgument whose message contains the marker string
     — other InvalidArgument errors (malformed field paths, invalid filters)
-    propagate so real bugs surface.
+    propagate so real bugs surface. Each attempt gets a fresh transaction;
+    there is no sleep after the last attempt.
     """
-    try:
-        return txn_fn(db.transaction(), ref)
-    except InvalidArgument as e:
-        if _EXPIRED_TXN_MARKER not in str(e):
-            raise
-        logger.warning(
-            "rate_limit %s: transaction expired on first attempt — retrying once",
-            label,
-        )
-        return txn_fn(db.transaction(), ref)
+    for attempt in range(_TXN_MAX_ATTEMPTS):
+        try:
+            return txn_fn(db.transaction(), ref)
+        except InvalidArgument as e:
+            if _EXPIRED_TXN_MARKER not in str(e) or attempt == _TXN_MAX_ATTEMPTS - 1:
+                raise
+            delay = _TXN_RETRY_BACKOFF_S[attempt] * random.uniform(0.5, 1.5)
+            logger.warning(
+                "rate_limit %s: transaction expired on attempt %d/%d — retrying in %d ms",
+                label, attempt + 1, _TXN_MAX_ATTEMPTS, int(delay * 1000),
+            )
+            time.sleep(delay)
 
 # ---------------------------------------------------------------------------
 # Limits — can be overridden via environment variables set at deploy time
