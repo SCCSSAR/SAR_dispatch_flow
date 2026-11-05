@@ -14407,3 +14407,87 @@ class TestVipDmOffCallSkip:
         assert len(rets) == 1 and ast.unparse(rets[0].value) == (
             "_parse_group_member_contacts_response(_fetch_contacts_raw(org_id))"
         )
+
+
+class TestHealthAlertFilters:
+    """Log-based health alerts (Bill, 2026-11-05: "we need to have conviction
+    that this issue is being addressed"). Each filter matches a log line some
+    code writes; rename that line and the alert goes blind without a sound, so
+    every filter string is pinned to the source that produces it, and both
+    environments must carry the same three metrics.
+
+    Filters were proven read-only against 35 days of logs on 2026-11-05: the
+    retry filter matched the 11-04 and 11-05 expiries, the unhandled filter the
+    11-05 500, and the OOM filter four sccssar-dev OOMs (10-21 to 10-30) plus
+    one on personal-dev on 11-05, which nothing had reported."""
+
+    ENVS = ("dev", "sccssar-dev")
+    BASE = 'resource.type="cloud_run_revision" AND resource.labels.service_name="dispatch-console"'
+    METRICS = {
+        "dispatch-rate-limit-txn-expired":
+            'jsonPayload.logger="rate_limit" AND jsonPayload.message:"transaction expired"',
+        "dispatch-unhandled-exception":
+            'jsonPayload.logger="main" AND jsonPayload.message:"Unhandled exception:"',
+        "dispatch-memory-limit-exceeded": 'textPayload:"Memory limit"',
+    }
+
+    @staticmethod
+    def _tf(env):
+        p = Path(__file__).resolve().parent.parent / "terraform" / "environments" / env / "health_alerts.tf"
+        assert p.exists(), f"{p} missing"
+        return p.read_text(encoding="utf-8")
+
+    @classmethod
+    def _metrics(cls, env):
+        """{metric name: filter with whitespace collapsed} from the env file."""
+        out = {}
+        for m in re.finditer(
+            r'resource "google_logging_metric" "\w+" \{\s*project\s*=\s*var\.project_id\s*'
+            r'name\s*=\s*"([^"]+)"\s*filter\s*=\s*<<-EOT\n(.*?)\n\s*EOT',
+            cls._tf(env), re.S,
+        ):
+            out[m.group(1)] = " ".join(m.group(2).split())
+        return out
+
+    @pytest.mark.parametrize("env", ENVS)
+    def test_each_env_has_exactly_the_three_metrics_with_pinned_filters(self, env):
+        got = self._metrics(env)
+        assert set(got) == set(self.METRICS), sorted(got)
+        for name, tail in self.METRICS.items():
+            assert got[name] == f"{self.BASE} AND {tail}", (env, name, got[name])
+
+    @pytest.mark.parametrize("env", ENVS)
+    def test_every_metric_has_an_alert_on_the_existing_channel(self, env):
+        tf = self._tf(env)
+        policies = re.findall(r'resource "google_monitoring_alert_policy" "(\w+)" \{(.*?)\n\}', tf, re.S)
+        refs = {}
+        for _, body in policies:
+            m = re.search(r'logging\.googleapis\.com/user/\$\{google_logging_metric\.(\w+)\.name\}', body)
+            assert m, "alert policy without a log-metric condition"
+            assert "notification_channels = [google_monitoring_notification_channel.security_alerts.name]" in body
+            assert re.search(r"comparison\s*=\s*\"COMPARISON_GT\"", body)
+            assert re.search(r"threshold_value\s*=\s*0\b", body)
+            refs[m.group(1)] = body
+        metric_resources = re.findall(r'resource "google_logging_metric" "(\w+)"', tf)
+        assert sorted(refs) == sorted(metric_resources) and len(metric_resources) == 3
+
+    @staticmethod
+    def _logger_constants(module):
+        tree = ast.parse((Path(__file__).parent / module).read_text(encoding="utf-8"))
+        out = []
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and ast.unparse(n.func.value) == "logger" and n.args
+                    and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)):
+                out.append(n.args[0].value)
+        return out
+
+    def test_filter_strings_are_what_the_code_logs(self):
+        # jsonPayload.logger is getLogger(__name__), i.e. the module name.
+        for module in ("rate_limit.py", "main.py"):
+            src = (Path(__file__).parent / module).read_text(encoding="utf-8")
+            assert re.search(r"^logger = logging\.getLogger\(__name__\)$", src, re.M), module
+        retry = [s for s in self._logger_constants("rate_limit.py") if "transaction expired" in s]
+        assert retry, "rate_limit.py no longer logs 'transaction expired'; the alert is blind"
+        unhandled = [s for s in self._logger_constants("main.py") if s.startswith("Unhandled exception:")]
+        assert unhandled, "main.py no longer logs 'Unhandled exception:'; the alert is blind"
