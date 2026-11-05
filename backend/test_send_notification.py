@@ -1299,6 +1299,7 @@ class OffCallPlan:
     unmatched: list = dataclasses.field(default_factory=list)        # D4H names w/o usable Ref
     failed_group_ids: list = dataclasses.field(default_factory=list)
     failure: str = ""                          # exception class name when mode == failed
+    off_call_oceans: tuple = ()                # matched OCEAN#s, sorted; Step 7b DM skip
 
 
 _OCEAN_RE = re.compile(r"\d{3}")
@@ -1331,6 +1332,7 @@ def _plan_off_call_exclusion(
     picked_off = sorted((mc["display_name"] for cid, mc in by_id.items()
                          if mc.get("ocean") in oceans and cid in picked_set), key=str.casefold)
     common = dict(excluded=excluded, picked_off_call=picked_off,
+                  off_call_oceans=tuple(sorted(oceans)),
                   unmatched=sorted(unmatched, key=str.casefold), failed_group_ids=failed)
     if action != "send_live":
         return OffCallPlan(mode="draft", send_contact_ids=picked,

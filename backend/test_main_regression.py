@@ -14241,3 +14241,169 @@ class TestStagingEditGuard:
         assert "_stagingSnapshotRecord()" not in revert, (
             "Clear must not re-read the textarea; that blesses a pre-override hand edit"
         )
+
+
+class TestVipDmOffCallSkip:
+    """Bill 2026-11-05: an off-call member does not get the Step 7b
+    VIP-breakthrough DM. That DM breaks through Do Not Disturb, so it is a page.
+
+    Skipped only where off-call actually withheld the EB page (modes
+    `excluded` / `nobody_excluded`, the latter being the management-group
+    pre-add case: off-call, in no selected group). Kept where the member WAS
+    paged: picked by name, page_all, all_off_call (falls back to the group
+    send), and failed / draft (unknown, so fail open). Executed out of
+    main.py, not mirrored."""
+
+    _WANTED = {"OffCallPlan", "_OCEAN_RE", "_plan_off_call_exclusion", "_vip_dm_skip_emails"}
+
+    @classmethod
+    def _ns(cls):
+        return TestPlanOffCallExclusionProductionParity._exec_trio("main.py", cls._WANTED)
+
+    KRIS = {"contact_id": "c-kris", "emails": ["Kris@SCCSSAR.org", "kris@example.com"],
+            "external_id": "OCEAN 412", "ocean": "412", "display_name": "Kris Black"}
+    BILL = {"contact_id": "c-bill", "emails": ["bill@sccssar.org"],
+            "external_id": "OCEAN 305", "ocean": "305", "display_name": "Bill Burns"}
+    NO_OCEAN = {"contact_id": "c-x", "emails": ["x@sccssar.org"],
+                "external_id": "", "ocean": None, "display_name": "No Ref"}
+    OFF_KRIS = [{"member_id": 1, "ref": "412", "name": "Black, Kris"}]
+
+    def _plan(self, ns, *, groups, picked=(), off_call=OFF_KRIS, action="send_live", page_all=False):
+        return ns["_plan_off_call_exclusion"](
+            action=action, page_all=page_all, picked_contact_ids=list(picked),
+            selected_group_ids=list(groups), off_call=off_call,
+            group_members={g: m for g, m in groups.items()} if isinstance(groups, dict) else {},
+            failed_group_ids=[], failure="",
+        )
+
+    def test_planner_records_matched_oceans_only(self):
+        ns = self._ns()
+        off = self.OFF_KRIS + [{"member_id": 2, "ref": "", "name": "No, Ref"},
+                               {"member_id": 3, "ref": "305", "name": "Burns, Bill"}]
+        plan = self._plan(ns, groups={"g1": [self.BILL]}, off_call=off)
+        assert plan.off_call_oceans == ("305", "412")
+        failed = self._plan(ns, groups={"g1": [self.BILL]}, off_call=None)
+        assert failed.off_call_oceans == ()
+
+    def test_off_call_member_in_no_selected_group_is_skipped(self):
+        ns = self._ns()
+        plan = self._plan(ns, groups={"g1": [self.BILL]})
+        assert plan.mode == "nobody_excluded"
+        skip = ns["_vip_dm_skip_emails"](plan, [self.KRIS, self.BILL, self.NO_OCEAN], [])
+        assert skip == {"kris@sccssar.org", "kris@example.com"}
+
+    def test_excluded_member_is_skipped(self):
+        ns = self._ns()
+        plan = self._plan(ns, groups={"g1": [self.BILL, self.KRIS]})
+        assert plan.mode == "excluded"
+        assert ns["_vip_dm_skip_emails"](plan, [self.KRIS, self.BILL], []) == {
+            "kris@sccssar.org", "kris@example.com"}
+
+    def test_member_picked_by_name_is_still_dmd(self):
+        ns = self._ns()
+        plan = self._plan(ns, groups={"g1": [self.BILL, self.KRIS]}, picked=["c-kris"])
+        assert plan.picked_off_call == ["Kris Black"]
+        assert ns["_vip_dm_skip_emails"](plan, [self.KRIS, self.BILL], ["c-kris"]) == set()
+
+    @pytest.mark.parametrize("mode", ["page_all", "all_off_call", "failed", "draft"])
+    def test_modes_where_the_member_was_paged_keep_the_dm(self, mode):
+        ns = self._ns()
+        plan = ns["OffCallPlan"](mode=mode, send_contact_ids=[], send_group_ids=["g1"],
+                                 off_call_oceans=("412",))
+        assert ns["_vip_dm_skip_emails"](plan, [self.KRIS], []) == set()
+
+    def test_a_failed_group_expansion_keeps_every_dm(self):
+        """A group whose expansion failed is sent AS A GROUP, so an off-call
+        member inside it WAS paged, while the mode can still read `excluded`
+        from the other groups. Fail open: skip nobody."""
+        ns = self._ns()
+        plan = ns["_plan_off_call_exclusion"](
+            action="send_live", page_all=False, picked_contact_ids=[],
+            selected_group_ids=["g1", "g2"], off_call=self.OFF_KRIS,
+            group_members={"g1": [self.BILL, self.KRIS]}, failed_group_ids=["g2"], failure="",
+        )
+        assert plan.mode == "excluded" and plan.failed_group_ids == ["g2"]
+        assert ns["_vip_dm_skip_emails"](plan, [self.KRIS, self.BILL], []) == set()
+        direct = ns["OffCallPlan"](mode="nobody_excluded", send_contact_ids=[],
+                                   send_group_ids=["g2"], failed_group_ids=["g2"],
+                                   off_call_oceans=("412",))
+        assert ns["_vip_dm_skip_emails"](direct, [self.KRIS], []) == set()
+
+    @pytest.mark.parametrize("mode", ["excluded", "nobody_excluded"])
+    def test_modes_that_withheld_the_page_skip(self, mode):
+        ns = self._ns()
+        plan = ns["OffCallPlan"](mode=mode, send_contact_ids=[], send_group_ids=[],
+                                 off_call_oceans=("412",))
+        assert ns["_vip_dm_skip_emails"](plan, [self.KRIS, self.NO_OCEAN], []) == {
+            "kris@sccssar.org", "kris@example.com"}
+
+    # -- Wiring: Step 7b in /send-notification ------------------------------
+
+    @staticmethod
+    def _handler():
+        tree = ast.parse((Path(__file__).parent / "main.py").read_text(encoding="utf-8"))
+        fns = [n for n in ast.walk(tree)
+               if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_notification"]
+        assert len(fns) == 1, "send_notification handler not found"
+        return fns[0]
+
+    @staticmethod
+    def _safe_list_email_loop(fn):
+        loops = [n for n in ast.walk(fn) if isinstance(n, ast.For)
+                 and "allowed_emails" in ast.unparse(n.iter) and "safe_list" in ast.unparse(n.iter)]
+        assert len(loops) == 1, f"expected one Step 7b safe-list loop, found {len(loops)}"
+        return loops[0]
+
+    def test_loop_skips_before_the_slack_lookup(self):
+        loop = self._safe_list_email_loop(self._handler())
+        # Inside the loop's existing try: a non-string safe-list entry must stay
+        # a logged-and-skipped entry, not an AttributeError out of Step 7b.
+        assert isinstance(loop.body[0], ast.Try), "loop body must open with the existing try"
+        assert any(h.type is not None and ast.unparse(h.type) == "Exception"
+                   for h in loop.body[0].handlers)
+        first = loop.body[0].body[0]
+        assert isinstance(first, ast.If), "first statement in the try must be the skip check"
+        # Exact structure, not substrings: `if False and <check>` contains every
+        # token of the real check and disables it.
+        assert ast.unparse(loop.target) == "email"
+        assert ast.unparse(first.test) == "email.strip().lower() in vip_dm_skip_emails", (
+            ast.unparse(first.test)
+        )
+        assert any(isinstance(s, ast.Continue) for s in first.body), "skip must `continue`"
+
+    def test_skip_set_is_computed_best_effort_before_the_loop(self):
+        fn = self._handler()
+        loop = self._safe_list_email_loop(fn)
+        tries = [t for t in ast.walk(fn) if isinstance(t, ast.Try)
+                 and "_vip_dm_skip_emails(" in ast.unparse(t)
+                 and not any(isinstance(n, ast.For) for n in ast.walk(t))]
+        assert len(tries) == 1, "the skip-set computation must sit in its own try"
+        t = tries[0]
+        body = ast.unparse(ast.Module(body=t.body, type_ignores=[]))
+        assert "eb_module.list_contacts_with_emails" in body
+        # The result must land in the name the loop reads, not just be computed.
+        assigns = [a for a in ast.walk(t) if isinstance(a, ast.Assign)
+                   and [ast.unparse(x) for x in a.targets] == ["vip_dm_skip_emails"]
+                   and isinstance(a.value, ast.Call)
+                   and ast.unparse(a.value.func) == "_vip_dm_skip_emails"]
+        assert len(assigns) == 1, "vip_dm_skip_emails = _vip_dm_skip_emails(...) not found in the try"
+        args = [ast.unparse(a) for a in assigns[0].value.args]
+        # The picked-by-name exemption only works if the real selection is passed.
+        assert args[0] == "off_call_plan" and args[2] == "target_contact_ids" and len(args) == 3, args
+        assert any(h.type is not None and ast.unparse(h.type) == "Exception" for h in t.handlers), (
+            "must fail open on any exception"
+        )
+        assert t.lineno < loop.lineno, "skip set must be built before the loop"
+        init = [a for a in ast.walk(fn) if isinstance(a, ast.AnnAssign)
+                and ast.unparse(a.target) == "vip_dm_skip_emails"]
+        assert init and init[0].lineno < t.lineno, "skip set must default to empty before the try"
+
+    def test_everbridge_contacts_with_emails_reuses_the_member_parser(self):
+        tree = ast.parse((Path(__file__).parent / "everbridge.py").read_text(encoding="utf-8"))
+        fn = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "list_contacts_with_emails"]
+        assert fn, "everbridge.list_contacts_with_emails not found"
+        rets = [n for n in ast.walk(fn[0]) if isinstance(n, ast.Return)]
+        assert len(rets) == 1 and ast.unparse(rets[0].value) == (
+            "_parse_group_member_contacts_response(_fetch_contacts_raw(org_id))"
+        )
