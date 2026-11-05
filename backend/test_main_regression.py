@@ -14137,7 +14137,15 @@ class TestStagingEditGuard:
         r = self._guard_run(self.BASE, edited)
         assert r["blocked"] is True
         assert len(r["alerts"]) == 1
-        assert "Address Override" in r["alerts"][0]
+        # Name the control as the dispatcher sees it labelled, read from the
+        # panel's own <summary> so the two cannot drift apart again.
+        html = (Path(__file__).resolve().parent.parent / "frontend" / "index.html").read_text()
+        label = re.search(
+            r'<details id="staging-override-panel">\s*<summary>([^<]+)</summary>', html
+        )
+        assert label, "staging override panel <summary> not found"
+        assert f'"{label.group(1).strip()}"' in r["alerts"][0]
+        assert "Address Override" not in r["alerts"][0]
 
     def test_guard_is_silent_when_staging_is_untouched(self):
         r = self._guard_run(self.BASE, self.BASE)

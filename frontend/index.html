@@ -4041,8 +4041,8 @@
     const ta = document.getElementById("result-text");
     if (!_stagingDivergedFrom(_stagingWrittenByTurbo, ta ? ta.value : "")) return false;
     alert(
-      "Staging was changed outside Address Override. Use Address Override so " +
-      "the map and Slack follow.\n\nTo keep the original staging, undo your " +
+      "Staging was edited in the summary. Change it with \"Override Staging " +
+      "Location\" so the map and Slack follow.\n\nTo keep the original staging, undo your " +
       "edit to the \"Staging Area for Resources:\" line or to recommendation 1."
     );
     return true;
