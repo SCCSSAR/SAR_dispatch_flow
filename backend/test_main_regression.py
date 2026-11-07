@@ -13847,13 +13847,10 @@ class TestCloudRunStaticEgressWiring:
     Reads the Terraform source with comments stripped, and brace-matches the
     blocks, so the `vpc_access` must sit INSIDE this service's `template`, and
     `egress` / the subnet must sit inside THAT `vpc_access`, not anywhere else
-    in the file. sccssar-dev is expected to fail until Task 7 gives it a network.
+    in the file. Both envs: sccssar-dev got its own network in Task 7.
     """
 
-    _ENVS = [
-        "dev",
-        pytest.param("sccssar-dev", marks=pytest.mark.xfail(strict=True, reason="Task 7 (ops#875)")),
-    ]
+    _ENVS = ["dev", "sccssar-dev"]
 
     @staticmethod
     def _strip_comments(tf: str) -> str:
