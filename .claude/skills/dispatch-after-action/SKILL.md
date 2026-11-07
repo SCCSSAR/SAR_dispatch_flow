@@ -157,15 +157,7 @@ Read the full geocode URLs. `httpx` logs every outbound request at INFO, so the 
 
 ### Pull C — OCR latency and memory
 
-For a **same-day** review, `scripts/oom-check` is the convenience path:
-
-```bash
-scripts/oom-check 1d sccssar-dev     # or: scripts/oom-check 1d dev
-```
-
-It surfaces OOMs (`Memory limit` in `textPayload`), cold-start `startup rss_baseline_mib=…`, and `OCR request complete | … total_ms=… rss_post_mib=… delta_mib=… gc_recovered_mib=… gc_collected=…`.
-
-**But `oom-check` accepts only `--freshness`, so it cannot target an older incident's window** — for anything not from today it returns days of undifferentiated lines. For an older incident use the explicit-window form instead:
+**`scripts/oom-check` is not in this repository.** It was dropped when the code moved to the public repo, so a `~/bin/oom-check` symlink from an older setup points at nothing. Use this query for every review, same-day included. It surfaces OOMs (`Memory limit` in `textPayload`), cold-start `startup rss_baseline_mib=…`, and `OCR request complete | … total_ms=… rss_post_mib=… delta_mib=… gc_recovered_mib=… gc_collected=…`:
 
 ```bash
 $GCLOUD logging read \
@@ -216,6 +208,9 @@ $GCLOUD logging read \
 | `D4H create failed` / `raised unexpected` / `post-create partial failure` | D4H leg failed or half-succeeded |
 | `Poll-incident: doc not found … chain ends` | polling chain terminated early — arrivals may have stopped being tracked |
 | `Memory limit` (textPayload) | OOM — reopens #519 immediately |
+| `rate_limit … transaction expired on attempt N/3` (1.11.80+) or `… on first attempt — retrying once` (older) | the rate limiter's Firestore transaction expired and was retried (#92). Recovered if the same request still returned 2xx. Standing check 20 |
+| `Unhandled exception: InvalidArgument` next to the line above, plus a 500 | every retry ran out and the request failed. The dispatcher saw an error, for example "Individual contacts — unavailable (server returned 500)". Standing check 20 |
+| `Unhandled exception: <any other class>` | an uncaught exception returned 500. Always new until proven known |
 
 Triage each hit as **expected-and-benign**, **known** (cite the issue, count the recurrence), or **new**. Use the bracket-pair technique for anything ambiguous (`feedback-cloud-run-log-bracket-pair-technique`).
 
@@ -264,6 +259,7 @@ Run these every time, whether or not the dispatcher mentions anything. Each exis
 17. **Do all staging surfaces name the same place?** Compare the `Staging Area for Resources:` line, recommendation `1.`, and the CalTopo `cp` marker. Slack's staging link is built from `1.`, CalTopo from OCR-time map data, and D4H gets the line, so a hand edit of the line alone splits them with no warning. On 2026-10-05 the line said one place while Slack and CalTopo said another, and the field received three staging answers in five minutes (ops#873). A line whose text matches neither Turbo's own strings (for example, a Google-Maps-formatted address with a ZIP) was typed or pasted by hand.
 18. **Repeated uploads of the same form.** Several `OCR request received` lines with the same `content_length` mean the dispatcher fed the same form in again, usually chasing a better read. Ask what looked wrong. Re-uploading cannot fix an illegible field: the same smudge reads the same way every time (three identical rejections on 2026-10-05).
 19. **Vendor 403s are not a credential problem until proven.** For any CalTopo or D4H `403`, split the failures by `labels.instanceId` and note whether a bare HTML body came back instead of a vendor JSON error. A whole instance refused while others succeed, with a bare page, is a block at the vendor's load balancer: on 2026-10-02/03 and 2026-10-04 it was the AWS WAF "Amazon IP Reputation List" catching Google Cloud's shared egress (ops#875, ops#876). Don't rotate credentials on that evidence; a deliberately wrong credential returns 401, not 403.
+20. **Firestore rate-limit transaction expiry.** Every rate-limited request (`/ocr`, `/create-map`, `/create-doc`, `/apply-staging-override`, `/everbridge-groups`, `/everbridge-contacts`, `/send-notification`, `/close-incident-polling`, `/send-followup-notification`, `/confirm-draft-sent`) commits a Firestore transaction first. Count the `transaction expired` lines in the window. For each one, find the request it belongs to on the same `labels.instanceId` and record whether it **recovered** (the request returned 2xx) or **ran out** (`Unhandled exception: InvalidArgument` and a 500). Record the endpoint and what the dispatcher saw. A run-out on `/send-notification` fails **before** anything is paged (the rate check runs ahead of the Step 1.5 skeleton), so a second click is safe; say so if the dispatcher hesitated. Root cause is unknown. It fires under a second after the transaction begins, on warm instances, so it is not #522's 60 s cold-start case. Baseline (2026-11-05): personal-dev 2 expiries in about 33 rate-limited requests on revision 00320, the first one recovered and the second ran out; sccssar-dev 0 in 18 over 30 days. **Record the count every time, zero included, and compare it with the baseline:** a rise after sccssar-dev gets Direct VPC egress (ops#875 Task 7) points at the network path. Any run-out is a real dispatcher-visible failure: report it loudly.
 
 ## Step 2 — The interview, three rounds
 
@@ -538,6 +534,7 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 |---|---|---|
 | OCR total_ms | | cold start? upload size? |
 | RSS delta / gc recovered | | OOMs: |
+| Firestore transaction expiries | | recovered N / ran out M (standing check 20) |
 | Staging provider / latency / candidate count | | fallbacks? |
 | Override attempts | | how many returned zero? |
 | Staging entry used — dispatcher / field | | #1? relocated on arrival? |
