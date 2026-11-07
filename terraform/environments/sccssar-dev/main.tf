@@ -383,6 +383,21 @@ resource "google_cloud_run_v2_service" "dispatch" {
       max_instance_count = 3 # Hard cap — prevents runaway scaling costs
     }
 
+    # Static egress (ops#875 Task 7): every outbound connection leaves through
+    # the egress subnet and its Cloud NAT address. ALL_TRAFFIC is required for
+    # a fixed address; PRIVATE_RANGES_ONLY would leave CalTopo and D4H on the
+    # shared pool. Google-API traffic (Vertex, Firestore, Secret Manager,
+    # Cloud Tasks) still takes Private Google Access and never touches the NAT.
+    # Removing this block is the rollback: the next revision returns to the
+    # shared pool. Pinned by TestCloudRunStaticEgressWiring.
+    vpc_access {
+      network_interfaces {
+        network    = google_compute_network.egress.id
+        subnetwork = google_compute_subnetwork.egress.id
+      }
+      egress = "ALL_TRAFFIC"
+    }
+
     containers {
       # Image path — update after first docker push
       image = "${var.region}-docker.pkg.dev/${var.project_id}/dispatch-console/dispatch-console:latest"
@@ -738,6 +753,11 @@ resource "google_cloud_run_v2_service" "dispatch" {
     google_artifact_registry_repository.dispatch,
     google_secret_manager_secret_version.authorized_emails,
     google_secret_manager_secret_version.google_client_id,
+    # One apply creates the NAT and cuts the service over. The service only
+    # REFERENCES the network and subnet, so without this Terraform may roll
+    # the new revision before the NAT exists, and its instances would serve
+    # after the /health gate's 60 s cap with no outbound path (ops#875).
+    google_compute_router_nat.egress,
   ]
 }
 
