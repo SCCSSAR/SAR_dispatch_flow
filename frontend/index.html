@@ -1417,8 +1417,6 @@
   // within a single instance lifetime the flags are immutable. See design
   // Section 2 "Surfacing flag state to the dispatcher (footer)".
   // ---------------------------------------------------------------------------
-  // Read by the off-call panel footer: only "full" sends live unconditionally.
-  let _everbridgeMode = "off";
   (async function loadVersion() {
     const el = document.getElementById("footer-version");
     try {
@@ -1459,7 +1457,6 @@
           versionStr = parts.length === 2 ? `${milestone} · ${parts[1]}` : milestone;
         }
         const ev = (data.flags && data.flags.everbridge_mode) || "off";
-        _everbridgeMode = ev;
         const sl = (data.flags && data.flags.slack_mode)      || "off";
         el.textContent = `${versionStr} · EB: ${ev} · Slack: ${sl}`;
         if (tooltip) el.title = tooltip;
@@ -3740,6 +3737,7 @@
       return;
     }
     selectedFile = file;
+    prefetchOffCall();
     if (isJpeg) {
       // Show image preview for JPEG.
       // PR-J #14: revoke the blob URL once the browser has decoded the
@@ -3771,6 +3769,21 @@
   // DOM methods only (no innerHTML): names come from D4H.
   // ---------------------------------------------------------------------------
   let _offCallRequestSeq = 0;
+  let _offCallPromise = null;
+  let _offCallFetchedAt = 0;
+  // Started when the form is PICKED, not on Extract: /ocr's Gemini call holds
+  // the server's event loop for ~20 s, and a request sent alongside it waited
+  // that long (live 1.11.82: 22.9 s). Resolves to the JSON body, or null.
+  function prefetchOffCall() {
+    if (!idToken) return;
+    _offCallFetchedAt = Date.now();
+    _offCallPromise = fetch(`${BACKEND_URL}/off-call-now`, {
+      headers: { Authorization: `Bearer ${idToken}`, "X-OIDC-Nonce": _oidcNonce },
+    })
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .catch((e) => { console.error("off-call-now failed:", e); return null; });
+  }
+
   async function loadOffCallPanel() {
     const seq = ++_offCallRequestSeq;
     const body = document.getElementById("off-call-body");
@@ -3783,15 +3796,9 @@
     };
     note("oc-note", "Checking D4H…");
     foot.textContent = "";
-    let data = null;
-    try {
-      const resp = await fetch(`${BACKEND_URL}/off-call-now`, {
-        headers: { Authorization: `Bearer ${idToken}`, "X-OIDC-Nonce": _oidcNonce },
-      });
-      if (resp.ok) data = await resp.json();
-    } catch (e) {
-      console.error("off-call-now failed:", e);
-    }
+    // Reuse the pick-time request unless the form was picked over 5 min ago.
+    if (!_offCallPromise || Date.now() - _offCallFetchedAt > 5 * 60 * 1000) prefetchOffCall();
+    const data = await _offCallPromise;
     if (seq !== _offCallRequestSeq) return;  // a newer Extract owns the panel
     if (!data || data.status !== "ok" || !Array.isArray(data.members)) {
       note("oc-warn", "⚠ Couldn't read D4H. Check Off-Call Now there.");
@@ -3829,9 +3836,8 @@
       rows.push(n);
     }
     body.replaceChildren(...rows);
-    foot.textContent = _everbridgeMode === "full"
-      ? "Off-call members aren't paged through their groups. To page one anyway, add them by name in Step 3."
-      : "On a live send, off-call members aren't paged through their groups; a draft keeps them until you remove them in Everbridge. To page one anyway, add them by name in Step 3.";
+    foot.textContent =
+      "Off-call members aren't paged through their groups. To page one anyway, add them by name in Step 3.";
   }
 
   // ---------------------------------------------------------------------------

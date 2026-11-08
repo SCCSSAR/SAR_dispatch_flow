@@ -8111,6 +8111,12 @@ async def everbridge_contacts(
     return JSONResponse({"contacts": contacts, "dispatcher_ocean": dispatcher_ocean})
 
 
+# Everbridge groups never shown as a team on the off-call panel: every member
+# is in them, so they say nothing about who covers what (Bill, 2026-11-08).
+# Matched case-insensitively on the display name.
+_OFF_CALL_PANEL_HIDDEN_TEAMS = frozenset({"all members"})
+
+
 def _off_call_panel_entries(
     off_call: list[dict],
     groups: list[dict] | None,
@@ -8126,14 +8132,17 @@ def _off_call_panel_entries(
     OCEAN# or the group lookup failed (`group_members is None`), [] when the
     member is in no visible group. Only display fields leave this function.
     """
-    group_name = {g["id"]: g["name"] for g in groups or []}
+    group_name = {g["id"]: g["name"] for g in groups or []
+                  if g["name"].casefold() not in _OFF_CALL_PANEL_HIDDEN_TEAMS}
     teams_by_ocean: dict[str, set] | None = None
     if group_members is not None:
         teams_by_ocean = {}
         for gid, members in group_members.items():
+            if gid not in group_name:
+                continue  # a hidden team
             for mc in members:
                 # Keyed on whatever `ocean` holds; only a 3-digit Ref is ever looked up.
-                teams_by_ocean.setdefault(mc.get("ocean"), set()).add(group_name.get(gid, gid))
+                teams_by_ocean.setdefault(mc.get("ocean"), set()).add(group_name[gid])
     shown = [m for m in off_call if m.get("status") == "OPERATIONAL" or m.get("support")]
     out = []
     for m in sorted(shown, key=lambda m: (m.get("name") or "").casefold()):
