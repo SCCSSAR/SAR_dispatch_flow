@@ -96,6 +96,14 @@ OFF_CALL_DUTY_TYPE = "OFF"
 OFF_CALL_TIMEOUT_S = 5.0
 OFF_CALL_MAX_PAGES = 4
 
+# The team's "Support" sub-status, which D4H files under NON_OPERATIONAL.
+# Support members are paged and may respond (Bill, 2026-11-08), so the intake
+# off-call panel lists them alongside OPERATIONAL members. Resolved from
+# GET /team/1775/member-custom-statuses on 2026-11-08; every sub-status count
+# matched the D4H UI. Support and LOA both had 7 members, so match the id,
+# never a count.
+D4H_SUPPORT_CUSTOM_STATUS_ID = 1654
+
 # Role IDs — discovered via spike 16 (experiments/d4h/16_handlers_endpoint.py)
 # GET /v3/team/{teamId}/roles enumeration, 2026-06-03. SCCSSAR-specific; teams
 # customize role taxonomy. If a future role rename or re-bundle drifts the ID,
@@ -1435,8 +1443,10 @@ def _get_member_by_email(email: str) -> Optional[dict]:
 
 
 def _parse_off_call_response(json_body: dict) -> list[dict]:
-    """Return [{member_id, ref, name}] from GET /duties?type=OFF — one entry
-    per MEMBER even when overlapping periods repeat them.
+    """Return [{member_id, ref, name, status, support}] from GET
+    /duties?type=OFF — one entry per MEMBER even when overlapping periods
+    repeat them. `status` is D4H's top-level member status; `support` is True
+    for the Support sub-status (both read only by the intake off-call panel).
 
     Deliberately drops `notes` (free text a member wrote about WHY they are
     away — may be medical or family; never rendered, never logged) and `role`
@@ -1455,10 +1465,15 @@ def _parse_off_call_response(json_body: dict) -> list[dict]:
         if not member_id or member_id in seen:
             continue
         seen.add(member_id)
+        custom = member.get("customStatus")
+        if not isinstance(custom, dict):  # the send path reads this parser too: never raise
+            custom = {}
         out.append({
             "member_id": member_id,
             "ref":       str(member.get("ref") or "").strip(),
             "name":      str(member.get("name") or "").strip(),
+            "status":    str(member.get("status") or ""),
+            "support":   custom.get("id") == D4H_SUPPORT_CUSTOM_STATUS_ID,
         })
     return out
 
