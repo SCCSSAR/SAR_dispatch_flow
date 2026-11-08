@@ -568,7 +568,7 @@ The Sheriff's Office Ops Deck dispatchers write the intake form. This step gathe
 - **A borderline call on a field that matters** (name, phone, LKP, residence): ask the dispatcher, who held the paper. On 2026-11-07 a first name with crowded middle letters was first filed as the writer's fault; both the dispatcher and a second reviewer read it correctly.
 - **A problem with both sides** (a gap the writer left and Turbo copied): put it under *For the form*, and say what Turbo is changing in parentheses in the Effect.
 
-The section's shape, plain ASCII, written bare in the report (no code fence) so it pastes intact. Use the form's printed field labels, which are what the Ops Deck sees:
+The section's shape, plain ASCII, inside a `text` code fence in the report so it renders line by line. Use the form's printed field labels, which are what the Ops Deck sees:
 
 ```
 Intake feedback | <date> callout | Agency Event # <number, no stray spaces> | v<1|2> form, <handwritten|typed>, <photo|PDF>
@@ -688,7 +688,7 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 <Step 2.7, in its fixed shape, ready to lift into a note.>
 
 ## D4H event log (paste-ready)
-<Step 2.6c lines only, no code fence and no commentary, so Step 6 can copy the section as it is.>
+<Step 2.6c lines only, inside a `text` code fence, no commentary. Unfenced, rendered Markdown joins the lines into one paragraph.>
 
 ## D4H event log gaps
 <Step 2.6d: missing milestones, incident close time, attendance gaps.>
@@ -724,10 +724,22 @@ Repo-file edits go on a branch, chained in one Bash call per Session Rule #14. N
 
 ## Step 6 — Close out
 
-First copy the event log continuation and tell Bill to paste it into the incident description, after Turbo's `D4H incident request filed at dispatch time` line:
+First copy the event log continuation and tell Bill to paste it into the incident description, after Turbo's `D4H incident request filed at dispatch time` line.
+
+**Copy it as HTML, not plain text.** D4H's description editor is rich text and joins plain-text lines into one paragraph on paste (2026-11-08). The snippet puts both an HTML copy, with `<br>` between lines (the same break Turbo writes through the API), and a plain-text copy on the clipboard, so either kind of target pastes line by line. Give it the section heading:
 
 ```bash
-sed -n '/^## D4H event log (paste-ready)/,/^## /p' research/after-action/<dir>/report.md | sed '1d;$d;/^$/d' | LANG=en_US.UTF-8 pbcopy
+python3 - research/after-action/<dir>/report.md "D4H event log (paste-ready)" <<'EOF'
+import html, subprocess, sys
+t = open(sys.argv[1]).read()
+sec = t.split(f"## {sys.argv[2]}\n", 1)[1].split("\n## ", 1)[0]
+lines = "\n".join(l for l in sec.splitlines() if not l.startswith("```")).strip("\n").split("\n")
+subprocess.run(["osascript", "-l", "JavaScript", "-e",
+    'function run(a){ObjC.import("AppKit");const p=$.NSPasteboard.generalPasteboard;p.clearContents;'
+    'p.setStringForType($(a[0]),"public.html");p.setStringForType($(a[1]),"public.utf8-plain-text")}',
+    "<br>".join(html.escape(l) for l in lines), "\n".join(lines)], check=True)
+print(f"copied {len(lines)} lines")
+EOF
 ```
 
 Then copy the D4H summary to the clipboard and tell Bill to paste it into the incident's Private Data field:
@@ -736,11 +748,7 @@ Then copy the D4H summary to the clipboard and tell Bill to paste it into the in
 sed -n '/^## D4H summary/,$p' research/after-action/<dir>/report.md | sed '1d' | LANG=en_US.UTF-8 pbcopy
 ```
 
-When Bill is ready to send the Ops Deck feedback, the same pattern copies it:
-
-```bash
-sed -n '/^## Intake feedback for the SO Ops Deck/,/^## /p' research/after-action/<dir>/report.md | sed '1d;$d' | LANG=en_US.UTF-8 pbcopy
-```
+When Bill is ready to send the Ops Deck feedback, run the same snippet with the heading `"Intake feedback for the SO Ops Deck (shareable)"`. Blank lines inside the note survive as empty lines, so its sections keep their spacing in an email.
 
 Restore the original gcloud config. Report in-session: headline, alerts, findings table, what got filed versus drafted, what's still open. Then the copy-pasteable next-session prompt (Session Rule #11a) naming the immediate next action.
 
