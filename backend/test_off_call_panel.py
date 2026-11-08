@@ -257,3 +257,31 @@ class TestFrontendNeverUsesInnerHtml:
         fn = html[start:html.index('submitBtn.addEventListener("click"', start)]
         assert "textContent" in fn, "sanity: slice covers the loader"
         assert "innerHTML" not in fn and "insertAdjacentHTML" not in fn
+
+
+class TestEveryAuthedFetchSendsTheNonce:
+    """auth.py Gate 1.5 rejects any request without X-OIDC-Nonce (401). The
+    first live run of /off-call-now on personal-dev (1.11.81, 2026-11-08) 401'd
+    because its fetch sent only the bearer token; the preview stub ignored
+    headers, so nothing offline could see it. Pinned file-wide, not per-call."""
+
+    @staticmethod
+    def _header_objects(s: str):
+        for m in re.finditer(r"""['"]?Authorization['"]?\s*:""", s):
+            a = s.rindex("{", 0, m.start())
+            while s[a - 1] == "$":          # skip a template ${...} brace
+                a = s.rindex("{", 0, a - 1)
+            depth = 0
+            for j in range(a, len(s)):
+                depth += s[j] == "{"
+                depth -= s[j] == "}"
+                if depth == 0:
+                    yield s.count("\n", 0, m.start()) + 1, s[a:j + 1]
+                    break
+
+    def test_bearer_and_nonce_travel_together(self):
+        html = (HERE.parent / "frontend" / "index.html").read_text(encoding="utf-8")
+        objs = list(self._header_objects(html))
+        assert len(objs) >= 8, "sanity: the scan found the app's authed fetches"
+        missing = [line for line, obj in objs if "X-OIDC-Nonce" not in obj]
+        assert missing == [], f"Authorization without X-OIDC-Nonce at index.html lines {missing}"
