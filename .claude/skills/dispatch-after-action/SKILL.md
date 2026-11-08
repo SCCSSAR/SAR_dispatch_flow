@@ -25,6 +25,8 @@ It does **not** cover incident management, search strategy, team assignments, fi
 
 **One exception: find data (Step 2.5).** Where and when the subject was found is recorded as *data*, because it is what the team's Lost Person Behavior (LPB) statistics are built from. That means distance, bearing, find feature and times, entered in D4H's Lost Behavior tab (which feeds ISRID and the Cal OES equivalent) and logged locally so our own finds can sit beside ISRID's. It does not open a review of search tactics, assignment choices, or why the find took as long as it did. Those stay out.
 
+**Second exception: on-scene debrief notes (Round 3).** Whatever the team raised at the field debrief is recorded close to verbatim in its own report section, Turbo or not, so it isn't lost (Bill, 2026-11-08). Record it, and don't analyze it, rank it or draft issues for it; an operational lesson belongs to the team's own process. A point about Turbo also goes through Steps 3 and 4 like any other finding.
+
 **One dispatch per run.** If several callouts happened since the last review, run the skill once per dispatch — the log windows, the metrics, and the findings are all per-incident. Ask which one first.
 
 ## Hard rules
@@ -285,6 +287,7 @@ Lead each round with what the logs already showed, then ask. Keep it conversatio
 - **Did you have to do anything manually that the tool was supposed to do?** (Manual-intervention count is the sharpest single quality metric.)
 - **Was there anything you chose not to use because you didn't trust it?** Did you fall back to a pre-Turbo manual workflow at any point? (Trust is the actual adoption blocker. A dispatcher opening Google Maps by hand mid-dispatch is a red alert regardless of what the logs say.)
 - Did anyone call or text you with a question the tool should have already answered?
+- **What came up in the on-scene debrief?** Ask for any notes, Turbo-related or not, and record them under the second scope-fence exception. On 2026-11-07 the debrief raised that one person cannot safely fit the bike rack and load e-bikes alone; it took the UAS team at the SO to help, which delayed UAS.
 - **What worked? Did anyone praise anything, or say something was better than before?** Ask this explicitly — every other question in this skill is failure-shaped, so positives go unrecorded unless invited, and that quietly distorts prioritization. On 2026-07-24 responders volunteered that the instant Slack invite plus real information on replying YES was great, and that it bought tolerance for a staging change mid-dispatch. Losing that would have made a correctness fix look strictly more important than the feedback loop it depends on.
 - **Any new features requested or mentioned** — by you, another dispatcher, search management, a responder, or an outside agency? Capture who asked and the underlying need, not just the proposed solution.
 
@@ -681,6 +684,9 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 ## Findings and dispositions
 | # | Finding | Disposition | Tracked as |
 |---|---|---|---|
+
+## On-scene debrief notes
+<Round 3, close to verbatim, attributed to roles not names. "No debrief held" or "not asked" in one line.>
 
 ## Out of scope — passed along
 
