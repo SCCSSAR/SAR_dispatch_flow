@@ -1,6 +1,6 @@
 ---
 name: dispatch-after-action
-description: Guided after-action review of ONE Dispatch Turbo callout or live dispatch test. Reads Cloud Run logs first (latency, memory, staging provider, geocode sanity, warnings), then interviews the dispatcher in three rounds across intake/OCR, staging, Slack, D4H, CalTopo, process, corrections, and feature asks — then writes a findings report to gitignored research/ and drafts (never auto-files) GitHub issues, plus a short paste-ready summary for the D4H incident's admins-only Private Data field. On a real callout that ended in a find, it also reads the incident map for the find location and produces the values for D4H's Lost Behavior (LPB) tab. Trigger on "after action", "AAR", "post-callout review", "debrief the dispatch", "lessons learned", "we had a callout", "we had a real dispatch", "post-mortem the dispatch". Scope is the Dispatch Turbo SOFTWARE only — not incident management, search tactics, or field operations.
+description: Guided after-action review of ONE Dispatch Turbo callout or live dispatch test. Reads Cloud Run logs first (latency, memory, staging provider, geocode sanity, warnings), then interviews the dispatcher in three rounds across intake/OCR, staging, Slack, D4H, CalTopo, process, corrections, and feature asks — then writes a findings report to gitignored research/ and drafts (never auto-files) GitHub issues, plus a short paste-ready summary for the D4H incident's admins-only Private Data field, and a D4H event log continuation from Slack. On a real callout that ended in a find, it also reads the incident map for the find location and produces the values for D4H's Lost Behavior (LPB) tab. Trigger on "after action", "AAR", "post-callout review", "debrief the dispatch", "lessons learned", "we had a callout", "we had a real dispatch", "post-mortem the dispatch", "update the D4H timeline", "D4H event log". Scope is the Dispatch Turbo SOFTWARE only — not incident management, search tactics, or field operations.
 ---
 
 # Dispatch Turbo — After-Action Review
@@ -482,6 +482,115 @@ d4h_incident,month,category,population_density,terrain,eco_region,dist_mi,dist_k
 
 **No coordinates, names, or addresses in this file.** Those stay in the report directory with the rest of the PII (Hard rule 2). The month is enough to order the rows; the D4H number joins back to the full record when needed.
 
+## Step 2.6 — Continue the D4H event log (every real callout)
+
+Turbo writes the event log into the D4H incident description up to dispatch and stops at `<time> - D4H incident request filed at dispatch time`. The rest of the incident (arrivals, briefing, clues, resource changes, find, debrief, home safe) lives in the Slack channel and sometimes in a Google Doc. This step turns those into lines the dispatcher edits and pastes into D4H after Turbo's last line. Run it on every real callout, find or not; skip it for tests. **It can run on its own** when the dispatcher asks only for the timeline: do Step 0, then this step, and skip the rest of the review.
+
+### 2.6a Read the anchor
+
+A read-only GET of the incident, by D4H activity id (the report header, or Firestore `d4h_activity_id`).
+
+```bash
+G=/opt/homebrew/share/google-cloud-sdk/bin/gcloud; P=<project>; C=<gcloud_config>
+export D4H_ACCESS_TOKEN="$($G secrets versions access latest --secret d4h-access-token --project $P --configuration=$C)"
+[ -n "$D4H_ACCESS_TOKEN" ] || { echo "ABORT: no D4H token (gcloud auth expired?)"; exit 1; }
+python3 - <ACTIVITY_ID> <REPORT_DIR> <<'EOF'
+import ast, html, json, os, re, sys, urllib.request
+act, out = sys.argv[1], sys.argv[2]
+c = {t.id: n.value.value for n in ast.parse(open("backend/d4h.py").read()).body
+     if isinstance(n, ast.Assign) for t in n.targets
+     if isinstance(t, ast.Name) and isinstance(n.value, ast.Constant)}
+req = urllib.request.Request(f"{c['BASE_URL']}/team/{c['TEAM_ID']}/incidents/{act}",
+      headers={"Authorization": "Bearer " + os.environ["D4H_ACCESS_TOKEN"], "Accept": "application/json"})
+body = json.load(urllib.request.urlopen(req, timeout=30))
+json.dump(body, open(os.path.join(out, "d4h-incident.json"), "w"), indent=2)
+desc = html.unescape(re.sub(r"<br\s*/?>", "\n", body.get("description") or ""))
+log = desc.split("Event Log:", 1)[1].split("\n---", 1)[0].strip().splitlines() if "Event Log:" in desc else []
+print(f"event log: {len(log)} lines; last: {log[-1] if log else 'NONE'}")
+print("Google Doc:", re.findall(r"Incident Log:\s*(https://docs\.google\.com/\S+)", desc) or "none in D4H description")
+print("startsAt", body.get("startsAt"), "endsAt", body.get("endsAt"))
+EOF
+```
+
+The token guard matters: with expired gcloud auth, `secrets versions access` prints an error and exports an empty token, and the GET then fails with a 401 that looks like a D4H permissions problem (2026-11-08).
+
+### 2.6b Gather the sources
+
+- **The Slack incident channel.** Its name is in Turbo's `Slack incident channel created: #<name>` line; its id is Firestore `slack_channel_id`, or search private channels by name. Read the whole channel, paginating to the end, **and every thread that has replies**. A channel read returns thread parents only: on 2026-11-07 the welcome pin had 11 replies that the channel read did not include. Without a Slack connector, ask the dispatcher to export or paste the channel.
+- **The Google Doc, when there is one.** Find it in this order:
+  1. The `Incident Log: <url>` line the snippet prints. The frontend appends it to the end of the textarea ([index.html](../../../frontend/index.html), `Incident Log: ${doc_url}`), not to the Event Log section, and D4H has it only when the Doc was created **before** Send.
+  2. Otherwise, a `Google Doc created | … doc_id=<id>` line in the Step 1 window. The URL is `https://docs.google.com/document/d/<id>`.
+  3. Otherwise, search the reviewer's Drive for the event name, then ask whether the dispatcher or the Ops Chief made a Doc separately.
+
+  Turbo creates the Doc in the dispatcher's own Drive, so the reviewer's Drive connector may not open it (2026-09-15). If it can't, ask the operator to share it with the reviewer's account, or to paste it. Entries in the Doc carry their writer's own times.
+- **D4H attendance**, for each member's Ocean # (the member `ref`; the member list covers anyone with no attendance row) and for the home-safe check. **Read it at review time**, not from a snapshot saved the night of the callout: dispatchers add rows by hand at close-out, and an early snapshot misses them. `d4h._get_attendance` shows the shipped query.
+- **Who held which role.** Slack rarely says who was IC, Ops Chief or Plans. Ask the dispatcher.
+- **What never reached the channel.** Ask the Ops Chief (often the dispatcher) what teams reported in person or by radio. On 2026-11-07 the K9 handler told Ops the dog trailed well to a bus stop; the only trace in Slack was a joke two hours later. A verbal report goes in with the time the Ops Chief gives, or into the gaps when there is none.
+
+### 2.6c Write the lines
+
+Each line matches Turbo's own: `YYYY-MM-DD HH:MM - <event>: <people>`, Pacific, 24-hour, plain ASCII (same `pbcopy` rule as the D4H summary). Write each person as full D4H name **and** Ocean #, `Bill Burns (305)`; the Ocean # is the three-digit team number members post with ("Home safe 305"). Several people go comma-separated on one line, and extra detail (a count, a second time) follows a semicolon. Name the person the event is **about**; when someone else reported it, add `(per <name>)`. D4H is the system of record and already holds attendance by name, so names belong here (an exception to Hard rule 2, like the D4H summary). Fix obvious typos in what people posted ("Event article" is a scent article) and use D4H full names, not nicknames.
+
+**The time is the Slack post time**, cut to the minute, never rounded. Team protocol is to update the channel as soon as practicable, and that is precise enough (Bill, 2026-11-08). Do not adjust a post time toward when you think the event happened, and do not mark it as approximate. Use a different time only when the message states one ("found at 18:55") or the entry comes from the Doc, which has its own times.
+
+Include too much rather than too little; the dispatcher trims. In time order:
+
+- **First responder confirmed**, with the count and the time the last one was added (from the bot's `<name> added` thread replies).
+- **ETAs for overhead only** (Operations Section Chief, IC, Plans) and for anyone reported as delayed. Routine member ETAs are noise.
+- **Every arrival** at staging or on scene, the first one labelled as first.
+- **IC briefing**, and **assignments issued**: one line per team, all at the post's time, so each can be trimmed on its own.
+- **Clues and investigation:** scent article collected, interviews, information relayed by the agency, sightings, where a K9 trail went.
+- **Resource changes:** requested, approved, cancelled, delayed, mutual aid, extra drivers or vehicles.
+- **Changes of tempo or strategy.**
+- **Subject found** at the post's time, with the condition (well, injured, deceased) and distance from the IPP when Step 2.5 has them, plus any recall to staging.
+- **Debrief.**
+- **First home safe** and **last home safe** only, not every post (if the last says "home safe a while ago", say so on its line). Then, at the last home safe's time, `Home safe not posted: <people>`: everyone in attendance or on scene in Slack with no home-safe post. Mark `(possibly remote)` anyone who never posted from the scene.
+
+Leave out channel joins and the other `added` lines (attendance records them), acknowledgements, and banter. **A joke that carries a clue is a clue:** write the clue in plain words, and ask the dispatcher when you can't tell.
+
+### 2.6d Gaps — reported, never pasted
+
+List these under the paste block, never as placeholders inside it:
+
+- **Milestones with no post**, typically the IC briefing and the debrief. Give the nearest posted event as a hint ("assignments issued 18:29").
+- **Incident close time.** The team closes an incident at the **debrief**, not at the last home safe (Bill, 2026-11-08). If D4H `endsAt` still equals `startsAt`, say so and give the debrief time, or flag that it is missing.
+- **Attendance gaps:** anyone on scene in Slack with no D4H attendance row (a delayed responder who never replied in Everbridge never gets one; 2026-11-07), and any K9 on scene with no animal row.
+
+## Step 2.7 — Intake feedback for the SO Ops Deck (every real callout)
+
+The Sheriff's Office Ops Deck dispatchers write the intake form. This step gathers **every intake problem the review found**, OCR misreads included, into one section Bill can lift unchanged into a note to them. Look in Round 1 answers, standing checks 12 and 16, the Event Log's `corrected` and `left blank` lines, fields the dispatcher edited, and the findings table.
+
+**Sort each problem by what the form shows** (Hard rule 6: look at the form at full resolution, cropping into the scratchpad, rather than inferring from the misread):
+
+- **Written in a way a person would misread:** a digit that could be two digits, a gap inside a number, writing across a box edge, an overwrite. This goes under *For the form*, with one suggestion the writer can act on with a pen.
+- **Missing or not what the field asks for:** a blank question, a city in the Agency box. Also *For the form*.
+- **Written so a person reads it correctly, and Turbo misread it anyway:** this goes under *Turbo's side*, labelled as needing no change to the form. The test is the human reader: if you and the dispatcher both read it right, the misread is Turbo's. Include these too. They tell the Ops Deck which fields Turbo gets wrong, and feedback that lists only their mistakes reads as blame for ours.
+- **A borderline call on a field that matters** (name, phone, LKP, residence): ask the dispatcher, who held the paper. On 2026-11-07 a first name with crowded middle letters was first filed as the writer's fault; both the dispatcher and a second reviewer read it correctly.
+- **A problem with both sides** (a gap the writer left and Turbo copied): put it under *For the form*, and say what Turbo is changing in parentheses in the Effect.
+
+The section's shape, plain ASCII, written bare in the report (no code fence) so it pastes intact. Use the form's printed field labels, which are what the Ops Deck sees:
+
+```
+Intake feedback | <date> callout | Agency Event # <number, no stray spaces> | v<1|2> form, <handwritten|typed>, <photo|PDF>
+
+What helped:
+- <what made this form easy to work from>
+
+For the form:
+- <Field>: <what happened> | Effect: <what it caused> | Suggestion: <one pen-level change>
+
+Turbo's side, no change needed on the form:
+- <Field>: <what Turbo did> | Effect: <what it caused> | Status: <plain status>
+```
+
+**Status says only what is true:** `fixed in <version>`, `being fixed` (only when work is under way), `planned`, `open`, `corrected by the dispatcher`, `corrected automatically`, or `no change planned`. A planned redesign is not "being fixed".
+
+- **Describe each error by shape, not by value:** "one digit of the subject's phone, a 7, was read as a 4". The SO owns this data, but a note travels, so leave out the subject's name, DOB, address and full phone number. The Event # lets them pull the form.
+- **Every item states its effect**, including a near miss: "an exigent ping would have gone to the wrong number; caught because the dispatcher read the paper". The effect is what makes a writer care about one field over another.
+- **When the form arrived as a photo of handwriting**, end *For the form* with a `Format:` item that suggests sending the fillable PDF. Turbo reads the PDF's typed fields almost without error and misreads a real share of handwriting, so this is the one change that removes a whole class of errors (CLAUDE.md, "v2 form routing").
+- No responder names, and no ops issue numbers (they can't open them).
+- With no problems, write `No intake problems found.` and keep *What helped*.
+
 ## Step 3 — Log findings the dispatcher didn't mention
 
 State plainly anything the logs surfaced that didn't come up — a fallback they didn't feel, a warning that never reached the UI, a latency spike, a wrong coordinate they interpreted as "no results nearby." These are the most valuable findings in the review, because they're invisible from the dispatcher's seat and they grow silently until they bite during a real search.
@@ -575,6 +684,15 @@ Assign exactly one disposition. Resist the pull toward filing everything.
 
 ## Out of scope — passed along
 
+## Intake feedback for the SO Ops Deck (shareable)
+<Step 2.7, in its fixed shape, ready to lift into a note.>
+
+## D4H event log (paste-ready)
+<Step 2.6c lines only, no code fence and no commentary, so Step 6 can copy the section as it is.>
+
+## D4H event log gaps
+<Step 2.6d: missing milestones, incident close time, attendance gaps.>
+
 ## D4H summary (paste-ready)
 <see "The D4H summary section" below>
 ```
@@ -606,10 +724,22 @@ Repo-file edits go on a branch, chained in one Bash call per Session Rule #14. N
 
 ## Step 6 — Close out
 
-Copy the D4H summary to the clipboard and tell Bill to paste it into the incident's Private Data field:
+First copy the event log continuation and tell Bill to paste it into the incident description, after Turbo's `D4H incident request filed at dispatch time` line:
+
+```bash
+sed -n '/^## D4H event log (paste-ready)/,/^## /p' research/after-action/<dir>/report.md | sed '1d;$d;/^$/d' | LANG=en_US.UTF-8 pbcopy
+```
+
+Then copy the D4H summary to the clipboard and tell Bill to paste it into the incident's Private Data field:
 
 ```bash
 sed -n '/^## D4H summary/,$p' research/after-action/<dir>/report.md | sed '1d' | LANG=en_US.UTF-8 pbcopy
+```
+
+When Bill is ready to send the Ops Deck feedback, the same pattern copies it:
+
+```bash
+sed -n '/^## Intake feedback for the SO Ops Deck/,/^## /p' research/after-action/<dir>/report.md | sed '1d;$d' | LANG=en_US.UTF-8 pbcopy
 ```
 
 Restore the original gcloud config. Report in-session: headline, alerts, findings table, what got filed versus drafted, what's still open. Then the copy-pasteable next-session prompt (Session Rule #11a) naming the immediate next action.
