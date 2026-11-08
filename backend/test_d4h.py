@@ -4208,10 +4208,13 @@ def _parse_off_call_response(json_body: dict) -> list[dict]:
         if not member_id or member_id in seen:
             continue
         seen.add(member_id)
+        custom = member.get("customStatus") or {}
         out.append({
             "member_id": member_id,
             "ref":       str(member.get("ref") or "").strip(),
             "name":      str(member.get("name") or "").strip(),
+            "status":    str(member.get("status") or ""),
+            "support":   custom.get("id") == 1654,
         })
     return out
 
@@ -4234,7 +4237,7 @@ class TestParseOffCallResponse:
 
     def test_notes_and_role_are_never_carried(self):
         out = _parse_off_call_response({"results": [self._row(1)]})
-        assert set(out[0]) == {"member_id", "ref", "name"}
+        assert set(out[0]) == {"member_id", "ref", "name", "status", "support"}
 
     def test_empty_and_missing_results(self):
         assert _parse_off_call_response({}) == []
@@ -4259,7 +4262,7 @@ class TestOffCallProductionParity:
         raise AssertionError(f"{name} not found in d4h.py")
 
     def _prod_parser(self):
-        ns: dict = {}
+        ns: dict = {"D4H_SUPPORT_CUSTOM_STATUS_ID": 1654}
         exec(self._fn(self._src(), "_parse_off_call_response"), ns)
         return ns["_parse_off_call_response"]
 
@@ -4295,6 +4298,7 @@ class TestOffCallProductionParity:
         ns: dict = {
             "httpx": SimpleNamespace(get="GET"),
             "BASE_URL": "https://x", "TEAM_ID": 1775,
+            "D4H_SUPPORT_CUSTOM_STATUS_ID": 1654,
             "_auth_header": lambda: {},
             "_format_d4h_datetime": lambda dt: "STAMP",
             "_log_and_raise_for_status": lambda resp, op: None,

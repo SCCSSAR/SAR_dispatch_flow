@@ -211,6 +211,21 @@
     #notify-checklist li::before {
       content: "○"; color: #7ab3f5; font-size: 0.72rem; flex-shrink: 0;
     }
+    /* Off-call list beside the team-lead checklist (Bill, 2026-11-08). */
+    #notify-checklist .cl-grid {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 1.25rem;
+    }
+    #off-call-panel { border-left: 1px solid #2a4a7f; padding-left: 1.25rem; }
+    @media (max-width: 600px) {
+      #notify-checklist .cl-grid { grid-template-columns: minmax(0, 1fr); }
+      #off-call-panel { border-left: none; padding-left: 0; border-top: 1px solid #2a4a7f; padding-top: 0.75rem; }
+    }
+    #off-call-panel .oc-row  { font-size: 0.87rem; color: #c9d1d9; padding: 0.22rem 0; line-height: 1.4; }
+    #off-call-panel .oc-sup  { color: #f5b942; font-size: 0.78rem; }
+    #off-call-panel .oc-teams { color: #8b98a9; font-size: 0.8rem; }
+    #off-call-panel .oc-note { font-size: 0.85rem; color: #8b98a9; }
+    #off-call-panel .oc-warn { font-size: 0.85rem; color: #f5b942; }
+    #off-call-panel .oc-foot { font-size: 0.74rem; color: #8b98a9; margin-top: 0.6rem; line-height: 1.45; }
 
     .spinner {
       width: 18px; height: 18px;
@@ -923,14 +938,23 @@
     </div>
 
     <div id="notify-checklist">
-      <div class="cl-title">While waiting — notify appropriate team leads</div>
-      <ul>
-        <li>Transport</li>
-        <li>K9</li>
-        <li>IC / Ops</li>
-        <li>TRT</li>
-        <li>UAS</li>
-      </ul>
+      <div class="cl-grid">
+        <div>
+          <div class="cl-title">While waiting — notify appropriate team leads</div>
+          <ul>
+            <li>Transport</li>
+            <li>K9</li>
+            <li>IC / Ops</li>
+            <li>TRT</li>
+            <li>UAS</li>
+          </ul>
+        </div>
+        <div id="off-call-panel">
+          <div class="cl-title">Off-call now in D4H</div>
+          <div id="off-call-body"></div>
+          <p class="oc-foot" id="off-call-foot"></p>
+        </div>
+      </div>
     </div>
 
     <button id="submit-btn" disabled>Extract Incident Data</button>
@@ -1393,6 +1417,8 @@
   // within a single instance lifetime the flags are immutable. See design
   // Section 2 "Surfacing flag state to the dispatcher (footer)".
   // ---------------------------------------------------------------------------
+  // Read by the off-call panel footer: only "full" sends live unconditionally.
+  let _everbridgeMode = "off";
   (async function loadVersion() {
     const el = document.getElementById("footer-version");
     try {
@@ -1433,6 +1459,7 @@
           versionStr = parts.length === 2 ? `${milestone} · ${parts[1]}` : milestone;
         }
         const ev = (data.flags && data.flags.everbridge_mode) || "off";
+        _everbridgeMode = ev;
         const sl = (data.flags && data.flags.slack_mode)      || "off";
         el.textContent = `${versionStr} · EB: ${ev} · Slack: ${sl}`;
         if (tooltip) el.title = tooltip;
@@ -3738,6 +3765,76 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Off-call list in the waiting panel (Bill, 2026-11-08). Display only: who
+  // is off-call in D4H, so the dispatcher can line up backups while the form
+  // is read. Independent of /ocr — any failure here only changes this column.
+  // DOM methods only (no innerHTML): names come from D4H.
+  // ---------------------------------------------------------------------------
+  let _offCallRequestSeq = 0;
+  async function loadOffCallPanel() {
+    const seq = ++_offCallRequestSeq;
+    const body = document.getElementById("off-call-body");
+    const foot = document.getElementById("off-call-foot");
+    const note = (cls, text) => {
+      const d = document.createElement("div");
+      d.className = cls;
+      d.textContent = text;
+      body.replaceChildren(d);
+    };
+    note("oc-note", "Checking D4H…");
+    foot.textContent = "";
+    let data = null;
+    try {
+      const resp = await fetch(`${BACKEND_URL}/off-call-now`, {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (resp.ok) data = await resp.json();
+    } catch (e) {
+      console.error("off-call-now failed:", e);
+    }
+    if (seq !== _offCallRequestSeq) return;  // a newer Extract owns the panel
+    if (!data || data.status !== "ok" || !Array.isArray(data.members)) {
+      note("oc-warn", "⚠ Couldn't read D4H. Check Off-Call Now there.");
+      return;
+    }
+    if (!data.members.length) {
+      note("oc-note", "Nobody is marked off-call.");
+      return;
+    }
+    const rows = data.members.map((m) => {
+      const row = document.createElement("div");
+      row.className = "oc-row";
+      row.append(m.name);
+      if (m.support) {
+        const sup = document.createElement("span");
+        sup.className = "oc-sup";
+        sup.textContent = " · Support";
+        row.append(sup);
+      }
+      let teamText = "";
+      if (Array.isArray(m.teams) && m.teams.length) teamText = m.teams.join(", ");
+      else if (m.teams === null && data.teams_status === "ok") teamText = "teams unknown";
+      if (teamText) {
+        const t = document.createElement("span");
+        t.className = "oc-teams";
+        t.textContent = ` — ${teamText}`;
+        row.append(t);
+      }
+      return row;
+    });
+    if (data.teams_status !== "ok") {
+      const n = document.createElement("div");
+      n.className = "oc-note";
+      n.textContent = "Team lists unavailable (Everbridge).";
+      rows.push(n);
+    }
+    body.replaceChildren(...rows);
+    foot.textContent = _everbridgeMode === "full"
+      ? "Off-call members aren't paged through their groups. To page one anyway, add them by name in Step 3."
+      : "On a live send, off-call members aren't paged through their groups; a draft keeps them until you remove them in Everbridge. To page one anyway, add them by name in Step 3.";
+  }
+
+  // ---------------------------------------------------------------------------
   // Submit — upload to backend
   // ---------------------------------------------------------------------------
   submitBtn.addEventListener("click", async () => {
@@ -3745,6 +3842,7 @@
 
     submitBtn.disabled = true;
     document.getElementById("notify-checklist").style.display = "block";
+    loadOffCallPanel();
     showStatus("info", "Reading form — this takes about 45–60 seconds…", true);
 
     // 5-stage status messages timed to match actual processing stages:

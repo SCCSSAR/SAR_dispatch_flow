@@ -8111,6 +8111,128 @@ async def everbridge_contacts(
     return JSONResponse({"contacts": contacts, "dispatcher_ocean": dispatcher_ocean})
 
 
+def _off_call_panel_entries(
+    off_call: list[dict],
+    groups: list[dict] | None,
+    group_members: dict[str, list[dict]] | None,
+) -> list[dict]:
+    """Shape D4H off-call members for the intake waiting panel (Bill, 2026-11-08).
+
+    Shows OPERATIONAL members and the Support sub-status; every other
+    non-operational sub-status (LOA, Inactive, Emeritus, ...) is excluded from
+    callouts and hidden here. Sorted by D4H's 'Last, First' name, displayed
+    'First Last'. `teams` holds the Everbridge group names the member is in,
+    joined on OCEAN# like the send path: None when the Ref is not a 3-digit
+    OCEAN# or the group lookup failed (`group_members is None`), [] when the
+    member is in no visible group. Only display fields leave this function.
+    """
+    group_name = {g["id"]: g["name"] for g in groups or []}
+    teams_by_ocean: dict[str, set] | None = None
+    if group_members is not None:
+        teams_by_ocean = {}
+        for gid, members in group_members.items():
+            for mc in members:
+                # Keyed on whatever `ocean` holds; only a 3-digit Ref is ever looked up.
+                teams_by_ocean.setdefault(mc.get("ocean"), set()).add(group_name.get(gid, gid))
+    shown = [m for m in off_call if m.get("status") == "OPERATIONAL" or m.get("support")]
+    out = []
+    for m in sorted(shown, key=lambda m: (m.get("name") or "").casefold()):
+        last, sep, first = (m.get("name") or "").partition(",")
+        name = f"{first.strip()} {last.strip()}" if sep else last.strip()
+        ref = m.get("ref") or ""
+        teams = None
+        if teams_by_ocean is not None and _OCEAN_RE.fullmatch(ref):
+            teams = sorted(teams_by_ocean.get(ref, ()), key=str.casefold)
+        out.append({"name": name or "Unnamed D4H member",
+                    "support": bool(m.get("support")), "teams": teams})
+    return out
+
+
+# The off-call list is the same for every dispatcher, so one fetch serves all
+# of them. This cache plus the lock is the endpoint's only throttle — see the
+# docstring for why it does not use the per-user rate limit. A degraded answer
+# (D4H or Everbridge down) is cached too, briefly: uncached, an outage would
+# make every request fan out again on the thread pool /ocr shares.
+_OFF_CALL_PANEL_TTL_S = 60.0
+_OFF_CALL_PANEL_DEGRADED_TTL_S = 15.0
+_off_call_panel_cache: dict = {"at": 0.0, "body": None}
+_off_call_panel_lock = asyncio.Lock()
+
+
+def _off_call_panel_cached(cache: dict, now: float) -> dict | None:
+    """The cached /off-call-now body if still fresh, else None."""
+    body = cache.get("body")
+    if body is None:
+        return None
+    full = body.get("status") == "ok" and body.get("teams_status") == "ok"
+    ttl = _OFF_CALL_PANEL_TTL_S if full else _OFF_CALL_PANEL_DEGRADED_TTL_S
+    return body if now - cache["at"] < ttl else None
+
+
+@app.get("/off-call-now")
+async def off_call_now(
+    dispatcher: dict = Depends(require_authorized_dispatcher),
+):
+    """Who is off-call in D4H right now, for the intake waiting panel.
+
+    Display only: the send path re-reads D4H itself at Step 0.7. Fails open —
+    a D4H failure returns status "unavailable" (HTTP 200), an Everbridge
+    failure drops the team labels only, and neither can affect /ocr.
+
+    Not counted against check_rate_limits(): the frontend fires this together
+    with /ocr, and the per-user limit (5/min) is shared, so counting it could
+    push /ocr itself into a 429. A shared cache and a single-flight lock bound
+    upstream calls instead. Logs counts only, never names.
+    """
+    async with _off_call_panel_lock:
+        hit = _off_call_panel_cached(_off_call_panel_cache, time.monotonic())
+        if hit is not None:
+            return JSONResponse(hit)
+        loop = asyncio.get_running_loop()
+        t0 = time.monotonic()
+        try:
+            off_call = await loop.run_in_executor(
+                None,
+                functools.partial(d4h.get_off_call_now, datetime.datetime.now(datetime.timezone.utc)),
+            )
+        except Exception as exc:  # fail open — includes RuntimeError (token unset)
+            logger.warning("off-call panel: D4H read failed (%s)", type(exc).__name__)
+            body = {"status": "unavailable", "teams_status": "unavailable", "members": []}
+            _off_call_panel_cache.update(at=time.monotonic(), body=body)
+            return JSONResponse(body)
+        groups: list[dict] | None = None
+        group_members: dict[str, list[dict]] | None = None
+        if _EVERBRIDGE_ORG_ID:
+            import everbridge as eb_module
+            try:
+                groups = await loop.run_in_executor(
+                    None, functools.partial(eb_module.list_groups, _EVERBRIDGE_ORG_ID),
+                )
+                fetched = await asyncio.gather(*(
+                    loop.run_in_executor(
+                        None,
+                        functools.partial(eb_module.list_group_member_contacts, _EVERBRIDGE_ORG_ID, g["id"]),
+                    )
+                    for g in groups
+                ))
+                group_members = {g["id"]: members for g, members in zip(groups, fetched)}
+            except Exception as exc:  # all or nothing: a partial team list would mislead
+                groups, group_members = None, None
+                logger.warning("off-call panel: Everbridge group lookup failed (%s)", type(exc).__name__)
+        entries = _off_call_panel_entries(off_call, groups, group_members)
+        body = {
+            "status": "ok",
+            "teams_status": "ok" if group_members is not None else "unavailable",
+            "members": entries,
+        }
+        _off_call_panel_cache.update(at=time.monotonic(), body=body)
+        logger.info(
+            "off-call panel: off_call=%d shown=%d teams=%s latency_ms=%d",
+            len(off_call), len(entries), body["teams_status"], int((time.monotonic() - t0) * 1000),
+        )
+        return JSONResponse(body)
+
+
 # ---------------------------------------------------------------------------
 # D4H Phase 2 PR 5 Task 5.2 — _build_ocr_data_for_d4h()
 # ---------------------------------------------------------------------------
