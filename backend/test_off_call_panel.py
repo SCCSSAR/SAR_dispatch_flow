@@ -36,7 +36,8 @@ def _parser():
 
 
 def _entries():
-    ns = _exec("main.py", {"_OCEAN_RE", "_off_call_panel_entries"}, {"re": re})
+    ns = _exec("main.py", {"_OCEAN_RE", "_OFF_CALL_PANEL_HIDDEN_TEAMS", "_off_call_panel_entries"},
+               {"re": re})
     return ns["_off_call_panel_entries"]
 
 
@@ -133,6 +134,19 @@ class TestPanelEntries:
         out = _entries()([_m("Alvarez, Troy")], None, None)
         assert out[0]["teams"] is None
 
+    def test_all_members_label_is_hidden(self):
+        # Every member is in it, so it says nothing about who covers what (Bill, 2026-11-08).
+        groups = GROUPS + [{"id": "g9", "name": "All Members"}]
+        gm = {"g9": [{"ocean": "305"}, {"ocean": "306"}], UAS: [{"ocean": "305"}]}
+        out = _entries()([_m("Alvarez, Troy", ref="305"), _m("Bell, Ann", ref="306")], groups, gm)
+        assert out[0]["teams"] == ["UAS"]
+        assert out[1]["teams"] == [], "in All Members only: matched, but no team worth showing"
+
+    def test_hidden_label_match_ignores_case(self):
+        groups = [{"id": "g9", "name": "ALL MEMBERS"}]
+        out = _entries()([_m("Alvarez, Troy", ref="305")], groups, {"g9": [{"ocean": "305"}]})
+        assert out[0]["teams"] == []
+
     def test_only_display_fields_reach_the_browser(self):
         out = _entries()([_m("Alvarez, Troy")], GROUPS, {})
         assert set(out[0]) == {"name", "support", "teams"}
@@ -199,6 +213,36 @@ class TestWaitingPanelFrontend:
     def test_footer_wording_agreed_with_bill(self):
         assert ("Off-call members aren't paged through their groups. "
                 "To page one anyway, add them by name in Step 3.") in self._html()
+
+    def test_one_footer_for_every_mode(self):
+        # The draft sentence only mattered in personal-dev testing (Bill, 2026-11-08).
+        html = self._html()
+        assert "a draft keeps them" not in html
+        assert "_everbridgeMode" not in html, "the mode switch existed only for that sentence"
+
+    @staticmethod
+    def _js_fn(html: str, signature: str) -> str:
+        start = html.index(signature)
+        depth, i = 0, html.index("{", start)
+        for j in range(i, len(html)):
+            depth += html[j] == "{"
+            depth -= html[j] == "}"
+            if depth == 0:
+                return html[start:j + 1]
+        raise AssertionError(signature)
+
+    def test_off_call_fetch_starts_when_the_form_is_picked(self):
+        # /ocr's Gemini call holds the event loop (~20 s); fetched on Extract the
+        # panel waited for it (live 1.11.82: 22.9 s). Picking the form comes first.
+        html = self._html()
+        assert "prefetchOffCall();" in self._js_fn(html, "function setFile(file)")
+
+    def test_one_request_serves_pick_and_extract(self):
+        html = self._html()
+        assert html.count("${BACKEND_URL}/off-call-now") == 1
+        assert "${BACKEND_URL}/off-call-now" in self._js_fn(html, "function prefetchOffCall()")
+        loader = self._js_fn(html, "async function loadOffCallPanel()")
+        assert "await _offCallPromise" in loader
 
 
 def _cached():
