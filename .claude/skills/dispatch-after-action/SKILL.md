@@ -528,26 +528,26 @@ The token guard matters: with expired gcloud auth, `secrets versions access` pri
   Turbo creates the Doc in the dispatcher's own Drive, so the reviewer's Drive connector may not open it (2026-09-15). If it can't, ask the operator to share it with the reviewer's account, or to paste it. Entries in the Doc carry their writer's own times.
 - **D4H attendance**, for each member's Ocean # (the member `ref`; the member list covers anyone with no attendance row) and for the home-safe check. **Read it at review time**, not from a snapshot saved the night of the callout: dispatchers add rows by hand at close-out, and an early snapshot misses them. `d4h._get_attendance` shows the shipped query.
 - **Who held which role.** Slack rarely says who was IC, Ops Chief or Plans. Ask the dispatcher.
-- **What never reached the channel.** Ask the Ops Chief (often the dispatcher) what teams reported in person or by radio. On 2026-11-07 the K9 handler told Ops the dog trailed well to a bus stop; the only trace in Slack was a joke two hours later. A verbal report goes in with the time the Ops Chief gives, or into the gaps when there is none.
+- **What never reached the channel.** Ask the Ops Chief (often the dispatcher) for their notes and phone or text logs, and what teams reported in person or by radio. On 2026-11-07 the K9 handler told Ops the dog trailed well to a bus stop; the only trace in Slack was a joke two hours later. A verbal report goes in with the time the Ops Chief gives, or into the gaps when there is none.
 
 ### 2.6c Write the lines
 
 Each line matches Turbo's own: `YYYY-MM-DD HH:MM - <event>: <people>`, Pacific, 24-hour, plain ASCII (same `pbcopy` rule as the D4H summary). Write each person as full D4H name **and** Ocean #, `Bill Burns (305)`; the Ocean # is the three-digit team number members post with ("Home safe 305"). Several people go comma-separated on one line, and extra detail (a count, a second time) follows a semicolon. Name the person the event is **about**; when someone else reported it, add `(per <name>)`. D4H is the system of record and already holds attendance by name, so names belong here (an exception to Hard rule 2, like the D4H summary). Fix obvious typos in what people posted ("Event article" is a scent article) and use D4H full names, not nicknames.
 
-**The time is the Slack post time**, cut to the minute, never rounded. Team protocol is to update the channel as soon as practicable, and that is precise enough (Bill, 2026-11-08). Do not adjust a post time toward when you think the event happened, and do not mark it as approximate. Use a different time only when the message states one ("found at 18:55") or the entry comes from the Doc, which has its own times.
+**The time is the Slack post time**, cut to the minute, never rounded. Team protocol is to update the channel as soon as practicable, and that is precise enough (Bill, 2026-11-08). Do not adjust a post time toward when you think the event happened, and do not mark it as approximate. Use a different time only when the message states one ("found at 18:55") or the entry comes from the Doc, which has its own times. **Times the Ops Chief supplies from memory carry `(approx)` after the time:** `2026-11-07 18:30 (approx) - IC briefing for K9 teams`.
 
 Include too much rather than too little; the dispatcher trims. In time order:
 
 - **First responder confirmed**, with the count and the time the last one was added (from the bot's `<name> added` thread replies).
 - **ETAs for overhead only** (Operations Section Chief, IC, Plans) and for anyone reported as delayed. Routine member ETAs are noise.
-- **Every arrival** at staging or on scene, the first one labelled as first.
-- **IC briefing**, and **assignments issued**: one line per team, all at the post's time, so each can be trimmed on its own.
-- **Clues and investigation:** scent article collected, interviews, information relayed by the agency, sightings, where a K9 trail went.
+- **Every arrival** at staging or on scene. **The Ops Chief's arrival is a required milestone:** when only an ETA was posted, ask the Ops Chief for the arrival time and write it as an arrival. Label an arrival "first" only after that, since the Ops Chief is often first on scene and the last to post it (2026-11-07).
+- **IC briefings**, often one per team group as teams arrive: ask the Ops Chief for each. **Assignments issued**: one line per team, all at the post's time, so each can be trimmed on its own.
+- **Clues and investigation,** each with the plan it drove when there was one: scent article collected, interviews, information relayed by the agency, sightings, where a K9 trail went ("<handler> reports <dog> on strong trail until the bus stop. … Plan is to send …").
 - **Resource changes:** requested, approved, cancelled, delayed, mutual aid, extra drivers or vehicles.
 - **Changes of tempo or strategy.**
 - **Subject found** at the post's time, with the condition (well, injured, deceased) and distance from the IPP when Step 2.5 has them, plus any recall to staging.
 - **Debrief.**
-- **First home safe** and **last home safe** only, not every post (if the last says "home safe a while ago", say so on its line). Then, at the last home safe's time, `Home safe not posted: <people>`: everyone in attendance or on scene in Slack with no home-safe post. Mark `(possibly remote)` anyone who never posted from the scene.
+- **Last home safe** only, not every post (if it says "home safe a while ago", say so on its line). Then, at its time, `Home safe not posted: <people>`: field responders only. Ask about anyone who never posted from the scene and leave out those who worked remotely.
 
 Leave out channel joins and the other `added` lines (attendance records them), acknowledgements, and banter. **A joke that carries a clue is a clue:** write the clue in plain words, and ask the dispatcher when you can't tell.
 
