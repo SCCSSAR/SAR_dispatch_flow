@@ -67,10 +67,10 @@ def deck(tmp_path):
 class TestBuildDeckRefusesOverwrite:
     def test_existing_file_untouched(self, tmp_path):
         out = tmp_path / "2026-10 Incident Recap.pptx"
-        out.write_bytes(b"Bill's edited deck")
+        out.write_bytes(b"the presenter's edited deck")
         with pytest.raises(FileExistsError):
             rp.build_deck(_draft(), None, {}, {}, out)
-        assert out.read_bytes() == b"Bill's edited deck"
+        assert out.read_bytes() == b"the presenter's edited deck"
 
 
 class TestSummarySlide:

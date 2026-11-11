@@ -274,7 +274,7 @@ EDITED = (
 )
 
 
-class TestParseBillsEdits:
+class TestParseHandEdits:
     def test_crlf_and_text_kept_exactly(self):
         i = mr.parse_drafts(EDITED).incidents[0]
         assert i.facts["found"] == "Found well: walked home"
@@ -445,7 +445,7 @@ class TestCollect:
 
     def test_second_collect_never_overwrites(self, tmp_path):
         first = _collect(tmp_path)
-        first.write_text(first.read_text() + "\nBill's edit\n")
+        first.write_text(first.read_text() + "\nthe presenter's edit\n")
         before = first.read_bytes()
         second = _collect(tmp_path)
         assert second.name == "drafts-2.md" and first.read_bytes() == before
