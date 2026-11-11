@@ -130,6 +130,13 @@ class TestNoMapPlaceholder:
         assert not [sh for sh in s.shapes if sh.shape_type == pptx.enum.shapes.MSO_SHAPE_TYPE.PICTURE]
 
 
+class TestPicturesInsideSlide:
+    def test_every_picture_fits(self, deck):
+        for slide in deck.slides:
+            for sh in slide.shapes:
+                assert sh.left + sh.width <= deck.slide_width and sh.top + sh.height <= deck.slide_height, sh.name
+
+
 class TestFonts:
     def test_only_house_fonts(self, deck):
         names = set()

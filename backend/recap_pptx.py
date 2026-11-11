@@ -126,7 +126,12 @@ def _summary_slide(prs, draft: MonthDraft, overview_png: Path | None) -> None:
                  bold=kind in ("head", "total"),
                  colour="FFFFFF" if kind == "head" else (GREY if kind == "grey" else INK))
     if overview_png:
-        s.shapes.add_picture(str(overview_png), Inches(8.4), Inches(1.3), height=Inches(5.6))
+        from PIL import Image
+        with Image.open(overview_png) as im:
+            iw, ih = im.size
+        box_w, box_h = W - Inches(8.4) - Inches(0.3), Inches(5.8)
+        scale = min(box_w / iw, box_h / ih)
+        s.shapes.add_picture(str(overview_png), Inches(8.4), Inches(1.3), int(iw * scale), int(ih * scale))
 
 
 # ── incident slides ──────────────────────────────────────────────────────────

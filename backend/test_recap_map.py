@@ -145,6 +145,12 @@ class TestOverview:
         colours = _colours(im)
         assert rm.PIN_ORANGE in colours and rm.PIN_GREY in colours
 
+    def test_county_fills_the_frame(self, tmp_path):
+        # A 15% margin left a county 1 deg wide at zoom 9 (whole Bay Area); the overview wants zoom 10.
+        fetch = FakeFetcher()
+        rm.render_overview([], [(37.484, -122.202), (36.896, -121.208)], fetch, tmp_path / "o.png")
+        assert fetch.calls[0][0] == 10
+
     def test_no_pins_still_draws_county(self, tmp_path):
         out = rm.render_overview([], [tuple(p) for p in EXTENT], FakeFetcher(), tmp_path / "o.png")
         assert Image.open(out).size == (1000, 1000)
@@ -182,3 +188,17 @@ class TestPlaceLabels:
     def test_label_kept_inside_frame(self):
         box = rm.place_labels([(1150, 880, 300, 24)], 1200, 900)[0]
         assert box[2] <= 1200 and box[3] <= 900 and box[0] >= 0
+
+
+class TestSpreadPins:
+    def test_overlapping_pins_separated(self):
+        out = rm.spread_pins([(500, 500), (505, 502), (500, 500), (900, 100)], 16)
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                (x1, y1), (x2, y2) = out[i], out[j]
+                assert ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5 >= 2 * 16
+        assert out[0] == (500, 500) and out[3] == (900, 100)  # first and far pins stay put
+
+    def test_spread_stays_near(self):
+        out = rm.spread_pins([(500, 500), (500, 500)], 16)
+        assert ((out[1][0] - 500) ** 2 + (out[1][1] - 500) ** 2) ** 0.5 <= 6 * 16

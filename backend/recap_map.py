@@ -132,8 +132,8 @@ def _font(size: int):
 
 
 def _base(points: list[tuple[float, float]], width: int, height: int, fetch: TileFetcher,
-          min_zoom: int, max_zoom: int):
-    z = choose_zoom(points, width, height, min_zoom, max_zoom)
+          min_zoom: int, max_zoom: int, margin: float = 0.15):
+    z = choose_zoom(points, width, height, min_zoom, max_zoom, margin)
     px = [lnglat_to_world_px(lng, lat, z) for lat, lng in points]
     cx = (min(p[0] for p in px) + max(p[0] for p in px)) / 2
     cy = (min(p[1] for p in px) + max(p[1] for p in px)) / 2
@@ -244,16 +244,33 @@ def render_map(markers: list[Marker], width: int, height: int, fetch: TileFetche
     return out
 
 
+def spread_pins(points: list[tuple[float, float]], r: float) -> list[tuple[float, float]]:
+    """Move each pin that would overlap an earlier one onto a ring around its true spot."""
+    placed: list[tuple[float, float]] = []
+    for x, y in points:
+        cand, k = (x, y), 0
+        while any((cand[0] - px) ** 2 + (cand[1] - py) ** 2 < (2 * r) ** 2 for px, py in placed) and k < 48:
+            ring, step = 1 + k // 8, k % 8
+            a = math.pi / 4 * step
+            cand = (x + 2.2 * r * ring * math.cos(a), y - 2.2 * r * ring * math.sin(a))
+            k += 1
+        placed.append(cand)
+    return placed
+
+
 def render_overview(pins: list[tuple[int, float, float, bool]], county_extent: list[tuple[float, float]],
                     fetch: TileFetcher, out: Path) -> Path:
     """Numbered in-county pins (number, lat, lng, cancelled) over the whole county."""
     points = [(lat, lng) for _, lat, lng, _ in pins] + list(county_extent)
-    img, to_px = _base(points, 1000, 1000, fetch, 3, 12)
+    img, to_px = _base(points, 1000, 1000, fetch, 3, 12, margin=0.05)  # the county should fill the frame
     d = ImageDraw.Draw(img)
     f = _font(18)
-    for number, lat, lng, cancelled in pins:
-        x, y = to_px(lat, lng)
-        r = 16
+    r = 16
+    true_px = [to_px(lat, lng) for _, lat, lng, _ in pins]
+    for (number, _, _, cancelled), (tx, ty), (x, y) in zip(pins, true_px, spread_pins(true_px, r)):
+        if (x, y) != (tx, ty):
+            d.line((tx, ty, x, y), fill=(60, 60, 60), width=2)
+            d.ellipse((tx - 3, ty - 3, tx + 3, ty + 3), fill=(60, 60, 60))
         d.ellipse((x - r, y - r, x + r, y + r), fill=PIN_GREY if cancelled else PIN_ORANGE)
         label = str(number)
         d.text((x - d.textlength(label, font=f) / 2, y - 10), label, fill=(255, 255, 255), font=f)
