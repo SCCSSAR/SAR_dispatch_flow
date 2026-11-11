@@ -215,7 +215,7 @@ def _left_column(inc: IncidentDraft, cancelled: bool, ma: bool) -> list[dict]:
         out.append(dict(_HEADING_STYLE, text=text, heading=True))
 
     if cancelled and _real(inc.disruption):
-        heading("THE DISRUPTION")
+        heading("THE CALLOUT")
         out += [dict(text=f"•  {i}", size=14) for i in _real(inc.disruption)]
     if _real(inc.lessons):
         heading("LESSONS LEARNED")

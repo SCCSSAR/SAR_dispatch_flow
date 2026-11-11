@@ -306,7 +306,8 @@ FACT_KEYS = ("date", "event", "attendees", "hours", "volunteer_hours", "cancelle
              "environment", "found", "distance", "specialty", "map", "pls")
 DRAFT = "[draft]"
 _SECTIONS = {"Summary": "summary", "Highlight": "highlight", "Lessons learned": "lessons",
-             "The disruption": "disruption", "Sources and conflicts": None}
+             "The callout": "disruption", "Sources and conflicts": None,
+             "The disruption": "disruption"}  # the callout's heading before 2026-11-11, still read
 _SECTION_KEYS = {k.casefold(): v for k, v in _SECTIONS.items()}
 
 
@@ -354,7 +355,7 @@ def render_drafts(month: str, facts: list[IncidentFacts], excluded: list[tuple[s
         out += [f"## {f.number} · {f.date_pt} · {f.event_name}", "```facts"]
         out += [f"{k}: {v}" for k, v in _fact_values(f).items()]
         out += ["```", "### Summary", DRAFT, "### Highlight", DRAFT, "### Lessons learned", f"- {DRAFT}",
-                "### The disruption"] + ([f"- {DRAFT}"] if f.cancelled else [])
+                "### The callout"] + ([f"- {DRAFT}"] if f.cancelled else [])
         out += ["### Sources and conflicts", "(not rendered)"] + [f"- {n}" for n in f.notes] + [""]
     out += ["## Excluded"] + [f"- {n} · {why}" for n, why in excluded] + [""]
     return "\n".join(out)
@@ -485,7 +486,7 @@ def check_month(draft: MonthDraft, names_by_number: dict[str, list[str]]) -> lis
         names = names_by_number.get(inc.number, [])
         fields = [("title", inc.title)] + [(k, inc.facts.get(k, "")) for k in SLIDE_FACT_KEYS]
         fields += [("summary", inc.summary), ("highlight", inc.highlight),
-                   ("lessons", "\n".join(inc.lessons)), ("disruption", "\n".join(inc.disruption))]
+                   ("lessons", "\n".join(inc.lessons)), ("the callout", "\n".join(inc.disruption))]
         for where, text in fields:
             found = slide_text_hits(text, names)
             if found:

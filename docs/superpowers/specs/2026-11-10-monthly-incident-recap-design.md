@@ -75,7 +75,7 @@ text boxes only, by design.
    are written as `[fill in]` in `drafts.md`, never guessed.
 2. **Draft.** Write `research/monthly-recap/<YYYY-MM>/drafts.md`: one section per incident with the
    fact strip as computed, then a drafted summary (one or two sentences), one highlight, up to three
-   lessons learned, and for a cancelled callout a "disruption" paragraph. Each drafted line cites its
+   lessons learned, and for a cancelled callout a "The callout" paragraph. Each drafted line cites its
    source (debrief notes, Slack message date and time, AAR section). Facts that disagree between sources
    are listed under the incident, with the value chosen and why.
 3. **Review.** Bill edits `drafts.md` in his editor. The generator never rewrites it after he starts
@@ -116,7 +116,7 @@ plain text boxes, tables and images only, which import cleanly into Google Slide
 
 **Variants.**
 - **Cancelled after the page:** grey title bar; fact strip says when it was cancelled (after the page,
-  en route, after staging and briefing). "The disruption" replaces "Lessons learned" as the first list:
+  en route, after staging and briefing). "The callout" (heading THE CALLOUT, renamed from "The disruption" by Bill 2026-11-11) replaces "Lessons learned" as the first list:
   how many answered YES, how far people got, and anything notable about the stand-down. Lessons only if
   there are any. The map is centred on the PLS, because callouts cluster in the same areas.
 - **Mutual aid:** the fact strip names the requesting county. The map shows the PLS or staging
@@ -230,7 +230,7 @@ step 3, because the review is a person's job.
 
 **Builder's calls**
 - The source-precedence table above.
-- Cancelled-callout "disruption" content and the "Team takeaways" placeholder.
+- Cancelled-callout "The callout" content and the "Team takeaways" placeholder.
 - M/A distance as straight-line from the county, drive time left to the presenter.
 - Second draft runs write `drafts-2.md` rather than overwrite.
 - Tests excluded by rule (`[abcd]` suffix, test-named records), listed with the reason for Bill to overrule.

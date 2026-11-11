@@ -98,7 +98,7 @@ For each incident section in the drafts file:
    - **Lessons learned:** up to three, each something the team can do differently next time, from the
      debrief or the channel. None to draw on → delete the bullet and write "No lessons drafted: add
      or delete" in Sources and conflicts.
-   - **The disruption** (cancelled callouts only): how many had answered YES, how far people got
+   - **The callout** (cancelled callouts only; the slide heading reads THE CALLOUT): how many had answered YES, how far people got
      (still at home, en route, at staging, briefed), and when the stand-down came.
 4. **Use the map the field used.** If the report or the channel shows the field worked on a copy or
    on a hand-built map (Turbo's map can fail), put that map's id in `map:`; `render` fetches any map
