@@ -395,3 +395,45 @@ def next_drafts_path(folder: Path) -> Path:
     while (folder / f"drafts-{n}.md").exists():
         n += 1
     return folder / f"drafts-{n}.md"
+
+
+# ── the slide text check ─────────────────────────────────────────────────────
+
+def _text_patterns() -> list[tuple[str, re.Pattern]]:
+    """The ISRID batch's outgoing-text patterns, reused rather than copied (one set to maintain)."""
+    from isrid_submission import _PATTERNS
+    if len(_PATTERNS) != 7:
+        raise RecapError("isrid_submission._PATTERNS changed shape: update _text_patterns")
+    kinds = ("phone", "phone", "phone", "phone", "email", "address", "event_number")
+    return list(zip(kinds, _PATTERNS)) + [("dob", DOB_RE)]
+
+
+DOB_RE = re.compile(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b")
+SLIDE_FACT_KEYS = ("event", "volunteer_hours", "environment", "found", "distance", "specialty")
+
+
+def slide_text_hits(text: str, subject_names: list[str]) -> list[str]:
+    """Kinds of disallowed content in text bound for a slide. Never returns the matched value."""
+    kinds = []
+    for kind, pattern in _text_patterns():
+        if pattern.search(text) and kind not in kinds:
+            kinds.append(kind)
+    for name in subject_names:
+        if len(name) >= 3 and re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE):
+            kinds.append("subject_name")
+            break
+    return kinds
+
+
+def check_month(draft: MonthDraft, names_by_number: dict[str, list[str]]) -> list[str]:
+    hits = []
+    for inc in draft.incidents:
+        names = names_by_number.get(inc.number, [])
+        fields = [("title", inc.title)] + [(k, inc.facts.get(k, "")) for k in SLIDE_FACT_KEYS]
+        fields += [("summary", inc.summary), ("highlight", inc.highlight),
+                   ("lessons", "\n".join(inc.lessons)), ("disruption", "\n".join(inc.disruption))]
+        for where, text in fields:
+            found = slide_text_hits(text, names)
+            if found:
+                hits.append(f"{inc.number} {where}: {', '.join(found)}")
+    return hits

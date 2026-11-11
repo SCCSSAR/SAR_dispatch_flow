@@ -316,3 +316,55 @@ class TestConfirmMarker:
         text = mr.render_drafts("2026-10", [_facts(mutual_aid=True, ma_confident=False)], [])
         assert "mutual_aid: [confirm] yes" in text
         assert mr.parse_drafts(text).incidents[0].facts["mutual_aid"] == "[confirm] yes"
+
+
+# ── Task 5: slide text check ─────────────────────────────────────────────────
+
+class TestSlideTextHits:
+    @pytest.mark.parametrize("text,kind", [
+        ("Call the RP at 555-867-5309 first.", "phone"),
+        ("Reach them at zz@example.invalid", "email"),
+        ("Staged at 4410 Quillback Ave.", "address"),
+        ("Agency case 99-123-4567 opened.", "event_number"),
+        ("Born 7/26/41, wandered off.", "dob"),
+    ])
+    def test_each_kind(self, text, kind):
+        # An Event # also matches the ISRID local-phone pattern; either kind refuses the render.
+        assert kind in mr.slide_text_hits(text, [])
+
+    @pytest.mark.parametrize("text", ["10 × 6.2 h = 62", "1.2mi NE", "K9, UAS, e-bike",
+                                      "Found well 0.8 mi from the PLS after 3 hours."])
+    def test_clean(self, text):
+        assert mr.slide_text_hits(text, ["Zorblat", "Quintavere"]) == []
+
+    def test_subject_name_any_case(self):
+        assert mr.slide_text_hits("QUINTAVERE was found.", ["Quintavere"]) == ["subject_name"]
+
+    def test_surname_equal_to_street_still_hits(self):
+        # Review Focus 4: a surname that is also the event's street is flagged anyway.
+        assert mr.slide_text_hits("Search started on Elmwood.", ["Elmwood"]) == ["subject_name"]
+
+    def test_short_name_token_ignored(self):
+        assert mr.slide_text_hits("Al went to the park.", ["Al"]) == []
+
+    def test_name_is_whole_word(self):
+        assert mr.slide_text_hits("Teams were annoyed.", ["Noy"]) == []
+
+
+class TestCheckMonth:
+    def test_hit_names_place_not_value(self):
+        text = mr.render_drafts("2026-10", [_facts()], [])
+        d = mr.parse_drafts(text)
+        d.incidents[0].lessons = ["Call 555-867-5309 sooner."]
+        hits = mr.check_month(d, {"98765": []})
+        assert hits == ["98765 lessons: phone"]
+        assert "5309" not in hits[0]
+
+    def test_title_and_facts_checked(self):
+        d = mr.parse_drafts(mr.render_drafts("2026-10", [_facts()], []))
+        d.incidents[0].facts["distance"] = "near 12 Quillback St"
+        assert mr.check_month(d, {"98765": []}) == ["98765 distance: address"]
+
+    def test_clean_month(self):
+        d = mr.parse_drafts(mr.render_drafts("2026-10", [_facts()], []))
+        assert mr.check_month(d, {"98765": ["Zorblat", "Quintavere"]}) == []
