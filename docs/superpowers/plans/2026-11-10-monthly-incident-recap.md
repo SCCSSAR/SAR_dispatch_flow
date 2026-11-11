@@ -48,7 +48,7 @@
 - [ ] **Step 2: Run it.** Expected to conclude: the window filter is real only if (a)'s count < (c)'s and (b)'s equals (c)'s. If the filter is not real, the plan's fallback is: page the unfiltered list and filter on `startsAt` locally.
 - [ ] **Step 3: Record both answers** in Task 2's constants block below (edit this plan file), plus the page-size key.
 
-**Recorded 2026-11-10 (spike 28):** `incidents?after=<ISO UTC>&before=<ISO UTC>` filters (October 2026 PT window → 8 records vs `totalSize` 588 unfiltered, all starts inside the window); an invented param returns 400 (strict schema), so `D4H_INCIDENT_LIST_PARAMS = ("after", "before")`. Pagination: `page` (0-based) and `size`; responses carry `page`, `pageSize` (default 250), `totalSize`. Still filter `startsAt` locally against the PT window. `GET tags` returns `{id, title}` for 21 tags including `e-bike` (an invented path 404s), so `TAG_TITLES_FROM_API = True`.
+**Recorded 2026-11-10 (spike 28):** `incidents?after=<ISO UTC>&before=<ISO UTC>` filters (a one-month PT window returned only that month's records, far fewer than the unfiltered `totalSize`, all starts inside the window); an invented param returns 400 (strict schema), so `D4H_INCIDENT_LIST_PARAMS = ("after", "before")`. Pagination: `page` (0-based) and `size`; responses carry `page`, `pageSize` (default 250), `totalSize`. Still filter `startsAt` locally against the PT window. `GET tags` returns `{id, title}` for 21 tags including `e-bike` (an invented path 404s), so `TAG_TITLES_FROM_API = True`.
 
 ### Task 2: Incident facts (`backend/monthly_recap.py`)
 
@@ -262,5 +262,5 @@ Not code. Runs only after Bill merges the PR (or on the branch, with his OK).
 
 - [ ] **Step 1:** Run the skill for `2026-10` with Bill's latest Lost Behavior export.
 - [ ] **Step 2:** Bill edits `drafts.md`; render.
-- [ ] **Step 3:** Open the `.pptx`, look at every slide (convert to PNG via the venv or open in Keynote/Slides), and check: 8 rows in the summary (3 cancelled, 3 M/A), 359 h ± rounding if every incident is closed out, pins only for in-county incidents, each map shows only the four marker roles and the OSM credit, each link opens the right CalTopo map.
+- [ ] **Step 3:** Open the `.pptx`, look at every slide (convert to PNG via the venv or open in Keynote/Slides), and check: the summary's row, cancelled and M/A counts and its hours total against D4H, pins only for in-county incidents, each map shows only the four marker roles and the OSM credit, each link opens the right CalTopo map.
 - [ ] **Step 4:** Report to Bill what he still needs to fill in, and what the run got wrong, as the input for the next round.
