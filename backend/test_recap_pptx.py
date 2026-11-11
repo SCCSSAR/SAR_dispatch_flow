@@ -115,12 +115,13 @@ class TestIncidentSlide:
 
 
 class TestCancelledSlide:
-    def test_disruption_first_no_draft_lessons(self, deck):
+    def test_the_callout_first_no_draft_lessons(self, deck):
         texts = "\n".join(_texts(deck.slides[3]))
         assert "10-28 · EXPD BIRCH — CANCELLED" in texts
-        assert "THE DISRUPTION" in texts and "14 had answered YES." in texts
+        # The presenter's wording, 2026-11-11 (was "THE DISRUPTION").
+        assert "THE CALLOUT" in texts and "THE DISRUPTION" not in texts and "14 had answered YES." in texts
         assert "LESSONS LEARNED" not in texts  # its only lesson was [draft]
-        assert texts.index("THE DISRUPTION") < texts.index("TEAM TAKEAWAYS")
+        assert texts.index("THE CALLOUT") < texts.index("TEAM TAKEAWAYS")
 
 
 class TestNoMapPlaceholder:

@@ -298,6 +298,20 @@ class TestParseHandEdits:
         assert i.lessons == ["Ask for transit early.", "Brief UAS on the no-fly zone: call it out.",
                              "A fourth thought.", "And a fifth."]
 
+    def test_drafts_name_the_section_the_callout(self):
+        text = mr.render_drafts("2026-10", [_facts(cancelled=True)], [])
+        assert "### The callout" in text and "### The disruption" not in text
+        assert mr.parse_drafts(text).incidents[0].disruption == ["[draft]"]
+
+    def test_older_drafts_heading_still_read(self):
+        text = mr.render_drafts("2026-10", [_facts(cancelled=True)], []).replace("### The callout", "### The disruption")
+        assert mr.parse_drafts(text).incidents[0].disruption == ["[draft]"]
+
+    def test_text_check_names_the_callout(self):
+        d = mr.parse_drafts(mr.render_drafts("2026-10", [_facts(cancelled=True)], []))
+        d.incidents[0].disruption = ["Call 555-867-5309."]
+        assert mr.check_month(d, {"98765": []}) == ["98765 the callout: phone"]
+
     def test_missing_disruption_section_is_empty(self):
         assert mr.parse_drafts(EDITED).incidents[0].disruption == []
 
