@@ -7,7 +7,11 @@ Standard library only, no network. Output goes under --root (default research/is
 which is gitignored). Messages name columns and D4H numbers, never cell values: the export holds
 subject data.
 
-    python3 backend/isrid_submission.py prepare <export.csv> [--root DIR]
+Every team-specific value (county name, county places, cutoff date, team slug, the deploy.env
+environment for D4H reads) comes from <root>/config.json, copied from
+.claude/skills/isrid-quarterly/config.template.json. Nothing team-specific is in this file.
+
+    python3 backend/isrid_submission.py prepare <export.csv> [--root DIR] [--config FILE]
     python3 backend/isrid_submission.py finalize <batch-dir>
     python3 backend/isrid_submission.py mark-sent <batch-dir> --to <address> [--on YYYY-MM-DD]
 """
@@ -25,11 +29,6 @@ from pathlib import Path
 
 RULES_VERSION = "1"
 
-# Only incidents from this date go to ISRID (Bill's commitment to SAR Leadership, 2026-11-10):
-# by October 2026 Turbo ran nearly every callout, which is what makes the records consistent.
-# Earlier rows are never selected. Compared as the ISO date prefix of D4H's Incident Date.
-ELIGIBLE_FROM = "2026-10-01"
-
 # D4H's Lost Behavior export header, in D4H's order (34 columns, measured 2026-11-09).
 # An export whose header differs is refused, so a column D4H adds later cannot pass unreviewed.
 EXPORT_HEADER = (
@@ -40,7 +39,6 @@ EXPORT_HEADER = (
     "Find Lng", "Eco Region", "Environment", "Weather", "Equipment", "Experience", "Fitness",
     "Scenario", "Terrain", "Comment",
 )
-IN_COUNTY = "Santa Clara"
 
 
 class SubmissionError(Exception):
@@ -134,11 +132,12 @@ def forbidden_hits(row: dict[str, str], mission_raw: str) -> list[str]:
     return hits
 
 
-def deidentify_row(row: dict[str, str], comment: str) -> dict[str, str]:
+def deidentify_row(row: dict[str, str], comment: str, county: str) -> dict[str, str]:
+    """County is the team's configured county: D4H exports the state in that column by design."""
     out = dict(row)
     out["Mission #"] = d4h_number(row["Mission #"])
     out["Comment"] = comment
-    out["County"] = IN_COUNTY
+    out["County"] = county
     return out
 
 
@@ -204,15 +203,37 @@ def score_silver(row: dict[str, str], comment: str, confirmed: set[str]) -> tupl
 
 DEFAULT_ROOT = Path("research/isrid-submissions")
 
-# Santa Clara County places, casefolded: the 15 incorporated cities plus unincorporated and
-# district names D4H's City column carries. A heuristic only: Bill confirms every flag.
-SCC_PLACES = frozenset(p.casefold() for p in (
-    "Campbell", "Cupertino", "Gilroy", "Los Altos", "Los Altos Hills", "Los Gatos", "Milpitas",
-    "Monte Sereno", "Morgan Hill", "Mountain View", "Palo Alto", "San Jose", "Santa Clara",
-    "Saratoga", "Sunnyvale",
-    "Mount Hamilton", "San Martin", "Alviso", "Stanford", "Coyote", "Lexington Hills",
-    "Redwood Estates", "Holy City", "New Almaden",
-))
+CONFIG_TEMPLATE = ".claude/skills/isrid-quarterly/config.template.json"
+_CONFIG_KEYS = ("team_slug", "county", "places", "eligible_from", "d4h_env")
+
+
+def load_config(path: Path) -> dict:
+    """Read and validate the team's config. Keys starting with `_` are notes and are dropped."""
+    if not path.exists():
+        raise SubmissionError(f"no team config at {path}: copy {CONFIG_TEMPLATE} there and fill it in")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    cfg = {k: v for k, v in raw.items() if not k.startswith("_")}
+    problems = [f"{k}: missing" for k in _CONFIG_KEYS if k not in cfg]
+    problems += [f"{k}: unknown key" for k in cfg if k not in _CONFIG_KEYS]
+
+    def text_ok(v):
+        return isinstance(v, str) and v.strip() and "<" not in v
+
+    if "team_slug" in cfg and not (isinstance(cfg["team_slug"], str)
+                                   and re.fullmatch(r"[a-z0-9][a-z0-9-]*", cfg["team_slug"])):
+        problems.append("team_slug: lower-case letters, digits and hyphens only")
+    for k in ("county", "d4h_env"):
+        if k in cfg and not text_ok(cfg[k]):
+            problems.append(f"{k}: must be filled in")
+    if "places" in cfg and not (isinstance(cfg["places"], list) and cfg["places"]
+                                and all(text_ok(p) for p in cfg["places"])):
+        problems.append("places: a non-empty list of place names, as D4H's City column spells them")
+    if "eligible_from" in cfg and not (isinstance(cfg["eligible_from"], str)
+                                       and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cfg["eligible_from"])):
+        problems.append("eligible_from: a date, YYYY-MM-DD")
+    if problems:
+        raise SubmissionError(f"team config {path} is not usable:\n  " + "\n  ".join(problems))
+    return cfg
 
 
 def _sha256(path: Path) -> str:
@@ -233,14 +254,16 @@ def sent_numbers(root: Path) -> set[str]:
     return sent
 
 
-def flag_row(row: dict[str, str]) -> str:
+def flag_row(row: dict[str, str], places) -> str:
+    """A heuristic only: the dispatcher confirms every flag. County can't be used, because D4H
+    exports the state there."""
     city, county = row["City"].strip(), row["County"].strip()
     if not city or not county:
         return "check"
-    return "in-county" if city.casefold() in SCC_PLACES else "mutual-aid?"
+    return "in-county" if city.casefold() in {p.casefold() for p in places} else "mutual-aid?"
 
 
-def prepare(export: Path, root: Path, now: datetime) -> Path:
+def prepare(export: Path, root: Path, now: datetime, config: dict) -> Path:
     rows = read_export(export)              # refuses a changed header before anything is written
     quarter, run = quarter_label(now), now.strftime("%Y%m%d-%H%M")
     batch = root / quarter / run
@@ -251,12 +274,15 @@ def prepare(export: Path, root: Path, now: datetime) -> Path:
     raw = batch / "raw-d4h-export.csv"
     raw.write_bytes(export.read_bytes())
     worklist = {"rules_version": RULES_VERSION, "raw_sha256": _sha256(raw),
-                "quarter": quarter, "run": run, "eligible_from": ELIGIBLE_FROM,
+                "quarter": quarter, "run": run, "config": config,
+                "eligible_from": config["eligible_from"],
                 "rows": [], "already_sent": [], "before_cutoff": []}
     for i, row in enumerate(rows):
         line = i + 2                        # header is row 1
         day = row["Incident Date"].strip()[:10]
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) and day < ELIGIBLE_FROM:
+        # Only incidents on or after the team's cutoff are ever sent. Earlier rows are recorded
+        # and never selected; a date that can't be read stays in front of the dispatcher.
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) and day < config["eligible_from"]:
             try:
                 worklist["before_cutoff"].append(d4h_number(row["Mission #"]))
             except SubmissionError:
@@ -272,7 +298,7 @@ def prepare(export: Path, root: Path, now: datetime) -> Path:
         if number in already:
             worklist["already_sent"].append(number)
             continue
-        worklist["rows"].append({"d4h": number, "line": line, "flag": flag_row(row),
+        worklist["rows"].append({"d4h": number, "line": line, "flag": flag_row(row, config["places"]),
                                  "incident_date": row["Incident Date"],
                                  "minimum_as_exported": score_minimum(row, row["Comment"])[0]})
     (batch / "worklist.json").write_text(json.dumps(worklist, indent=2) + "\n", encoding="utf-8")
@@ -280,7 +306,7 @@ def prepare(export: Path, root: Path, now: datetime) -> Path:
 
 
 
-# ── finalize: apply Bill's decisions and write the batch ─────────────────────
+# ── finalize: apply the dispatcher's decisions and write the batch ─────────────────────
 
 NOT_FILLABLE = ("Mission #", "Comment", "County")
 
@@ -350,7 +376,8 @@ def finalize(batch: Path) -> None:
     raw_rows = read_export(raw_path)
     by_line = {i + 2: r for i, r in enumerate(raw_rows)}
     quarter, run = worklist["quarter"], worklist["run"]
-    out_name = f"isrid-sccssar-{quarter}-{run}.csv"
+    config = worklist["config"]
+    out_name = f"isrid-{config['team_slug']}-{quarter}-{run}.csv"
 
     included, excluded, cells_log = [], [], []
     enriched_rows, out_rows, table = [], [], []
@@ -372,7 +399,7 @@ def finalize(batch: Path) -> None:
             sources.append(f"{col}: {raw[col]!r} -> {enriched[col]!r} ({cell['source']})")
             cells_log.append({"d4h": k, "column": col, "value": enriched[col], "source": cell["source"]})
         comment = " ".join(str(d["comment"]).split())
-        out = deidentify_row(enriched, comment)
+        out = deidentify_row(enriched, comment, config["county"])
         for col in forbidden_hits(out, raw["Mission #"]):
             hits.append(f"{k}: {col}")
         confirmed = set(d.get("confirmed", []))
@@ -407,13 +434,13 @@ def finalize(batch: Path) -> None:
 
     summ = [f"# ISRID batch {quarter} — run {run}", "",
             f"- Records in the file: {n}. Excluded: {len(excluded)}. Already sent earlier: "
-            f"{len(worklist['already_sent'])}. Before the {ELIGIBLE_FROM} cutoff (never sent): "
+            f"{len(worklist['already_sent'])}. Before the {config['eligible_from']} cutoff (never sent): "
             f"{len(worklist.get('before_cutoff', []))}.",
             f"- Meeting all 13 Minimum fields: {minimum['pct_as_exported']}% as exported, "
             f"{minimum['pct_as_sent']}% as sent ({met_before} and {met_after} of {n}).",
             "- Minimum = 13 fields (Koester, ISRID Data Standards 2016, App. B). "
             "Silver = the 13 plus 12 more, 25 in all (App. C). Internal metric: not sent.",
-            f"- File to email to Koester after Leadership review: `{out_name}`.", "",
+            f"- File to email to ISRID after the team's leadership has reviewed it: `{out_name}`.", "",
             "## Records in the file", "",
             "| D4H | Date | Minimum | Missing | Silver | Silver missing | City | Weather | Comment sent |",
             "|---|---|---|---|---|---|---|---|---|"]
@@ -469,6 +496,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("prepare", help="select unsent rows from a D4H export into a new batch")
     p.add_argument("export", type=Path)
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    p.add_argument("--config", type=Path, default=None, help="default: <root>/config.json")
     f = sub.add_parser("finalize", help="apply decisions.json and write the de-identified batch")
     f.add_argument("batch", type=Path)
     m = sub.add_parser("mark-sent", help="record that the batch's file was emailed to ISRID")
@@ -478,19 +506,20 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     try:
         if args.cmd == "prepare":
-            batch = prepare(args.export, args.root, datetime.now())
+            config = load_config(args.config or args.root / "config.json")
+            batch = prepare(args.export, args.root, datetime.now(), config)
             wl = json.loads((batch / "worklist.json").read_text(encoding="utf-8"))
             print(f"batch: {batch}")
             print(f"rows to decide: {len(wl['rows'])}; already sent: {len(wl['already_sent'])}; "
-                  f"before the {ELIGIBLE_FROM} cutoff: {len(wl['before_cutoff'])}")
+                  f"before the {wl['eligible_from']} cutoff: {len(wl['before_cutoff'])}")
             for flag, n in sorted(Counter(r["flag"] for r in wl["rows"]).items()):
                 print(f"  {flag}: {n}")
         elif args.cmd == "finalize":
             finalize(args.batch)
             m = json.loads((args.batch / "manifest.json").read_text(encoding="utf-8"))
             print(f"batch: {args.batch}")
-            print(f"file for Koester: {args.batch / m['outgoing']}")
-            print(f"review with Leadership: {args.batch / 'leadership-summary.md'}")
+            print(f"file for ISRID: {args.batch / m['outgoing']}")
+            print(f"review with the team's leadership: {args.batch / 'leadership-summary.md'}")
             print(f"records: {m['minimum']['records']}; Minimum met: "
                   f"{m['minimum']['pct_as_exported']}% as exported, {m['minimum']['pct_as_sent']}% as sent")
         elif args.cmd == "mark-sent":

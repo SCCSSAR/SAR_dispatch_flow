@@ -13,12 +13,12 @@ plus these 12, 25 fields in all. Blank = neither.
 ## A. Elements with a column in the D4H export
 
 Fill the column when it is blank and we hold the value, and correct it when the after-action report
-shows D4H's value is wrong. Bill approves each change, and each one goes on `fix-in-d4h.md`.
+shows D4H's value is wrong. The dispatcher approves each change, and each one goes on `fix-in-d4h.md`.
 
 | ISRID element | Tier | D4H column(s) | Where we hold it when D4H is blank or wrong |
 |---|---|---|---|
 | Incident Type | M | Incident Type | AAR entry sheet |
-| Incident date/time (SAR notified) | M | Incident Date | D4H start = the Everbridge page time, the team's trained definition |
+| Incident date/time (SAR notified) | M | Incident Date | D4H start = when the team was paged (Turbo writes the Everbridge send time) |
 | Subject Category | M | Subject Category | Turbo summary, LPB section |
 | IPP coordinates | M | IPP Coordinates / Lat / Lng | AAR Step 2.5c; CalTopo LKP marker |
 | Find coordinates | M | Find Coordinates / Lat / Lng | AAR Step 2.5c; CalTopo find marker |
@@ -35,15 +35,15 @@ shows D4H's value is wrong. Bill approves each change, and each one goes on `fix
 | Experience | S | Experience | AAR |
 | Mobility (hours) | S | Mobility Time | AAR. Blank when unknown; never estimate it |
 | Number involved | | # Subjects | D4H |
-| City | | City | D4H. Free text: shown to Bill before it is sent |
-| County | | County | Always `Santa Clara` for an in-county row. D4H exports the state here by design |
-| Ecoregion domain | | Eco Region | AAR Step 2.5f: `Temperate` for Santa Clara County. `Dry` is the pick-list default, so check it |
+| City | | City | D4H. Free text: shown to the dispatcher before it is sent |
+| County | | County | The config's `county` for every in-county row. D4H exports the state here by design |
+| Ecoregion domain | | Eco Region | AAR Step 2.5f: your county's Bailey domain. `Dry` is the pick-list default, so check it |
 | Equipment | | Equipment | AAR |
 | Distance from IPP | | Distance From IPP | AAR Step 2.5c. D4H's display string, with units that switch (`mi`, `yd`) |
 | Find bearing | | Direction From IPP | AAR Step 2.5c |
 | Find feature | | Find Feature | AAR |
 | Elevation change | | Elevation Change | ISRID derives it from coordinates when blank |
-| Weather | | Weather | D4H free text: shown to Bill before it is sent |
+| Weather | | Weather | D4H free text: shown to the dispatcher before it is sent |
 | Mission number | | Mission # | Cut to the 5-digit D4H number |
 | Subject status | S (part) | Outcome | D4H's options do not say well or injured, so the comment carries it |
 
@@ -67,7 +67,7 @@ The D4H-only column `Involvement` has no ISRID element and passes through unchan
 | Injury or illness; rescue method | | D4H involved-person `injuries`; AAR | only when injured |
 | Resources: tasks, dogs, aircraft or UAS, personnel | | CalTopo assignments; D4H attendance and animal attendance | member durations are placeholders, so leave out manhours |
 | Total incident time | | D4H start → end | only when the end time is real |
-| Height, weight, build | | intake form description | low sensitivity once the rest is removed (Bill, 2026-11-10) |
+| Height, weight, build | | intake form description | low sensitivity once the rest is removed (team decision, 2026-11-10) |
 
 ## C. Elements ISRID derives, or that we do not hold
 

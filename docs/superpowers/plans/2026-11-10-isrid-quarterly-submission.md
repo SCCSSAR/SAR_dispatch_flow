@@ -3,10 +3,16 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A Claude Code skill and a stdlib script that turn D4H's Lost Behavior export into a
-de-identified, archived ISRID batch for Bill to review, show Leadership and email to Koester.
+de-identified, archived ISRID batch for the dispatcher to review, show the team's leadership and
+email to ISRID.
+
+> **Amended after review (2026-11-10):** every team-specific value this plan names (the county,
+> its places, the cutoff date, the file-name slug, the D4H environment) moved out of the code into a
+> gitignored team config. The spec's "Team config" section is authoritative; the values below that
+> say `county` or `places` come from that config.
 
 **Architecture:** One script, `backend/isrid_submission.py`, with three subcommands. `prepare`
-selects the rows and writes a worklist. Claude and Bill then fill `decisions.json` by hand in the
+selects the rows and writes a worklist. Claude and the dispatcher then fill `decisions.json` by hand in the
 interview. `finalize` validates the decisions, de-identifies the rows, scores them and writes the
 batch. `mark-sent` records the send. The skill (`.claude/skills/isrid-quarterly/SKILL.md`) runs the
 interview between `prepare` and `finalize`.
@@ -25,9 +31,8 @@ interview between `prepare` and `finalize`.
   `from isrid_submission import ...`, the same pattern `test_egress_ip.py` uses.
 - The script never writes a file that already exists, and never makes a network call.
 - No PII in any `print` or log. Print counts, paths and D4H numbers only.
-- D4H reads use the sccssar-dev configuration only (`--configuration=sccssar-dev`, project from
-  `deploy.env`). ISRID covers production records, and personal-dev is never needed (Bill,
-  2026-11-10).
+- D4H reads use the production environment only (the config's `d4h_env`, resolved through
+  `deploy.env`). ISRID covers production records, so a non-production environment is never needed.
 - `RULES_VERSION = "1"` is written into the manifest. Bump it whenever a de-identification rule
   changes.
 - Rule #14 applies to every commit: chain `git checkout <branch> && git add <files> && git commit`
@@ -39,7 +44,7 @@ interview between `prepare` and `finalize`.
    the column. Pinned in Task 1.
 2. **A Mission # that doesn't start with 5 digits**, for example a hand-entered incident. Expected:
    `finalize` refuses that row and names it, rather than sending the raw text. Pinned in Task 1.
-3. **A comment Bill approved that still contains a street address or phone number.** Expected:
+3. **A comment the dispatcher approved that still contains a street address or phone number.** Expected:
    `finalize` stops, writes nothing and names the row and column, without printing the value.
    Pinned in Task 4.
 4. **A worklist row with no decision.** Expected: `finalize` refuses and lists the D4H numbers.
@@ -72,7 +77,7 @@ interview between `prepare` and `finalize`.
   - `forbidden_hits(row: dict[str, str], mission_raw: str) -> list[str]`. Returns the names of the
     columns where a forbidden pattern appears.
   - `deidentify_row(row: dict[str, str], comment: str) -> dict[str, str]`. Sets `Mission #` to
-    `d4h_number(...)`, `Comment` to `comment` and `County` to `Santa Clara`. Every other column is
+    `d4h_number(...)`, `Comment` to `comment` and `County` to the config's county. Every other column is
     unchanged.
 
 - [ ] **Step 1: Write the failing tests**
@@ -87,7 +92,7 @@ interview between `prepare` and `finalize`.
   `test_deidentify_row` asserts:
   - `Mission #` becomes `"90001"`;
   - `Comment` becomes the supplied text;
-  - `County == "Santa Clara"`;
+  - `County` is the configured county;
   - the other 31 columns are byte-equal to the input.
 
   `test_forbidden_hits` is parametrized over each pattern. A synthetic value placed in `Comment`
@@ -196,7 +201,7 @@ The 12 Silver additions:
   - with `confirmed={"Sex"}` it scores 22;
   - Sex `f` scores 22.
 
-  `test_silver_matches_deck_count`: a row shaped like the 2026-11-09 deck's complete records
+  `test_silver_matches_deck_count`: a row shaped like a typical complete record
   (Mobility blank, no destination or direction of travel) scores 21 of 25.
 
 - [ ] **Step 2: Run it and watch it fail.**
@@ -222,12 +227,11 @@ The 12 Silver additions:
 **Interfaces:**
 - Consumes: `read_export` and `d4h_number`.
 - Produces:
-  - `SCC_PLACES: frozenset[str]`, casefolded. The 15 incorporated cities, plus Mount Hamilton,
-    San Martin, Alviso, Stanford, Coyote, Lexington Hills, Redwood Estates, Holy City and New Almaden.
+  - The county's places, from the team config's `places` list, compared casefolded.
   - `quarter_label(now: datetime) -> str`, for example `"2026-Q4"`.
   - `sent_numbers(root: Path) -> set[str]`. Reads every `root/*/*/SENT.md`, taking the line
     starting `D4H numbers:`, comma-separated.
-  - `flag_row(row) -> str`. Returns `"in-county"` when City is in `SCC_PLACES`, `"check"` when City
+  - `flag_row(row, places) -> str`. Returns `"in-county"` when City is in `places`, `"check"` when City
     or County is blank, and `"mutual-aid?"` otherwise.
   - `prepare(export: Path, root: Path, now: datetime) -> Path`. It:
     - creates `root/<quarter>/<YYYYMMDD-HHMM>/`, raising if the folder exists;
@@ -255,7 +259,7 @@ The 12 Silver additions:
   - `test_prepare_refuses_existing_folder`: a second call with the same `now` raises.
   - `test_prepare_skips_sent`: a planted `SENT.md` from an earlier batch moves `90001` into
     `already_sent`.
-  - `test_flags`: parametrized over `San Jose`, `Arroyo Grande`, and a blank City.
+  - `test_flags`: parametrized over a listed place, an unlisted one, and a blank City.
   - `test_worklist_holds_no_free_text`: the worklist JSON string does not contain the fixture's City
     or Comment values.
   - `test_quarter_label`: Nov 10 → `2026-Q4`, Jan 1 → `2027-Q1`.
@@ -308,7 +312,7 @@ The 12 Silver additions:
   On success it writes, in this order:
   - `enriched-PRIVATE.csv`: the raw row with the cells applied, plus `Comment (D4H)`, `Comment
     (sent)` and `Sources` columns;
-  - `isrid-sccssar-<quarter>-<run>.csv`: the `deidentify_row` output, in `EXPORT_HEADER` order,
+  - `isrid-<team_slug>-<quarter>-<run>.csv`: the `deidentify_row` output, in `EXPORT_HEADER` order,
     UTF-8 with a BOM, matching D4H;
   - `fix-in-d4h.md`: one line per applied cell (D4H number, column, value, source);
   - `leadership-summary.md`:
@@ -336,7 +340,7 @@ The 12 Silver additions:
     The exception text does not contain `Example Ave`;
   - `test_refuses_tampered_raw` (rule 8);
   - `test_outgoing_file`: the header equals `EXPORT_HEADER`; the file holds only included rows;
-    Mission # holds only the number; County reads `Santa Clara`; an applied cell appears;
+    Mission # holds only the number; County reads the configured county; an applied cell appears;
   - `test_outgoing_has_no_d4h_comment`: the raw Comment's text appears in the enriched file and not
     in the outgoing one;
   - `test_metric_before_and_after`: a fixture where enrichment adds Incident Type and a comment
@@ -409,7 +413,7 @@ The 12 Silver additions:
 
 `SKILL.md` front matter:
 - `name: isrid-quarterly`;
-- a description that triggers on "ISRID", "quarterly ISRID", "send to Koester", "LPB export" and
+- a description that triggers on "ISRID", "quarterly ISRID", "send to ISRID", "LPB export" and
   "Lost Behavior export".
 
 Its body, in order:
@@ -417,9 +421,9 @@ Its body, in order:
 1. **Scope and hard rules.**
    - It never sends, uploads or writes to D4H.
    - PII stays in `research/`.
-   - Every filled cell has a source, and Bill approves it.
+   - Every filled cell has a source, and the dispatcher approves it.
 2. **Download.** The D4H menu path, plus a reminder to approve drafts first.
-3. **Run `prepare`.** Read the flag counts back to Bill. He confirms or overrides each flag that
+3. **Run `prepare`.** Read the flag counts back to the dispatcher. They confirm or override each flag that
    isn't `in-county`, and records exclusions with a reason.
 4. **Enrich each included row.**
    - Read the D4H incident and `incident-involved-persons?incident_id=` with the PAT recipe from
@@ -428,13 +432,13 @@ Its body, in order:
    - For each blank or conflicting column, show the D4H value, the proposed value and the source.
    - Write the approved cells into `decisions.json`.
    - Rows from before Turbo are enriched from D4H only.
-5. **Comment.** Build it from the template in the spec. Show each one, and write it only once Bill
-   approves it.
-6. **Run `finalize`.** On a refusal, read the named check back to Bill. Never edit the raw file.
+5. **Comment.** Build it from the template in the spec. Show each one, and write it only once the
+   dispatcher approves it.
+6. **Run `finalize`.** On a refusal, read the named check back to the dispatcher. Never edit the raw file.
 7. **Hand-off message.** It names:
    - the batch folder;
-   - `leadership-summary.md`, for Leadership review;
-   - the `isrid-*.csv`, which Bill emails to Koester himself;
+   - `leadership-summary.md`, for the team's leadership to review;
+   - the `isrid-*.csv`, which the dispatcher emails to ISRID;
    - `fix-in-d4h.md`;
    - the `mark-sent` command to run after sending.
 
@@ -456,10 +460,10 @@ The whole body runs under 200 lines. It links the spec rather than repeating it.
 - [ ] **Step 3: Push and open a PR against `main`.**
   - Put the mutation totals from each task in the body.
   - Use no closing keyword next to a `#N`.
-  - Say plainly that validation against the 11-09 export happens after this.
-- [ ] **Step 4: Hand-validate.** Run the skill against
-  `research/isrid-2026-11/d4h-export-2026-11-09-1543.csv` from the branch checkout.
-  - Bill makes the decisions.
+  - Say plainly that validation against a real export happens after this.
+- [ ] **Step 4: Hand-validate.** Run the skill against the team's current export (kept in
+  gitignored `research/`) from the branch checkout.
+  - The dispatcher makes the decisions.
   - The batch lands in `research/isrid-submissions/2026-Q4/`.
   - Do not run `mark-sent`, because nothing is sent.
   - Report the two percentages, and any check that refused.
