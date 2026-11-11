@@ -148,3 +148,30 @@ class TestFonts:
                 for tf in frames:
                     names |= {r.font.name for p in tf.paragraphs for r in p.runs}
         assert names <= {"Oswald", "Public Sans"} and names
+
+
+class TestLongTextFits:
+    """The first real November render ran five edited lessons off the bottom of the slide."""
+
+    def test_short_text_keeps_full_size(self):
+        assert rp.text_scale([("A short summary.", 15, 0)], 453.6, 432) == 1.0
+
+    def test_long_text_shrinks_to_fit(self):
+        paras = [("x " * 300, 14, 4)] * 6
+        scale = rp.text_scale(paras, 453.6, 432)
+        assert scale < 1.0
+        assert rp.estimated_height(paras, 453.6, scale) <= 432
+
+    def test_long_lessons_slide_shrinks_and_keeps_takeaways(self, tmp_path):
+        long = tuple(f"Lesson {i}: " + "a fairly long sentence about what happened on scene " * 4 for i in range(6))
+        text = "\n".join(["# 2026-11 incident recap — drafts", "",
+                          _section("98701", "11-07", "EXPD Elmwood", 13, "2.5", "13 × 2.5 h = 32", lessons=long), ""])
+        out = rp.build_deck(mr.parse_drafts(text), None, {}, {}, tmp_path / "d.pptx")
+        slide = pptx.Presentation(str(out)).slides[1]
+        box = next(sh for sh in slide.shapes if sh.has_text_frame and "LESSONS LEARNED" in sh.text_frame.text)
+        assert "TEAM TAKEAWAYS" in box.text_frame.text
+        sizes = [r.font.size.pt for p in box.text_frame.paragraphs for r in p.runs]
+        assert max(sizes) < 15
+        paras = [(p.text, p.runs[0].font.size.pt, (p.space_before.pt if p.space_before else 0))
+                 for p in box.text_frame.paragraphs if p.runs]
+        assert rp.estimated_height(paras, box.width / 12700, 1.0) <= box.height / 12700

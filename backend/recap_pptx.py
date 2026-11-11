@@ -136,15 +136,55 @@ def _summary_slide(prs, draft: MonthDraft, overview_png: Path | None) -> None:
 
 # ── incident slides ──────────────────────────────────────────────────────────
 
-def _heading(tf, text: str) -> None:
-    p = tf.add_paragraph()
-    p.space_before = Pt(10)
-    _run(p, text, font=HEADING_FONT, size=16, bold=True, colour=ORANGE)
+# Rough metrics for Public Sans / Oswald: average glyph width and line height, as a share of the size.
+_CHAR_W, _LINE_H = 0.52, 1.2
+_PAD_W, _PAD_H = 14.4, 7.2  # a text box's default inner margins, in points
 
 
-def _bullets(tf, items: list[str]) -> None:
-    for item in items:
-        _run(tf.add_paragraph(), f"•  {item}", size=14)
+def estimated_height(paras: list[tuple[str, float, float]], box_w_pt: float, scale: float) -> float:
+    """Estimated height in points of (text, size, space_before) paragraphs wrapped in a box of this width."""
+    import math
+    width = box_w_pt - _PAD_W
+    total = _PAD_H
+    for text, size, space in paras:
+        size, space = size * scale, space * scale
+        per_line = max(1, int(width / (_CHAR_W * size)))
+        total += space + math.ceil(max(1, len(text)) / per_line) * size * _LINE_H
+    return total
+
+
+def text_scale(paras: list[tuple[str, float, float]], box_w_pt: float, box_h_pt: float) -> float:
+    """The largest scale, in 5% steps down to 60%, at which the paragraphs fit the box."""
+    for step in range(20, 11, -1):
+        if estimated_height(paras, box_w_pt, step / 20) <= box_h_pt:
+            return step / 20
+    return 0.6
+
+
+def _left_column(inc: IncidentDraft, cancelled: bool, ma: bool) -> list[dict]:
+    """The incident slide's left column as paragraph specs, before any shrinking."""
+    out = [dict(text=_text(inc.summary), size=15)]
+    highlight = _text(inc.highlight)
+    if highlight:
+        out.append(dict(text=f"Highlight: {highlight}", size=15, bold=True, space=6))
+    f = inc.facts
+    chips = (["Cancelled"] if cancelled else [f.get("found", "")]) + [f.get("environment", "")]
+    if not cancelled:
+        chips.append(f.get("distance", ""))
+    chips += [f.get("volunteer_hours", ""), f.get("specialty", ""), f"M/A: {'yes' if ma else 'no'}"]
+    out.append(dict(text="  ·  ".join(c for c in chips if c), size=12, colour="555555", space=10))
+
+    def heading(text):
+        out.append(dict(text=text, size=16, bold=True, colour=ORANGE, font=HEADING_FONT, space=10))
+
+    if cancelled and _real(inc.disruption):
+        heading("THE DISRUPTION")
+        out += [dict(text=f"•  {i}", size=14) for i in _real(inc.disruption)]
+    if _real(inc.lessons):
+        heading("LESSONS LEARNED")
+        out += [dict(text=f"•  {i}", size=14) for i in _real(inc.lessons)]
+    heading("TEAM TAKEAWAYS")
+    return out
 
 
 def _incident_slide(prs, inc: IncidentDraft, map_png: Path | None, link: str | None) -> None:
@@ -154,29 +194,16 @@ def _incident_slide(prs, inc: IncidentDraft, map_png: Path | None, link: str | N
     suffix = " — CANCELLED" if cancelled else (" · M/A" if ma else "")
     _title(s, f"{inc.facts.get('date', '')} · {_event(inc).upper()}{suffix}")
 
-    tf = _box(s, Inches(0.5), Inches(1.2), Inches(6.3), Inches(6.0))
-    summary = _text(inc.summary)
-    _run(tf.paragraphs[0], summary, size=15)
-    highlight = _text(inc.highlight)
-    if highlight:
-        p = tf.add_paragraph()
-        p.space_before = Pt(6)
-        _run(p, f"Highlight: {highlight}", size=15, bold=True)
-    f = inc.facts
-    chips = (["Cancelled"] if cancelled else [f.get("found", ""), ]) + [f.get("environment", "")]
-    if not cancelled:
-        chips.append(f.get("distance", ""))
-    chips += [f.get("volunteer_hours", ""), f.get("specialty", ""), f"M/A: {'yes' if ma else 'no'}"]
-    p = tf.add_paragraph()
-    p.space_before = Pt(10)
-    _run(p, "  ·  ".join(c for c in chips if c), size=12, colour="555555")
-    if cancelled and _real(inc.disruption):
-        _heading(tf, "THE DISRUPTION")
-        _bullets(tf, _real(inc.disruption))
-    if _real(inc.lessons):
-        _heading(tf, "LESSONS LEARNED")
-        _bullets(tf, _real(inc.lessons))
-    _heading(tf, "TEAM TAKEAWAYS")
+    box_w, box_h = Inches(6.3), Inches(6.0)
+    tf = _box(s, Inches(0.5), Inches(1.2), box_w, box_h)
+    specs = _left_column(inc, cancelled, ma)
+    scale = text_scale([(p["text"], p["size"], p.get("space", 0)) for p in specs], box_w.pt, box_h.pt)
+    for i, p in enumerate(specs):
+        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        if p.get("space"):
+            para.space_before = Pt(p["space"] * scale)
+        _run(para, p["text"], font=p.get("font", BODY_FONT), size=p["size"] * scale, bold=p.get("bold", False),
+             colour=p.get("colour", INK))
 
     left, top, width, height = Inches(7.1), Inches(1.2), Inches(5.8), Inches(4.35)
     if map_png:
