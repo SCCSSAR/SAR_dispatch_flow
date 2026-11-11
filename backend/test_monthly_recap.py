@@ -575,7 +575,7 @@ class TestCaltopoGetter:
                 raise mr.HTTPStatusError(502)
             return {"ok": 1}
 
-        assert mr.caltopo_getter("C", self.SECRET, opener=flaky, sleep=lambda s: None)("M") == {"ok": 1}
+        assert mr.caltopo_getter("C", self.SECRET, opener=flaky, sleep=lambda s: None)("ZZ12AB3") == {"ok": 1}
         assert len(calls) == 3
 
     def test_4xx_not_retried(self):
@@ -586,7 +586,7 @@ class TestCaltopoGetter:
             raise mr.HTTPStatusError(401)
 
         with pytest.raises(mr.HTTPStatusError):
-            mr.caltopo_getter("C", self.SECRET, opener=denied, sleep=lambda s: None)("M")
+            mr.caltopo_getter("C", self.SECRET, opener=denied, sleep=lambda s: None)("ZZ12AB3")
         assert len(calls) == 1
 
 
@@ -771,3 +771,24 @@ class TestClosedOutHoursKeepTheirPrecision:
         mr.render(drafts, _tile, CFG, build=lambda d, o, m, l, out: got.update(d=d) or out)
         inc = next(i for i in got["d"].incidents if i.number == "98704")
         assert inc.facts["volunteer_hours"] == "8 × 12.7 h = 101"
+
+
+class TestMapIdIsValidated:
+    """A map id becomes a file name and a CalTopo URL path, so drafts.md cannot steer either (Aikido, PR #108)."""
+
+    @pytest.mark.parametrize("bad", ["../../etc/x", "ZZ12AB3/../x", "ZZ12AB3?id=1", "a b"])
+    def test_render_refuses_a_bad_map_id(self, tmp_path, bad):
+        drafts = _collect(tmp_path)
+        drafts.write_text(drafts.read_text().replace("map: ZZ12AB3", f"map: {bad}"))
+        fetched = []
+        with pytest.raises(mr.RecapError, match="98701 map"):
+            mr.render(drafts, _tile, CFG, build=lambda *a: None, get_caltopo=lambda m: fetched.append(m) or {})
+        assert fetched == []
+
+    def test_getter_refuses_a_bad_map_id(self):
+        get = mr.caltopo_getter("C", TestCaltopoGetter.SECRET, opener=lambda url: pytest.fail("no request"))
+        with pytest.raises(ValueError):
+            get("../x")
+
+    def test_good_ids_pass(self):
+        assert all(mr.MAP_ID_RE.fullmatch(m) for m in ("ZZ12AB3", "K0J66M5", "7CLG3JH"))

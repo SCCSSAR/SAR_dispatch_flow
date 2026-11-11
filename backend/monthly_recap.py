@@ -496,6 +496,8 @@ def check_month(draft: MonthDraft, names_by_number: dict[str, list[str]]) -> lis
 # ── collect and render ───────────────────────────────────────────────────────
 
 _PAGE_SIZE = 250
+# A map id becomes a file name and part of a CalTopo URL path, so only this shape is ever used.
+MAP_ID_RE = re.compile(r"[A-Za-z0-9]{5,10}")
 
 
 def _iso_utc(dt: datetime) -> str:
@@ -611,6 +613,8 @@ def render(drafts: Path, fetch, cfg: dict, build=None, get_caltopo=None) -> Path
         raise RecapError("no subject names on record for " + ", ".join(missing)
                          + ": add each to names.json, as [] only if the incident has no named subject")
     hits = check_month(draft, names)
+    hits += [f"{inc.number} map: not a CalTopo map id (5-10 letters or digits)" for inc in draft.incidents
+             if inc.facts.get("map", "").strip() and not MAP_ID_RE.fullmatch(inc.facts["map"].strip())]
     if hits:
         raise RecapError("slide text must not carry these; edit the drafts and render again:\n  " + "\n  ".join(hits))
     out = folder / f"{draft.month} Incident Recap.pptx"
@@ -708,6 +712,8 @@ def caltopo_getter(credential_id: str, secret_b64: str, opener=None, sleep=None,
     key = base64.b64decode(secret_b64)
 
     def get(map_id: str) -> dict:
+        if not MAP_ID_RE.fullmatch(map_id or ""):
+            raise ValueError("not a CalTopo map id")
         path = f"/api/v1/map/{map_id}/since/0"
         for attempt in range(3):  # CalTopo returns transient 5xx (#706): retry those only
             exp = now_ms() + 120_000
