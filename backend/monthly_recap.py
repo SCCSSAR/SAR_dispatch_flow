@@ -573,8 +573,13 @@ def _float(value: str) -> float | None:
 
 
 def refresh_volunteer_hours(draft: MonthDraft) -> None:
-    """Rebuild volunteer hours from the attendees and hours facts, so filling in hours reaches the slide."""
+    """Fill volunteer hours for a row that was not closed out at collect time, once its hours are filled in.
+
+    Only those rows: a closed-out row keeps collect's total, which used unrounded hours (8 x 12.65 h is
+    101; recomputing from the drafts' 12.7 would say 102)."""
     for inc in draft.incidents:
+        if "not closed out" not in inc.facts.get("volunteer_hours", ""):
+            continue
         hours = _float(inc.facts.get("hours", ""))
         try:
             attendees = int(inc.facts.get("attendees", ""))

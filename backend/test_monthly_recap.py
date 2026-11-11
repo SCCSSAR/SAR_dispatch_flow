@@ -756,3 +756,18 @@ class TestOpenItems:
         items = mr.open_items(d)
         assert "98765 mutual_aid: [confirm] yes" in items
         assert "98765 distance: [fill in]" in items
+
+
+class TestClosedOutHoursKeepTheirPrecision:
+    def test_collect_total_is_not_recomputed_from_rounded_hours(self, tmp_path):
+        # 8 x 12.65 h = 101; the drafts show hours 12.7, and 8 x 12.7 = 102 would overstate it.
+        drafts = _collect(tmp_path)
+        text = drafts.read_text()
+        sec = text.split("\n## 98704")[1].split("\n## ")[0]
+        new = sec.replace("hours: 12.7\n", "hours: 12.7\n").replace(
+            next(l for l in sec.splitlines() if l.startswith("volunteer_hours:")), "volunteer_hours: 8 × 12.7 h = 101")
+        drafts.write_text(text.replace(sec, new))
+        got = {}
+        mr.render(drafts, _tile, CFG, build=lambda d, o, m, l, out: got.update(d=d) or out)
+        inc = next(i for i in got["d"].incidents if i.number == "98704")
+        assert inc.facts["volunteer_hours"] == "8 × 12.7 h = 101"
