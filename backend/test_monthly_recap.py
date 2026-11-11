@@ -222,6 +222,14 @@ class TestBuildFacts:
             f = mr.build_facts(_incident(), [], {"Outcome": outcome}, TAG_TITLES, CFG)
             assert f.found_status == want
 
+    def test_person_assisted_with_find_evidence_is_found(self):
+        lpb = {"Outcome": "Person Assisted", "Find Coordinates": "37.31, -121.91", "Search Time": "3"}
+        assert mr.build_facts(_incident(), [], lpb, TAG_TITLES, CFG).found_status == "Found"
+
+    def test_person_assisted_with_dash_evidence_stays_unconfirmed(self):
+        lpb = {"Outcome": "Person Assisted", "Find Coordinates": "-", "Search Time": ""}
+        assert mr.build_facts(_incident(), [], lpb, TAG_TITLES, CFG).found_status == "[confirm] Found"
+
     def test_export_dash_is_blank(self):
         # D4H's Lost Behavior export writes "-" for an empty distance (seen on the first real run).
         f = mr.build_facts(_incident(), [], {"Distance From IPP": "-", "Direction From IPP": "-"}, TAG_TITLES, CFG)
@@ -455,6 +463,20 @@ class TestCollect:
         before = first.read_bytes()
         second = _collect(tmp_path)
         assert second.name == "drafts-2.md" and first.read_bytes() == before
+
+    def test_no_county_distance_for_unconfident_mutual_aid(self, tmp_path):
+        # A hand-entered M/A record whose D4H location sits inside the county: the distance means nothing.
+        inside = _inc("98705", "NEWSO Hilltop OP1", "2026-10-15T15:00:00.000Z", "2026-10-15T20:00:00.000Z",
+                      coords=(-121.9, 37.3))
+        orig = list(MONTH_INCIDENTS)
+        MONTH_INCIDENTS.append(inside)
+        try:
+            d = mr.parse_drafts(_collect(tmp_path).read_text())
+        finally:
+            MONTH_INCIDENTS[:] = orig
+        inc = next(i for i in d.incidents if i.number == "98705")
+        assert inc.facts["mutual_aid"] == "[confirm] yes"
+        assert inc.facts["distance"] == "[fill in]"
 
     def test_caltopo_failure_is_not_fatal(self, tmp_path):
         def boom(map_id):

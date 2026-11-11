@@ -218,6 +218,13 @@ def lpb_rows_by_number(export_csv: Path) -> dict[str, dict[str, str]]:
     return {d4h_number(r["Mission #"]): r for r in read_export(export_csv)}
 
 
+def _found_status(lpb: dict) -> str:
+    """Person Assisted is Turbo's dispatch placeholder; with find evidence in the export it is a find."""
+    status = _OUTCOMES.get(lpb.get("Outcome", "").strip(), FILL_IN)
+    evidence = any(lpb.get(k, "").strip() not in ("", "-") for k in ("Find Coordinates", "Search Time"))
+    return "Found" if status == "[confirm] Found" and evidence else status
+
+
 # ── facts ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -266,7 +273,7 @@ def build_facts(incident: dict, involved: list[dict], lpb_row: dict | None,
         mutual_aid=ma,
         ma_confident=confident,
         environment=environment_label(lpb.get("Population Density"), turbo.environment),
-        found_status=_OUTCOMES.get(lpb.get("Outcome", "").strip(), FILL_IN),
+        found_status=_found_status(lpb),
         distance=distance or FILL_IN,
         specialty=specialty_teams([t["id"] for t in incident.get("tags") or []], tag_titles),
         map_id=turbo.map_id,
@@ -486,7 +493,7 @@ def collect(month: str, root: Path, get_d4h, get_caltopo, lpb_export: Path | Non
         involved = get_d4h(f"incident-involved-persons?incident_id={inc['id']}").get("results") or []
         (folder / f"d4h-{ref}.json").write_text(json.dumps({"incident": inc, "involved": involved}, indent=2))
         f = build_facts(inc, involved, lpb.get(ref), tag_titles, cfg)
-        if f.mutual_aid and f.pls and f.distance == FILL_IN:
+        if f.mutual_aid and f.ma_confident and f.pls and f.distance == FILL_IN:
             f.distance = f"≈ {round(miles_between(_extent_centre(cfg), f.pls))} mi from the county centre"
         if f.map_id:
             try:
