@@ -15,6 +15,7 @@ subject data.
 import argparse
 import csv
 import hashlib
+import io
 import json
 import re
 import sys
@@ -238,12 +239,170 @@ def prepare(export: Path, root: Path, now: datetime) -> Path:
     return batch
 
 
+
+# ── finalize: apply Bill's decisions and write the batch ─────────────────────
+
+NOT_FILLABLE = ("Mission #", "Comment", "County")
+
+
+def _row_key(wrow: dict) -> str:
+    return wrow["d4h"] if wrow["d4h"] else f"line-{wrow['line']}"
+
+
+def _csv_bytes(header, rows) -> bytes:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+    for r in rows:
+        w.writerow([r[h] for h in header])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def _pct(n: int, d: int) -> int:
+    return round(100 * n / d) if d else 0
+
+
+def _md(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ").strip() or "—"
+
+
+def _check_decisions(worklist: dict, decisions: dict) -> list[str]:
+    problems = []
+    keys = [_row_key(w) for w in worklist["rows"]]
+    rows = decisions.get("rows", {})
+    for k in keys:
+        if k not in rows:
+            problems.append(f"{k}: no decision")
+    for k in rows:
+        if k not in keys:
+            problems.append(f"{k}: decision for a row not in this batch")
+    for w in worklist["rows"]:
+        k = _row_key(w)
+        d = rows.get(k)
+        if d is None:
+            continue
+        if not d.get("include"):
+            if not str(d.get("reason", "")).strip():
+                problems.append(f"{k}: excluded without a reason")
+            continue
+        if w["d4h"] is None:
+            problems.append(f"{k}: cannot include a row with no D4H number")
+        if not str(d.get("comment", "")).strip():
+            problems.append(f"{k}: included without an approved comment")
+        for col, cell in d.get("cells", {}).items():
+            if col not in EXPORT_HEADER or col in NOT_FILLABLE:
+                problems.append(f"{k}: column {col!r} cannot be filled")
+            elif not isinstance(cell, dict) or "value" not in cell or not str(cell.get("source", "")).strip():
+                problems.append(f"{k}: cell {col!r} needs both a value and a source")
+    return problems
+
+
+def finalize(batch: Path) -> None:
+    worklist = json.loads((batch / "worklist.json").read_text(encoding="utf-8"))
+    decisions = json.loads((batch / "decisions.json").read_text(encoding="utf-8"))
+    raw_path = batch / "raw-d4h-export.csv"
+    if _sha256(raw_path) != worklist["raw_sha256"]:
+        raise SubmissionError("raw-d4h-export.csv no longer matches the sha256 recorded by prepare")
+    problems = _check_decisions(worklist, decisions)
+    if problems:
+        raise SubmissionError("decisions.json is not complete:\n  " + "\n  ".join(problems))
+
+    raw_rows = read_export(raw_path)
+    by_line = {i + 2: r for i, r in enumerate(raw_rows)}
+    quarter, run = worklist["quarter"], worklist["run"]
+    out_name = f"isrid-sccssar-{quarter}-{run}.csv"
+
+    included, excluded, cells_log = [], [], []
+    enriched_rows, out_rows, table = [], [], []
+    met_before = met_after = 0
+    hits = []
+    for w in worklist["rows"]:
+        k = _row_key(w)
+        d = decisions["rows"][k]
+        if not d.get("include"):
+            excluded.append({"row": k, "reason": d["reason"]})
+            continue
+        raw = by_line[w["line"]]
+        if d4h_number(raw["Mission #"]) != w["d4h"]:
+            raise SubmissionError(f"{k}: raw row at line {w['line']} is a different incident")
+        enriched = dict(raw)
+        sources = []
+        for col, cell in d.get("cells", {}).items():
+            enriched[col] = str(cell["value"])
+            sources.append(f"{col}: {raw[col]!r} -> {enriched[col]!r} ({cell['source']})")
+            cells_log.append({"d4h": k, "column": col, "value": enriched[col], "source": cell["source"]})
+        comment = d["comment"].strip()
+        out = deidentify_row(enriched, comment)
+        for col in forbidden_hits(out, raw["Mission #"]):
+            hits.append(f"{k}: {col}")
+        confirmed = set(d.get("confirmed", []))
+        before = score_minimum(raw, raw["Comment"])[0]
+        after, missing = score_minimum(enriched, comment)
+        silver, _ = score_silver(enriched, comment, confirmed)
+        met_before += before == 13
+        met_after += after == 13
+        included.append(k)
+        enriched_rows.append({**enriched, "Comment (sent)": comment, "Sources": "; ".join(sources)})
+        out_rows.append(out)
+        table.append((k, enriched["Incident Date"][:10], f"{after}/13", ", ".join(missing) or "—",
+                      f"{silver}/25", enriched["City"], enriched["Weather"], comment))
+    if hits:
+        raise SubmissionError("forbidden pattern in an outgoing cell (value not shown):\n  "
+                              + "\n  ".join(hits))
+
+    n = len(included)
+    minimum = {"records": n, "met_as_exported": met_before, "met_as_sent": met_after,
+               "pct_as_exported": _pct(met_before, n), "pct_as_sent": _pct(met_after, n)}
+
+    files = {
+        "enriched-PRIVATE.csv": _csv_bytes(EXPORT_HEADER + ("Comment (sent)", "Sources"), enriched_rows),
+        out_name: _csv_bytes(EXPORT_HEADER, out_rows),
+    }
+    fix = [f"# Fix in D4H too — {quarter} run {run}", "",
+           "Each value below was filled or corrected in the ISRID file. Make the same change in D4H,",
+           "which stays the system of record.", ""]
+    fix += [f"- {c['d4h']} · {c['column']}: {c['value']} (source: {c['source']})" for c in cells_log] or ["- none"]
+    files["fix-in-d4h.md"] = ("\n".join(fix) + "\n").encode("utf-8")
+
+    summ = [f"# ISRID batch {quarter} — run {run}", "",
+            f"- Records in the file: {n}. Excluded: {len(excluded)}. Already sent earlier: "
+            f"{len(worklist['already_sent'])}.",
+            f"- Meeting all 13 Minimum fields: {minimum['pct_as_exported']}% as exported, "
+            f"{minimum['pct_as_sent']}% as sent ({met_before} and {met_after} of {n}).",
+            "- Minimum = 13 fields (Koester, ISRID Data Standards 2016, App. B). "
+            "Silver = the 13 plus 12 more, 25 in all (App. C). Internal metric: not sent.",
+            f"- File to email to Koester after Leadership review: `{out_name}`.", "",
+            "## Records in the file", "",
+            "| D4H | Date | Minimum | Missing | Silver | City | Weather | Comment sent |",
+            "|---|---|---|---|---|---|---|---|"]
+    summ += ["| " + " | ".join(_md(str(c)) for c in row) + " |" for row in table]
+    summ += ["", "## Excluded", ""]
+    summ += [f"- {e['row']}: {e['reason']}" for e in excluded] or ["- none"]
+    files["leadership-summary.md"] = ("\n".join(summ) + "\n").encode("utf-8")
+
+    targets = list(files) + ["manifest.json"]
+    existing = [t for t in targets if (batch / t).exists()]
+    if existing:
+        raise SubmissionError(f"output already exists, refusing to overwrite: {existing}")
+
+    digests = {"raw-d4h-export.csv": worklist["raw_sha256"]}
+    digests.update({name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
+    manifest = {"rules_version": RULES_VERSION, "quarter": quarter, "run": run, "outgoing": out_name,
+                "included": included, "excluded": excluded, "cells": cells_log,
+                "minimum": minimum, "sha256": digests}
+    for name, data in files.items():
+        (batch / name).write_bytes(data)
+    (batch / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="isrid_submission", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare", help="select unsent rows from a D4H export into a new batch")
     p.add_argument("export", type=Path)
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    f = sub.add_parser("finalize", help="apply decisions.json and write the de-identified batch")
+    f.add_argument("batch", type=Path)
     args = ap.parse_args(argv)
     try:
         if args.cmd == "prepare":
@@ -253,6 +412,14 @@ def main(argv=None) -> int:
             print(f"rows to decide: {len(wl['rows'])}; already sent: {len(wl['already_sent'])}")
             for flag, n in sorted(Counter(r["flag"] for r in wl["rows"]).items()):
                 print(f"  {flag}: {n}")
+        elif args.cmd == "finalize":
+            finalize(args.batch)
+            m = json.loads((args.batch / "manifest.json").read_text(encoding="utf-8"))
+            print(f"batch: {args.batch}")
+            print(f"file for Koester: {args.batch / m['outgoing']}")
+            print(f"review with Leadership: {args.batch / 'leadership-summary.md'}")
+            print(f"records: {m['minimum']['records']}; Minimum met: "
+                  f"{m['minimum']['pct_as_exported']}% as exported, {m['minimum']['pct_as_sent']}% as sent")
     except SubmissionError as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 1

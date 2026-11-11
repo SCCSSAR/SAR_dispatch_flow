@@ -345,3 +345,238 @@ def test_cli_refusal_exits_1(tmp_path, capsys):
     export = write_export(tmp_path / "export.csv", [make_row()], header=EXPECTED_HEADER[1:])
     assert isr.main(["prepare", str(export), "--root", str(tmp_path / "root")]) == 1
     assert "REFUSED" in capsys.readouterr().err
+
+
+# ── Task 4: finalize ────────────────────────────────────────────────────────
+
+GOOD_COMMENT = "Outcome: 1 well. Last seen 2026-01-15 13:00; found 2026-01-16 02:15."
+BASE_FILES = {"raw-d4h-export.csv", "worklist.json", "decisions.json"}
+
+
+def two_row_batch(tmp_path, decisions=None, **row2):
+    rows = [make_row(), make_row(**{"Mission #": "90002 XXSO Faraway Rd", "City": "Arroyo Grande",
+                                    **row2})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    if decisions is None:
+        decisions = {"rows": {
+            "90001": {"include": True, "comment": GOOD_COMMENT,
+                      "cells": {"Incident Type": {"value": "Search", "source": "AAR report"}}},
+            "90002": {"include": False, "reason": "mutual aid"}}}
+    (batch / "decisions.json").write_text(json.dumps(decisions))
+    return batch
+
+
+def outgoing(batch):
+    files = list(batch.glob("isrid-sccssar-*.csv"))
+    assert len(files) == 1
+    with open(files[0], encoding="utf-8-sig", newline="") as f:
+        r = csv.reader(f)
+        return next(r), [dict(zip(EXPECTED_HEADER, rec)) for rec in r], files[0]
+
+
+def test_finalize_writes_the_batch(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    names = {p.name for p in batch.iterdir()}
+    assert names == BASE_FILES | {"enriched-PRIVATE.csv", "isrid-sccssar-2026-Q4-20261110-1432.csv",
+                                  "fix-in-d4h.md", "leadership-summary.md", "manifest.json"}
+
+
+def test_outgoing_file(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {"Scenario": {"value": "Investigative", "source": "AAR report"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    isr.finalize(batch)
+    header, rows, path = outgoing(batch)
+    assert tuple(header) == EXPECTED_HEADER
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")          # BOM, matching D4H
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["Mission #"], r["County"], r["Scenario"], r["Comment"]) == \
+        ("90001", "Santa Clara", "Investigative", GOOD_COMMENT)
+    assert r["City"] == "San Jose" and r["IPP Lat"] == "37.100000"
+
+
+def test_outgoing_has_no_d4h_comment(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    _, _, path = outgoing(batch)
+    assert "passer-by" not in path.read_text(encoding="utf-8-sig")
+    assert "XXSO" not in path.read_text(encoding="utf-8-sig")
+    assert "passer-by" in (batch / "enriched-PRIVATE.csv").read_text(encoding="utf-8-sig")
+
+
+def _refuses(batch, *must_mention):
+    with pytest.raises(SubmissionError) as e:
+        isr.finalize(batch)
+    for m in must_mention:
+        assert m in str(e.value)
+    assert {p.name for p in batch.iterdir()} == BASE_FILES
+    return str(e.value)
+
+
+def test_refuses_missing_decision(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT}}})
+    _refuses(batch, "90002")
+
+
+def test_refuses_unknown_decision(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "90002": {"include": False, "reason": "mutual aid"},
+        "90009": {"include": False, "reason": "typo"}}})
+    _refuses(batch, "90009")
+
+
+def test_refuses_exclusion_without_reason(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "90002": {"include": False}}})
+    _refuses(batch, "90002")
+
+
+def test_refuses_included_without_comment(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": "  "},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    _refuses(batch, "90001")
+
+
+def test_refuses_including_bad_mission_number(tmp_path):
+    rows = [make_row(), make_row(**{"Mission #": "SO-17 Example"})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "line-3": {"include": True, "comment": GOOD_COMMENT}}}))
+    _refuses(batch, "line-3")
+
+
+def test_bad_mission_number_can_be_excluded(tmp_path):
+    rows = [make_row(), make_row(**{"Mission #": "SO-17 Example"})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "line-3": {"include": False, "reason": "hand-entered, no D4H number"}}}))
+    isr.finalize(batch)
+    assert len(outgoing(batch)[1]) == 1
+
+
+@pytest.mark.parametrize("column", ["Mission #", "Comment", "County", "Not A Column"])
+def test_refuses_rewrite_column_in_cells(tmp_path, column):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {column: {"value": "x", "source": "AAR"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    _refuses(batch, "90001", column)
+
+
+@pytest.mark.parametrize("cell", [{"value": "Search"}, {"value": "Search", "source": " "}, {"source": "AAR"}])
+def test_refuses_cell_without_source_or_value(tmp_path, cell):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT, "cells": {"Incident Type": cell}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    _refuses(batch, "90001", "Incident Type")
+
+
+def test_forbidden_comment_writes_nothing(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": "Outcome: 1 well near 456 Placid Court."},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    msg = _refuses(batch, "90001", "Comment")
+    assert "Placid" not in msg
+
+
+def test_forbidden_filled_cell_writes_nothing(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {"Weather": {"value": "call 408-555-0142", "source": "Slack"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    msg = _refuses(batch, "90001", "Weather")
+    assert "555" not in msg
+
+
+def test_refuses_tampered_raw(tmp_path):
+    batch = two_row_batch(tmp_path)
+    raw = batch / "raw-d4h-export.csv"
+    raw.write_bytes(raw.read_bytes().replace(b"Lost", b"Lose", 1))
+    _refuses(batch, "sha256")
+
+
+def test_refuses_existing_output(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    with pytest.raises(SubmissionError):
+        isr.finalize(batch)
+
+
+def test_metric_before_and_after(tmp_path):
+    rows = [make_row(**{"Incident Type": "", "Comment": "picked up by family"})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {
+        "include": True, "comment": GOOD_COMMENT,
+        "cells": {"Incident Type": {"value": "Search", "source": "AAR report"}}}}}))
+    isr.finalize(batch)
+    m = json.loads((batch / "manifest.json").read_text())
+    assert m["minimum"] == {"records": 1, "met_as_exported": 0, "met_as_sent": 1,
+                            "pct_as_exported": 0, "pct_as_sent": 100}
+    summary = (batch / "leadership-summary.md").read_text()
+    assert "0% as exported" in summary and "100% as sent" in summary
+
+
+def test_manifest(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    m = json.loads((batch / "manifest.json").read_text())
+    assert m["rules_version"] == "1"
+    assert m["included"] == ["90001"]
+    assert m["excluded"] == [{"row": "90002", "reason": "mutual aid"}]
+    assert m["cells"] == [{"d4h": "90001", "column": "Incident Type", "value": "Search", "source": "AAR report"}]
+    assert m["outgoing"] == "isrid-sccssar-2026-Q4-20261110-1432.csv"
+    assert set(m["sha256"]) == {"raw-d4h-export.csv", "enriched-PRIVATE.csv", m["outgoing"],
+                                "fix-in-d4h.md", "leadership-summary.md"}
+    for name, digest in m["sha256"].items():
+        assert sha(batch / name) == digest, name
+
+
+def test_fix_in_d4h_lists_every_cell(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    text = (batch / "fix-in-d4h.md").read_text()
+    assert "90001" in text and "Incident Type" in text and "Search" in text and "AAR report" in text
+
+
+def test_summary_shows_review_columns_and_scores(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    s = (batch / "leadership-summary.md").read_text()
+    assert "San Jose" in s and "Clear, 60F" in s and GOOD_COMMENT in s
+    assert "13/13" in s and "/25" in s and "mutual aid" in s
+    assert "passer-by" not in s and "XXSO" not in s
+
+
+def test_confirmed_sex_reaches_silver(tmp_path):
+    rows = [make_row(Sex="o")]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {
+        "include": True, "comment": GOOD_COMMENT, "confirmed": ["Sex"]}}}))
+    isr.finalize(batch)
+    assert "22/25" in (batch / "leadership-summary.md").read_text()
+
+
+def test_cli_finalize(tmp_path, capsys):
+    batch = two_row_batch(tmp_path)
+    assert isr.main(["finalize", str(batch)]) == 0
+    out = capsys.readouterr().out
+    assert "isrid-sccssar-2026-Q4-20261110-1432.csv" in out and "100% as sent" in out
+
+
+def test_refuses_worklist_edited_to_another_incident(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row()])
+    wl = json.loads((batch / "worklist.json").read_text())
+    wl["rows"][0]["d4h"] = "90005"
+    (batch / "worklist.json").write_text(json.dumps(wl))
+    (batch / "decisions.json").write_text(json.dumps({"rows": {
+        "90005": {"include": True, "comment": GOOD_COMMENT}}}))
+    _refuses(batch, "90005")
