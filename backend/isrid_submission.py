@@ -25,6 +25,11 @@ from pathlib import Path
 
 RULES_VERSION = "1"
 
+# Only incidents from this date go to ISRID (Bill's commitment to SAR Leadership, 2026-11-10):
+# by October 2026 Turbo ran nearly every callout, which is what makes the records consistent.
+# Earlier rows are never selected. Compared as the ISO date prefix of D4H's Incident Date.
+ELIGIBLE_FROM = "2026-10-01"
+
 # D4H's Lost Behavior export header, in D4H's order (34 columns, measured 2026-11-09).
 # An export whose header differs is refused, so a column D4H adds later cannot pass unreviewed.
 EXPORT_HEADER = (
@@ -246,9 +251,17 @@ def prepare(export: Path, root: Path, now: datetime) -> Path:
     raw = batch / "raw-d4h-export.csv"
     raw.write_bytes(export.read_bytes())
     worklist = {"rules_version": RULES_VERSION, "raw_sha256": _sha256(raw),
-                "quarter": quarter, "run": run, "rows": [], "already_sent": []}
+                "quarter": quarter, "run": run, "eligible_from": ELIGIBLE_FROM,
+                "rows": [], "already_sent": [], "before_cutoff": []}
     for i, row in enumerate(rows):
         line = i + 2                        # header is row 1
+        day = row["Incident Date"].strip()[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) and day < ELIGIBLE_FROM:
+            try:
+                worklist["before_cutoff"].append(d4h_number(row["Mission #"]))
+            except SubmissionError:
+                worklist["before_cutoff"].append(f"line-{line}")
+            continue
         try:
             number = d4h_number(row["Mission #"])
         except SubmissionError:
@@ -394,7 +407,8 @@ def finalize(batch: Path) -> None:
 
     summ = [f"# ISRID batch {quarter} — run {run}", "",
             f"- Records in the file: {n}. Excluded: {len(excluded)}. Already sent earlier: "
-            f"{len(worklist['already_sent'])}.",
+            f"{len(worklist['already_sent'])}. Before the {ELIGIBLE_FROM} cutoff (never sent): "
+            f"{len(worklist.get('before_cutoff', []))}.",
             f"- Meeting all 13 Minimum fields: {minimum['pct_as_exported']}% as exported, "
             f"{minimum['pct_as_sent']}% as sent ({met_before} and {met_after} of {n}).",
             "- Minimum = 13 fields (Koester, ISRID Data Standards 2016, App. B). "
@@ -467,7 +481,8 @@ def main(argv=None) -> int:
             batch = prepare(args.export, args.root, datetime.now())
             wl = json.loads((batch / "worklist.json").read_text(encoding="utf-8"))
             print(f"batch: {batch}")
-            print(f"rows to decide: {len(wl['rows'])}; already sent: {len(wl['already_sent'])}")
+            print(f"rows to decide: {len(wl['rows'])}; already sent: {len(wl['already_sent'])}; "
+                  f"before the {ELIGIBLE_FROM} cutoff: {len(wl['before_cutoff'])}")
             for flag, n in sorted(Counter(r["flag"] for r in wl["rows"]).items()):
                 print(f"  {flag}: {n}")
         elif args.cmd == "finalize":

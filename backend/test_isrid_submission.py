@@ -37,7 +37,7 @@ def make_row(**over):
     """A synthetic, complete row. Keyword args use the header with spaces/#/symbols replaced."""
     row = {
         "Mission #": "90001 XXSO Example Ave",
-        "Incident Date": "2026-01-15 21:05:00",
+        "Incident Date": "2026-10-15 21:05:00",
         "Incident Type": "Search",
         "County": "California",
         "City": "San Jose",
@@ -770,3 +770,35 @@ def test_summary_lists_silver_missing(tmp_path):         # review M6, regraded: 
     isr.finalize(batch)
     s = (batch / "leadership-summary.md").read_text()
     assert "Silver missing" in s and "Track offset (ISRID derives)" in s and "Destination" in s
+
+
+
+# ── ISRID cutoff: only incidents from 2026-10-01 (Bill's commitment to Leadership) ──
+
+def test_eligible_from_is_october_first():
+    assert isr.ELIGIBLE_FROM == "2026-10-01"
+
+
+def test_rows_before_cutoff_are_never_selected(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [
+        make_row(**{"Mission #": "90001 X", "Incident Date": "2026-09-30 23:59:00"}),
+        make_row(**{"Mission #": "90002 X", "Incident Date": "2026-10-01 00:00:00"}),
+        make_row(**{"Mission #": "SO-17 X", "Incident Date": "2026-01-08 10:00:00"})])
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"]
+    assert wl["before_cutoff"] == ["90001", "line-4"]
+    assert wl["eligible_from"] == "2026-10-01"
+
+
+def test_summary_counts_rows_before_cutoff(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [
+        make_row(), make_row(**{"Mission #": "90002 X", "Incident Date": "2026-09-28 10:15:00"})])
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {"include": True, "comment": GOOD_COMMENT}}}))
+    isr.finalize(batch)
+    assert "Before the 2026-10-01 cutoff (never sent): 1" in (batch / "leadership-summary.md").read_text()
+
+
+def test_unreadable_date_is_not_silently_cut(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(**{"Incident Date": ""})])
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert [r["d4h"] for r in wl["rows"]] == ["90001"] and wl["before_cutoff"] == []

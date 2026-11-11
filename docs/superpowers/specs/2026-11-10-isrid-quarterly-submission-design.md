@@ -69,7 +69,10 @@ The skill closes that gap. It also keeps an exact archive of every file sent.
    - copies the raw file into the batch folder and records its sha256;
    - selects every row whose D4H number is not in an earlier batch's `SENT.md` (Bill, 2026-11-10).
      A batch is "approved and not yet sent", not "dated in the quarter". An incident approved late
-     lands in the next batch, and the first batch covers the whole 2026 backlog;
+     lands in the next batch;
+   - never selects an incident dated before **2026-10-01** (`ELIGIBLE_FROM`). That is Bill's
+     commitment to Leadership: by October Turbo ran nearly every callout, which is what makes the
+     records consistent. Earlier incidents are counted in the summary and never sent;
    - flags each row as in-county, mutual aid or test.
 
    County cannot be used for the flag, because D4H puts the state in it. The flag comes from City
@@ -254,7 +257,7 @@ It is not worth building while the export has to be downloaded by hand anyway.
   hand; height, weight and build included; every in-county, non-test record is sent, complete or
   not; % meeting the Minimum tracked internally; agency Event # never sent; Bill emails the file
   to Koester after Leadership review; batch = approved and not yet sent; conflicts corrected, with
-  Bill choosing each.
+  Bill choosing each; only incidents dated 2026-10-01 or later are ever sent.
 - Builder's calls, marked *(my call)* above: keep all 34 columns in D4H's order; the comment order
   and wording; what counts as not applicable for the metric; Age sent as a number; the
   mutual-aid heuristic; the script in `backend/`; the licence on `field-map.md`; unsent runs stay

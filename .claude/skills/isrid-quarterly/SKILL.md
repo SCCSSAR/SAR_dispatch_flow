@@ -52,7 +52,9 @@ python3 backend/isrid_submission.py prepare <path-to-export.csv>
 - writes `worklist.json`.
 
 A batch holds every row **not named in an earlier batch's `SENT.md`**, so a late approval lands in the
-next batch. Each row carries a flag:
+next batch. **Incidents dated before 2026-10-01 are never selected**: that is the commitment made to
+Leadership, and `prepare` enforces it (`ELIGIBLE_FROM` in the script). Each selected row carries a
+flag:
 
 | Flag | Meaning | What to ask Bill |
 |---|---|---|
