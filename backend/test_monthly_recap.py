@@ -368,3 +368,249 @@ class TestCheckMonth:
     def test_clean_month(self):
         d = mr.parse_drafts(mr.render_drafts("2026-10", [_facts()], []))
         assert mr.check_month(d, {"98765": ["Zorblat", "Quintavere"]}) == []
+
+
+# ── Task 7: collect and render ───────────────────────────────────────────────
+
+def _inc(ref, name, starts, ends, map_id=None, coords=(-121.9, 37.3), att=6):
+    desc = f"<p>Agency: EXPD<br />CalTopo Map ID: https://caltopo.com/m/{map_id}</p>" if map_id else "<p>hand entered</p>"
+    return {"id": int(ref), "reference": ref, "referenceDescription": name, "startsAt": starts, "endsAt": ends,
+            "countAttendance": att, "tags": [{"id": 1}], "location": {"coordinates": list(coords)},
+            "description": desc}
+
+
+MONTH_INCIDENTS = [
+    _inc("98701", "EXPD Elmwood", "2026-10-02T22:49:00.000Z", "2026-10-03T05:00:00.000Z", map_id="ZZ12AB3"),
+    _inc("98702", "EXPD Birch [a1f9]", "2026-10-05T18:00:00.000Z", "2026-10-05T19:00:00.000Z"),
+    _inc("98703", "EXPD Cedar CANCELLED", "2026-10-28T23:23:00.000Z", "2026-10-28T23:23:00.000Z"),
+    _inc("98704", "FARSO Ridge OP2", "2026-10-27T13:30:00.000Z", "2026-10-28T02:09:00.000Z", coords=(-120.6, 35.3)),
+    _inc("98699", "EXPD Late September", "2026-10-01T05:00:00.000Z", "2026-10-01T06:00:00.000Z"),  # 09-30 PT
+]
+CALTOPO_FEATURES = {"result": {"state": {"features": [
+    {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-121.9, 37.3]},
+     "properties": {"class": "Marker", "marker-symbol": "placemark2", "title": "LKP — 12 Quillback St"}}]}}}
+
+
+class FakeD4H:
+    def __init__(self, page_size=2):
+        self.page_size, self.paths = page_size, []
+
+    def __call__(self, path):
+        self.paths.append(path)
+        if path.startswith("tags"):
+            return {"results": [{"id": 1, "title": "Canine"}], "totalSize": 1}
+        if path.startswith("incident-involved-persons"):
+            return {"results": [{"name": "Zorblat Quintavere"}], "totalSize": 1}
+        assert path.startswith("incidents?after=") and "&before=" in path
+        page = int(re.search(r"page=(\d+)", path).group(1))
+        chunk = MONTH_INCIDENTS[page * self.page_size:(page + 1) * self.page_size]
+        return {"results": chunk, "totalSize": len(MONTH_INCIDENTS), "page": page}
+
+
+import re  # noqa: E402
+
+
+def _collect(tmp_path, **kw):
+    return mr.collect("2026-10", tmp_path, FakeD4H(), lambda map_id: CALTOPO_FEATURES, None, CFG, **kw)
+
+
+class TestCollect:
+    def test_drafts_and_sources(self, tmp_path):
+        drafts = _collect(tmp_path)
+        assert drafts == tmp_path / "2026-10" / "drafts.md"
+        d = mr.parse_drafts(drafts.read_text())
+        assert [i.number for i in d.incidents] == ["98701", "98704", "98703"]  # date order, PT window
+        assert d.excluded == ["98702 · [abcd] personal-dev suffix"]
+        assert (tmp_path / "2026-10" / "caltopo-ZZ12AB3.json").exists()
+        assert (tmp_path / "2026-10" / "d4h-98701.json").exists()
+        names = json.loads((tmp_path / "2026-10" / "names.json").read_text())
+        assert "Quintavere" in names["98701"]
+
+    def test_pages_through_the_list(self, tmp_path):
+        d4h = FakeD4H(page_size=2)
+        mr.collect("2026-10", tmp_path, d4h, lambda m: CALTOPO_FEATURES, None, CFG)
+        assert sum(p.startswith("incidents?") for p in d4h.paths) == 3
+
+    def test_not_closed_out(self, tmp_path):
+        d = mr.parse_drafts(_collect(tmp_path).read_text())
+        cancelled = next(i for i in d.incidents if i.number == "98703")
+        assert cancelled.facts["hours"] == "[fill in]"
+        assert cancelled.facts["volunteer_hours"] == "6 × not closed out"
+
+    def test_mutual_aid_distance_from_county(self, tmp_path):
+        d = mr.parse_drafts(_collect(tmp_path).read_text())
+        ma = next(i for i in d.incidents if i.number == "98704")
+        assert ma.facts["mutual_aid"] == "yes"
+        assert re.fullmatch(r"≈ \d+ mi from the county centre", ma.facts["distance"])
+
+    def test_second_collect_never_overwrites(self, tmp_path):
+        first = _collect(tmp_path)
+        first.write_text(first.read_text() + "\nBill's edit\n")
+        before = first.read_bytes()
+        second = _collect(tmp_path)
+        assert second.name == "drafts-2.md" and first.read_bytes() == before
+
+    def test_caltopo_failure_is_not_fatal(self, tmp_path):
+        def boom(map_id):
+            raise OSError("down")
+        drafts = mr.collect("2026-10", tmp_path, FakeD4H(), boom, None, CFG)
+        assert drafts.exists() and not (tmp_path / "2026-10" / "caltopo-ZZ12AB3.json").exists()
+        d = mr.parse_drafts(drafts.read_text())
+        assert [i.number for i in d.incidents][0] == "98701"  # still on a slide
+        assert all("98701" not in e for e in d.excluded)
+        section = drafts.read_text().split("\n## 98701")[1].split("\n## ")[0]
+        assert "CalTopo map not read (OSError)" in section.split("### Sources and conflicts")[1]
+
+
+class TestRenderRefusesOnHit:
+    def test_phone_in_lesson(self, tmp_path):
+        drafts = _collect(tmp_path)
+        drafts.write_text(drafts.read_text().replace("- [draft]", "- Call 555-867-5309 sooner.", 1))
+        built = []
+        with pytest.raises(mr.RecapError, match="98701 lessons: phone"):
+            mr.render(drafts, lambda z, x, y: b"", CFG, build=lambda *a: built.append(a))
+        assert built == [] and not list((tmp_path / "2026-10").glob("*.pptx"))
+
+    def test_subject_name_from_names_json(self, tmp_path):
+        drafts = _collect(tmp_path)
+        drafts.write_text(drafts.read_text().replace("### Summary\n[draft]", "### Summary\nQuintavere walked off.", 1))
+        with pytest.raises(mr.RecapError, match="subject_name"):
+            mr.render(drafts, lambda z, x, y: b"", CFG, build=lambda *a: None)
+
+    def test_existing_pptx_refused_before_drawing(self, tmp_path):
+        drafts = _collect(tmp_path)
+        (tmp_path / "2026-10" / "2026-10 Incident Recap.pptx").write_bytes(b"edited")
+        calls = []
+        with pytest.raises(mr.RecapError, match="already exists"):
+            mr.render(drafts, lambda z, x, y: calls.append(1) or b"", CFG, build=lambda *a: None)
+        assert calls == []
+
+
+def _tile(z, x, y):
+    import io as _io
+    from PIL import Image as _Image
+    buf = _io.BytesIO()
+    _Image.new("RGB", (256, 256), (200, 230, 200)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class TestRenderWiring:
+    def test_maps_links_and_overview(self, tmp_path):
+        drafts = _collect(tmp_path)
+        got = {}
+
+        def build(draft, overview, maps, links, out):
+            got.update(draft=draft, overview=overview, maps=maps, links=links, out=out)
+            return out
+
+        out = mr.render(drafts, _tile, CFG, build=build)
+        assert out.name == "2026-10 Incident Recap.pptx"
+        assert got["overview"].exists()
+        assert got["links"] == {"98701": "https://caltopo.com/m/ZZ12AB3"}
+        assert got["maps"]["98701"].exists()
+        assert got["maps"]["98703"].exists()  # cancelled: no map id, drawn around its PLS
+        assert got["maps"]["98704"].exists()  # M/A: drawn with the county in frame
+
+    def test_no_map_and_no_pls_gets_placeholder(self, tmp_path):
+        # Review Focus 3: nothing to draw → None (a photo placeholder on the slide), not a crash.
+        drafts = _collect(tmp_path)
+        text = drafts.read_text().replace("pls: 37.30000, -121.90000\n", "pls: \n")
+        text = text.replace("map: ZZ12AB3\n", "map: \n")
+        drafts.write_text(text)
+        got = {}
+        mr.render(drafts, _tile, CFG, build=lambda d, o, m, l, out: got.update(maps=m) or out)
+        assert got["maps"]["98701"] is None
+
+
+class TestCaltopoGetter:
+    SECRET = __import__("base64").b64encode(b"k" * 32).decode()
+
+    def test_signed_url(self):
+        seen = []
+        get = mr.caltopo_getter("CRED", self.SECRET, opener=lambda url: seen.append(url) or {"ok": 1}, now_ms=lambda: 1000)
+        assert get("ZZ12AB3") == {"ok": 1}
+        url = seen[0]
+        assert url.startswith("https://caltopo.com/api/v1/map/ZZ12AB3/since/0?")
+        q = dict(p.split("=", 1) for p in url.split("?", 1)[1].split("&"))
+        assert q["id"] == "CRED" and q["expires"] == str(1000 + 120_000)
+        import base64, hashlib, hmac, urllib.parse
+        want = base64.b64encode(hmac.new(base64.b64decode(self.SECRET),
+                                         b"GET /api/v1/map/ZZ12AB3/since/0\n121000\n", hashlib.sha256).digest()).decode()
+        assert urllib.parse.unquote(q["signature"]) == want
+
+    def test_retries_5xx_only(self):
+        calls = []
+
+        def flaky(url):
+            calls.append(url)
+            if len(calls) < 3:
+                raise mr.HTTPStatusError(502)
+            return {"ok": 1}
+
+        assert mr.caltopo_getter("C", self.SECRET, opener=flaky, sleep=lambda s: None)("M") == {"ok": 1}
+        assert len(calls) == 3
+
+    def test_4xx_not_retried(self):
+        calls = []
+
+        def denied(url):
+            calls.append(url)
+            raise mr.HTTPStatusError(401)
+
+        with pytest.raises(mr.HTTPStatusError):
+            mr.caltopo_getter("C", self.SECRET, opener=denied, sleep=lambda s: None)("M")
+        assert len(calls) == 1
+
+
+class TestD4HGetter:
+    def test_bearer_and_url(self):
+        seen = []
+        get = mr.d4h_getter("TOKEN", opener=lambda url, headers: seen.append((url, headers)) or {"results": []})
+        get("tags")
+        url, headers = seen[0]
+        assert url == "https://api.team-manager.us.d4h.com/v3/team/1775/tags"
+        assert headers["Authorization"] == "Bearer TOKEN"
+
+
+class TestMain:
+    def test_collect_needs_tokens(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("D4H_ACCESS_TOKEN", raising=False)
+        cfg = _write_cfg(tmp_path)
+        assert mr.main(["collect", "--month", "2026-10", "--root", str(tmp_path), "--config", str(cfg)]) == 2
+
+    def test_bad_config_is_exit_2(self, tmp_path):
+        assert mr.main(["render", "--drafts", str(tmp_path / "d.md"), "--config", str(tmp_path / "none.json")]) == 2
+
+
+class TestRenderMapRules:
+    def _spy(self, tmp_path, monkeypatch):
+        import recap_map as rm
+        maps, overview = {}, {}
+        real_map, real_overview = rm.render_map, rm.render_overview
+
+        def spy_map(markers, w, h, fetch, out, **kw):
+            maps[out.name] = kw
+            return real_map(markers, w, h, fetch, out, **kw)
+
+        def spy_overview(pins, extent, fetch, out):
+            overview["pins"] = pins
+            return real_overview(pins, extent, fetch, out)
+
+        monkeypatch.setattr(rm, "render_map", spy_map)
+        monkeypatch.setattr(rm, "render_overview", spy_overview)
+        mr.render(_collect(tmp_path), _tile, CFG, build=lambda d, o, m, l, out: out)
+        return maps, overview
+
+    def test_mutual_aid_map_frames_the_county(self, tmp_path, monkeypatch):
+        maps, _ = self._spy(tmp_path, monkeypatch)
+        assert maps["map-98704.png"]["extent"] == [tuple(p) for p in CFG["county_extent"]]
+        assert "extent" not in maps["map-98701.png"]
+
+    def test_cancelled_map_frames_its_pls(self, tmp_path, monkeypatch):
+        maps, _ = self._spy(tmp_path, monkeypatch)
+        (lo_lat, lo_lng), (hi_lat, hi_lng) = maps["map-98703.png"]["extent"]
+        assert lo_lat < 37.3 < hi_lat and lo_lng < -121.9 < hi_lng
+
+    def test_overview_pins_in_county_only(self, tmp_path, monkeypatch):
+        _, overview = self._spy(tmp_path, monkeypatch)
+        assert [(n, c) for n, _, _, c in overview["pins"]] == [(1, False), (2, True)]

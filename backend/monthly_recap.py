@@ -237,6 +237,7 @@ class IncidentFacts:
     map_id: str | None
     pls: tuple[float, float] | None
     subject_names: list[str]
+    notes: list[str] = field(default_factory=list)
 
 
 def build_facts(incident: dict, involved: list[dict], lpb_row: dict | None,
@@ -331,7 +332,7 @@ def render_drafts(month: str, facts: list[IncidentFacts], excluded: list[tuple[s
         out += [f"{k}: {v}" for k, v in _fact_values(f).items()]
         out += ["```", "### Summary", DRAFT, "### Highlight", DRAFT, "### Lessons learned", f"- {DRAFT}",
                 "### The disruption"] + ([f"- {DRAFT}"] if f.cancelled else [])
-        out += ["### Sources and conflicts", "(not rendered)", ""]
+        out += ["### Sources and conflicts", "(not rendered)"] + [f"- {n}" for n in f.notes] + [""]
     out += ["## Excluded"] + [f"- {n} · {why}" for n, why in excluded] + [""]
     return "\n".join(out)
 
@@ -437,3 +438,233 @@ def check_month(draft: MonthDraft, names_by_number: dict[str, list[str]]) -> lis
             if found:
                 hits.append(f"{inc.number} {where}: {', '.join(found)}")
     return hits
+
+
+# ── collect and render ───────────────────────────────────────────────────────
+
+_PAGE_SIZE = 250
+
+
+def _iso_utc(dt: datetime) -> str:
+    return dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _list_month(get_d4h, month: str) -> list[dict]:
+    """Every incident D4H lists for the month window, paged, then re-checked against the PT window."""
+    start, end = month_window(month)
+    out, page = [], 0
+    while True:
+        body = get_d4h(f"incidents?after={_iso_utc(start)}&before={_iso_utc(end)}&size={_PAGE_SIZE}&page={page}")
+        results = body.get("results") or []
+        out += results
+        page += 1
+        if not results or len(out) >= int(body.get("totalSize") or 0):
+            break
+    return [i for i in out if start <= _utc(i["startsAt"]).astimezone(PT) < end]
+
+
+def _extent_centre(cfg: dict) -> tuple[float, float]:
+    (a_lat, a_lng), (b_lat, b_lng) = cfg["county_extent"]
+    return (a_lat + b_lat) / 2, (a_lng + b_lng) / 2
+
+
+def collect(month: str, root: Path, get_d4h, get_caltopo, lpb_export: Path | None, cfg: dict) -> Path:
+    """Read the month from D4H and CalTopo into root/<month>/ and write the next drafts file."""
+    from recap_map import miles_between
+    folder = root / month
+    folder.mkdir(parents=True, exist_ok=True)
+    tag_titles = {t["id"]: t["title"] for t in get_d4h("tags").get("results") or []}
+    lpb = lpb_rows_by_number(lpb_export) if lpb_export else {}
+    facts, excluded, names = [], [], {}
+    for inc in _list_month(get_d4h, month):
+        ref = str(inc.get("reference", ""))
+        reason = test_reason(inc.get("referenceDescription") or "")
+        if reason:
+            excluded.append((ref, reason))
+            continue
+        involved = get_d4h(f"incident-involved-persons?incident_id={inc['id']}").get("results") or []
+        (folder / f"d4h-{ref}.json").write_text(json.dumps({"incident": inc, "involved": involved}, indent=2))
+        f = build_facts(inc, involved, lpb.get(ref), tag_titles, cfg)
+        if f.mutual_aid and f.pls and f.distance == FILL_IN:
+            f.distance = f"≈ {round(miles_between(_extent_centre(cfg), f.pls))} mi from the county centre"
+        if f.map_id:
+            try:
+                (folder / f"caltopo-{f.map_id}.json").write_text(json.dumps(get_caltopo(f.map_id), indent=2))
+            except Exception as e:  # a missing map costs one picture, never the month
+                f.notes.append(f"CalTopo map not read ({type(e).__name__}): the slide gets a PLS-only map")
+        names[ref] = f.subject_names
+        facts.append(f)
+    (folder / "names.json").write_text(json.dumps(names, indent=2))
+    path = next_drafts_path(folder)
+    path.write_text(render_drafts(month, facts, excluded), encoding="utf-8")
+    return path
+
+
+def _pls(value: str) -> tuple[float, float] | None:
+    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\s*", value or "")
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+
+def _caltopo_base() -> str:
+    import ast
+    src = (Path(__file__).with_name("caltopo.py")).read_text()
+    return next(n.value.value for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name) and t.id == "CALTOPO_BASE_URL")
+
+
+def render(drafts: Path, fetch, cfg: dict, build=None) -> Path:
+    """Check the edited drafts, draw the maps and write the month's .pptx. Writes nothing on a refusal."""
+    import math
+    import recap_map as rm
+    draft = parse_drafts(drafts.read_text(encoding="utf-8"))
+    folder = drafts.parent
+    names_file = folder / "names.json"
+    names = json.loads(names_file.read_text()) if names_file.exists() else {}
+    hits = check_month(draft, names)
+    if hits:
+        raise RecapError("slide text must not carry these; edit the drafts and render again:\n  " + "\n  ".join(hits))
+    out = folder / f"{draft.month} Incident Recap.pptx"
+    if out.exists():
+        raise RecapError(f"{out} already exists: move or rename it to generate a new one")
+    if build is None:
+        from recap_pptx import build_deck as build
+    extent = [tuple(p) for p in cfg["county_extent"]]
+    base = _caltopo_base()
+    maps, links, pins, n = {}, {}, [], 0
+    for inc in draft.incidents:
+        ma = "yes" in inc.facts.get("mutual_aid", "").lower()
+        cancelled = "yes" in inc.facts.get("cancelled", "").lower()
+        pls = _pls(inc.facts.get("pls", ""))
+        map_id = inc.facts.get("map", "").strip()
+        if not ma:
+            n += 1
+            if pls:
+                pins.append((n, pls[0], pls[1], cancelled))
+        markers = []
+        if map_id:
+            links[inc.number] = f"{base}/m/{map_id}"
+            src = folder / f"caltopo-{map_id}.json"
+            if src.exists():
+                markers = rm.select_markers(json.loads(src.read_text())["result"]["state"]["features"])
+        if not markers and pls:
+            markers = [rm.Marker("lkp", "PLS", pls[0], pls[1])]
+        kw = {}
+        if ma:
+            kw = {"extent": extent, "min_zoom": 5}
+        elif cancelled and pls:
+            dlat = 0.75 / 69.0
+            dlng = dlat / max(0.2, math.cos(math.radians(pls[0])))
+            kw = {"extent": [(pls[0] - dlat, pls[1] - dlng), (pls[0] + dlat, pls[1] + dlng)]}
+        try:
+            maps[inc.number] = rm.render_map(markers, 1200, 900, fetch, folder / f"map-{inc.number}.png", **kw)
+        except ValueError:
+            maps[inc.number] = None
+    overview = rm.render_overview(pins, extent, fetch, folder / "overview.png")
+    return build(draft, overview, maps, links, out)
+
+
+# ── network getters and the command line ────────────────────────────────────
+
+class HTTPStatusError(Exception):
+    def __init__(self, code: int):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+
+
+def _module_constants(name: str) -> dict:
+    import ast
+    src = (Path(__file__).with_name(name)).read_text()
+    return {t.id: n.value.value for n in ast.parse(src).body if isinstance(n, ast.Assign)
+            for t in n.targets if isinstance(t, ast.Name) and isinstance(n.value, ast.Constant)}
+
+
+def _urlopen_json(url: str, headers: dict | None = None) -> dict:
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Accept": "application/json", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise HTTPStatusError(e.code) from None
+
+
+def d4h_getter(token: str, opener=None):
+    c = _module_constants("d4h.py")
+    opener = opener or _urlopen_json
+
+    def get(path: str) -> dict:
+        return opener(f"{c['BASE_URL']}/team/{c['TEAM_ID']}/{path}", {"Authorization": "Bearer " + token})
+
+    return get
+
+
+def caltopo_getter(credential_id: str, secret_b64: str, opener=None, sleep=None, now_ms=None):
+    """Signed read of one map's features (read-only GET; sharing is never touched)."""
+    import base64
+    import hashlib
+    import hmac
+    import time
+    import urllib.parse
+    base = _caltopo_base()
+    opener = opener or (lambda url: _urlopen_json(url))
+    sleep = sleep or time.sleep
+    now_ms = now_ms or (lambda: int(time.time() * 1000))
+    key = base64.b64decode(secret_b64)
+
+    def get(map_id: str) -> dict:
+        path = f"/api/v1/map/{map_id}/since/0"
+        for attempt in range(3):  # CalTopo returns transient 5xx (#706): retry those only
+            exp = now_ms() + 120_000
+            sig = base64.b64encode(hmac.new(key, f"GET {path}\n{exp}\n".encode(), hashlib.sha256).digest()).decode()
+            q = urllib.parse.urlencode({"id": credential_id, "expires": exp, "signature": sig})
+            try:
+                return opener(f"{base}{path}?{q}")
+            except HTTPStatusError as e:
+                if e.code < 500 or attempt == 2:
+                    raise
+                sleep(1.5 * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    return get
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import os
+    import sys
+    ap = argparse.ArgumentParser(prog="monthly_recap", description=__doc__.splitlines()[0])
+    ap.add_argument("--config", default=str(DEFAULT_ROOT / "config.json"))
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("collect", help="read D4H and CalTopo, write the next drafts file")
+    c.add_argument("--month", required=True)
+    c.add_argument("--lpb-export", type=Path)
+    c.add_argument("--root", default=str(DEFAULT_ROOT))
+    r = sub.add_parser("render", help="check the edited drafts and write the month's .pptx")
+    r.add_argument("--drafts", required=True, type=Path)
+    for p in (c, r):
+        p.add_argument("--config", default=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    try:
+        cfg = load_config(Path(args.config))
+        if args.cmd == "collect":
+            env = {k: os.environ.get(k) for k in ("D4H_ACCESS_TOKEN", "CALTOPO_CREDENTIAL_ID", "CALTOPO_CREDENTIAL_SECRET")}
+            missing = [k for k, v in env.items() if not v]
+            if missing:
+                raise RecapError("missing environment: " + ", ".join(missing) + " (see the skill's Setup step)")
+            path = collect(args.month, Path(args.root), d4h_getter(env["D4H_ACCESS_TOKEN"]),
+                           caltopo_getter(env["CALTOPO_CREDENTIAL_ID"], env["CALTOPO_CREDENTIAL_SECRET"]),
+                           args.lpb_export, cfg)
+            print(f"drafts: {path}")
+        else:
+            from recap_map import cached_osm_fetcher
+            fetch = cached_osm_fetcher(args.drafts.parent.parent / "tiles")
+            print(f"deck: {render(args.drafts, fetch, cfg)}")
+    except RecapError as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
