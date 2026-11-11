@@ -166,6 +166,11 @@ python3 backend/isrid_submission.py finalize <batch-dir>
 On a refusal, read Bill the check it names; the message never shows the value. Fix
 `decisions.json`, never the raw file, then run it again.
 
+**A comment can trip on a harmless word.** The event name (Mission #) sometimes carries a status
+word that an admin added, such as `Cancelled`. The check treats every word of 4 or more letters in the
+event name as identifying, so a comment saying "cancelled" is refused (first seen in the 2026-11-10
+validation run). Reword the comment, for example "called off". Don't weaken the check.
+
 ## Step 6 — Hand off to Bill
 
 Tell Bill, in this order:
