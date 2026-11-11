@@ -1,0 +1,10 @@
+{
+  "_about": "Copy this file to research/monthly-recap/config.json (gitignored) and replace every <...> value. backend/monthly_recap.py refuses to run until it is filled in. Keys starting with _ are notes and are ignored.",
+  "county": "<Your county, as the slides should name it>",
+  "_county_extent": "Two opposite corners of a box around your county, [lat, lng] each. Used to frame the overview map and to flag incidents outside the county as possible mutual aid.",
+  "county_extent": [[0.0, 0.0], [0.0, 0.0]],
+  "_in_county_agencies": "Agency names exactly as your event names start with them (the first word or words). An event name starting with one of these is treated as in-county; anything else is flagged for you to confirm.",
+  "in_county_agencies": ["<AGENCY ONE>", "<AGENCY TWO>"],
+  "_d4h_env": "The deploy.env ENV_NAME whose gcloud configuration reads production D4H and CalTopo.",
+  "d4h_env": "<deploy.env ENV_NAME for production>"
+}
