@@ -20,7 +20,7 @@ import json
 import re
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 RULES_VERSION = "1"
@@ -395,6 +395,27 @@ def finalize(batch: Path) -> None:
     (batch / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+
+# ── mark-sent: record what went to ISRID ─────────────────────────────────────
+
+def mark_sent(batch: Path, sent_on: date, to: str) -> Path:
+    sent = batch / "SENT.md"
+    if sent.exists():
+        raise SubmissionError(f"already marked sent: {sent}")
+    manifest_path = batch / "manifest.json"
+    if not manifest_path.exists():
+        raise SubmissionError("no manifest.json: run finalize first")
+    m = json.loads(manifest_path.read_text(encoding="utf-8"))
+    out = m["outgoing"]
+    if _sha256(batch / out) != m["sha256"][out]:
+        raise SubmissionError(f"{out} has changed since finalize: its sha256 no longer matches the manifest")
+    sent.write_text(
+        f"# Sent to ISRID\n\nSent on: {sent_on.isoformat()}\nTo: {to}\nFile: {out}\n"
+        f"sha256: {m['sha256'][out]}\nD4H numbers: {', '.join(m['included'])}\n",
+        encoding="utf-8")
+    return sent
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="isrid_submission", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -403,6 +424,10 @@ def main(argv=None) -> int:
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     f = sub.add_parser("finalize", help="apply decisions.json and write the de-identified batch")
     f.add_argument("batch", type=Path)
+    m = sub.add_parser("mark-sent", help="record that the batch's file was emailed to ISRID")
+    m.add_argument("batch", type=Path)
+    m.add_argument("--to", required=True)
+    m.add_argument("--on", type=date.fromisoformat, default=None)
     args = ap.parse_args(argv)
     try:
         if args.cmd == "prepare":
@@ -420,6 +445,9 @@ def main(argv=None) -> int:
             print(f"review with Leadership: {args.batch / 'leadership-summary.md'}")
             print(f"records: {m['minimum']['records']}; Minimum met: "
                   f"{m['minimum']['pct_as_exported']}% as exported, {m['minimum']['pct_as_sent']}% as sent")
+        elif args.cmd == "mark-sent":
+            path = mark_sent(args.batch, args.on or date.today(), args.to)
+            print(f"recorded: {path}")
     except SubmissionError as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 1

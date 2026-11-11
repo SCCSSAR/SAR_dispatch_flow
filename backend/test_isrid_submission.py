@@ -580,3 +580,55 @@ def test_refuses_worklist_edited_to_another_incident(tmp_path):
     (batch / "decisions.json").write_text(json.dumps({"rows": {
         "90005": {"include": True, "comment": GOOD_COMMENT}}}))
     _refuses(batch, "90005")
+
+
+# ── Task 5: mark-sent ───────────────────────────────────────────────────────
+
+def finalized(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    return batch
+
+
+def test_mark_sent_round_trip(tmp_path):
+    batch = finalized(tmp_path)
+    path = isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    text = path.read_text()
+    assert path == batch / "SENT.md"
+    assert "Sent on: 2026-11-12" in text and "To: isrid@example.org" in text
+    assert "File: isrid-sccssar-2026-Q4-20261110-1432.csv" in text
+    m = json.loads((batch / "manifest.json").read_text())
+    assert f"sha256: {m['sha256'][m['outgoing']]}" in text
+    assert "D4H numbers: 90001\n" in text
+    nxt = isr.prepare(tmp_path / "export.csv", tmp_path / "root", datetime(2027, 1, 5, 9, 0))
+    wl = json.loads((nxt / "worklist.json").read_text())
+    assert wl["already_sent"] == ["90001"]
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"]     # the excluded row stays selectable
+
+
+def test_mark_sent_refuses_edited_file(tmp_path):
+    batch = finalized(tmp_path)
+    out = batch / "isrid-sccssar-2026-Q4-20261110-1432.csv"
+    out.write_bytes(out.read_bytes() + b"\r\n")
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    assert not (batch / "SENT.md").exists()
+
+
+def test_mark_sent_refuses_twice(tmp_path):
+    batch = finalized(tmp_path)
+    isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 13), "isrid@example.org")
+
+
+def test_mark_sent_refuses_unfinalized(tmp_path):
+    batch = two_row_batch(tmp_path)
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+
+
+def test_cli_mark_sent(tmp_path, capsys):
+    batch = finalized(tmp_path)
+    assert isr.main(["mark-sent", str(batch), "--to", "isrid@example.org", "--on", "2026-11-12"]) == 0
+    assert "Sent on: 2026-11-12" in (batch / "SENT.md").read_text()
