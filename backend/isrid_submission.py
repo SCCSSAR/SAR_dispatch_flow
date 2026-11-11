@@ -12,8 +12,14 @@ subject data.
     python3 backend/isrid_submission.py mark-sent <batch-dir> --to <address> [--on YYYY-MM-DD]
 """
 
+import argparse
 import csv
+import hashlib
+import json
 import re
+import sys
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 RULES_VERSION = "1"
@@ -159,3 +165,99 @@ def score_silver(row: dict[str, str], comment: str, confirmed: set[str]) -> tupl
     ]
     missing = missing + [name for name, ok in checks if not ok]
     return 25 - len(missing), missing
+
+
+# ── prepare: select unsent rows and open a batch ─────────────────────────────
+
+DEFAULT_ROOT = Path("research/isrid-submissions")
+
+# Santa Clara County places, casefolded: the 15 incorporated cities plus unincorporated and
+# district names D4H's City column carries. A heuristic only: Bill confirms every flag.
+SCC_PLACES = frozenset(p.casefold() for p in (
+    "Campbell", "Cupertino", "Gilroy", "Los Altos", "Los Altos Hills", "Los Gatos", "Milpitas",
+    "Monte Sereno", "Morgan Hill", "Mountain View", "Palo Alto", "San Jose", "Santa Clara",
+    "Saratoga", "Sunnyvale",
+    "Mount Hamilton", "San Martin", "Alviso", "Stanford", "Coyote", "Lexington Hills",
+    "Redwood Estates", "Holy City", "New Almaden",
+))
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def quarter_label(now: datetime) -> str:
+    return f"{now.year}-Q{(now.month - 1) // 3 + 1}"
+
+
+def sent_numbers(root: Path) -> set[str]:
+    """D4H numbers recorded in any earlier batch's SENT.md. Only SENT.md counts as sent."""
+    sent = set()
+    for f in sorted(root.glob("*/*/SENT.md")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if line.startswith("D4H numbers:"):
+                sent |= {n.strip() for n in line.split(":", 1)[1].split(",") if n.strip()}
+    return sent
+
+
+def flag_row(row: dict[str, str]) -> str:
+    city, county = row["City"].strip(), row["County"].strip()
+    if not city or not county:
+        return "check"
+    return "in-county" if city.casefold() in SCC_PLACES else "mutual-aid?"
+
+
+def prepare(export: Path, root: Path, now: datetime) -> Path:
+    rows = read_export(export)              # refuses a changed header before anything is written
+    quarter, run = quarter_label(now), now.strftime("%Y%m%d-%H%M")
+    batch = root / quarter / run
+    if batch.exists():
+        raise SubmissionError(f"batch folder already exists: {batch}")
+    already = sent_numbers(root)
+    batch.mkdir(parents=True)
+    raw = batch / "raw-d4h-export.csv"
+    raw.write_bytes(export.read_bytes())
+    worklist = {"rules_version": RULES_VERSION, "raw_sha256": _sha256(raw),
+                "quarter": quarter, "run": run, "rows": [], "already_sent": []}
+    for i, row in enumerate(rows):
+        line = i + 2                        # header is row 1
+        try:
+            number = d4h_number(row["Mission #"])
+        except SubmissionError:
+            worklist["rows"].append({"d4h": None, "line": line, "flag": "bad-mission-number",
+                                     "incident_date": row["Incident Date"],
+                                     "minimum_as_exported": score_minimum(row, row["Comment"])[0]})
+            continue
+        if number in already:
+            worklist["already_sent"].append(number)
+            continue
+        worklist["rows"].append({"d4h": number, "line": line, "flag": flag_row(row),
+                                 "incident_date": row["Incident Date"],
+                                 "minimum_as_exported": score_minimum(row, row["Comment"])[0]})
+    (batch / "worklist.json").write_text(json.dumps(worklist, indent=2) + "\n", encoding="utf-8")
+    return batch
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="isrid_submission", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("prepare", help="select unsent rows from a D4H export into a new batch")
+    p.add_argument("export", type=Path)
+    p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    args = ap.parse_args(argv)
+    try:
+        if args.cmd == "prepare":
+            batch = prepare(args.export, args.root, datetime.now())
+            wl = json.loads((batch / "worklist.json").read_text(encoding="utf-8"))
+            print(f"batch: {batch}")
+            print(f"rows to decide: {len(wl['rows'])}; already sent: {len(wl['already_sent'])}")
+            for flag, n in sorted(Counter(r["flag"] for r in wl["rows"]).items()):
+                print(f"  {flag}: {n}")
+    except SubmissionError as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -237,3 +237,111 @@ def test_silver_matches_deck_count():
 def test_silver_includes_minimum_gaps():
     n, missing = isr.score_silver(make_row(Scenario=""), "Outcome: 1 well.", set())
     assert n == 21 and "Scenario" in missing     # 12 Minimum + 9 Silver additions
+
+
+# ── Task 3: prepare ─────────────────────────────────────────────────────────
+
+NOW = datetime(2026, 11, 10, 14, 32)
+
+
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def batch_with(tmp_path, rows, now=NOW):
+    export = write_export(tmp_path / "export.csv", rows)
+    root = tmp_path / "root"
+    return isr.prepare(export, root, now), export, root
+
+
+def test_quarter_label():
+    assert isr.quarter_label(datetime(2026, 11, 10)) == "2026-Q4"
+    assert isr.quarter_label(datetime(2027, 1, 1)) == "2027-Q1"
+    assert isr.quarter_label(datetime(2026, 6, 30)) == "2026-Q2"
+    assert isr.quarter_label(datetime(2026, 7, 1)) == "2026-Q3"
+
+
+def test_prepare_copies_raw_bytes(tmp_path):
+    batch, export, root = batch_with(tmp_path, [make_row()])
+    assert batch == root / "2026-Q4" / "20261110-1432"
+    raw = batch / "raw-d4h-export.csv"
+    assert raw.read_bytes() == export.read_bytes()
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert wl["raw_sha256"] == sha(export)
+    assert (wl["quarter"], wl["run"], wl["rules_version"]) == ("2026-Q4", "20261110-1432", "1")
+
+
+def test_prepare_refuses_existing_folder(tmp_path):
+    batch, export, root = batch_with(tmp_path, [make_row()])
+    with pytest.raises(SubmissionError):
+        isr.prepare(export, root, NOW)
+
+
+def test_prepare_refuses_bad_header(tmp_path):
+    export = write_export(tmp_path / "export.csv", [make_row()], header=EXPECTED_HEADER + ("X",))
+    with pytest.raises(SubmissionError):
+        isr.prepare(export, tmp_path / "root", NOW)
+    assert not (tmp_path / "root").exists()
+
+
+def test_prepare_skips_sent(tmp_path):
+    root = tmp_path / "root"
+    earlier = root / "2026-Q3" / "20260930-0900"
+    earlier.mkdir(parents=True)
+    (earlier / "SENT.md").write_text("Sent on: 2026-09-30\nD4H numbers: 90001, 90003\n")
+    export = write_export(tmp_path / "export.csv",
+                          [make_row(), make_row(**{"Mission #": "90002 XXSO Other"})])
+    batch = isr.prepare(export, root, NOW)
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert wl["already_sent"] == ["90001"]
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"]
+    assert isr.sent_numbers(root) == {"90001", "90003"}
+
+
+def test_unsent_batch_does_not_count_as_sent(tmp_path):
+    batch, export, root = batch_with(tmp_path, [make_row()])
+    batch2 = isr.prepare(export, root, datetime(2026, 11, 10, 15, 0))
+    assert [r["d4h"] for r in json.loads((batch2 / "worklist.json").read_text())["rows"]] == ["90001"]
+
+
+@pytest.mark.parametrize("city,county,flag", [
+    ("San Jose", "California", "in-county"), ("los gatos", "California", "in-county"),
+    ("Mount Hamilton", "California", "in-county"), ("Arroyo Grande", "California", "mutual-aid?"),
+    ("", "California", "check"), ("San Jose", "", "check"),
+])
+def test_flags(city, county, flag):
+    assert isr.flag_row(make_row(City=city, County=county)) == flag
+
+
+def test_bad_mission_number_is_flagged(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(), make_row(**{"Mission #": "SO-17 Example"})])
+    rows = json.loads((batch / "worklist.json").read_text())["rows"]
+    assert rows[1]["d4h"] is None and rows[1]["flag"] == "bad-mission-number" and rows[1]["line"] == 3
+
+
+def test_worklist_minimum_as_exported(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(), make_row(**{"Mission #": "90002 XXSO Other",
+                                                               "Comment": "", "Scenario": ""})])
+    rows = json.loads((batch / "worklist.json").read_text())["rows"]
+    assert [r["minimum_as_exported"] for r in rows] == [13, 7]
+
+
+def test_worklist_holds_no_free_text(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(City="Gilroy", Weather="Foggy morning")])
+    text = (batch / "worklist.json").read_text()
+    for value in ("Gilroy", "Foggy", "Example", "XXSO", "passer-by", "Dementia"):
+        assert value not in text, value
+
+
+def test_cli_prepare(tmp_path, capsys):
+    export = write_export(tmp_path / "export.csv", [make_row(), make_row(**{"Mission #": "90002 X", "City": "Elsewhere"})])
+    assert isr.main(["prepare", str(export), "--root", str(tmp_path / "root")]) == 0
+    out = capsys.readouterr().out
+    assert "rows to decide: 2" in out and "in-county: 1" in out and "mutual-aid?: 1" in out
+    assert "San Jose" not in out and "Elsewhere" not in out
+
+
+def test_cli_refusal_exits_1(tmp_path, capsys):
+    export = write_export(tmp_path / "export.csv", [make_row()], header=EXPECTED_HEADER[1:])
+    assert isr.main(["prepare", str(export), "--root", str(tmp_path / "root")]) == 1
+    assert "REFUSED" in capsys.readouterr().err
