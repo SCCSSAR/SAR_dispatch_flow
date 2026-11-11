@@ -159,3 +159,81 @@ def test_forbidden_hits_skips_city_for_mission_words():
 def test_forbidden_hits_checks_weather():
     row = deidentify_row(make_row(Weather="call 408 555 0142"), "Outcome: 1 well.")
     assert forbidden_hits(row, "90001 XXSO Example Ave") == ["Weather"]
+
+
+# ── Task 2: Minimum (13) and Silver (25) scoring ────────────────────────────
+
+FOUR_COUNTS = ["# well", "# injured", "# DOA", "# no trace"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Outcome: 1 well.", True), ("Found WELL by family", True), ("1 injured", True),
+    ("minor injury", True), ("DOA", True), ("subject deceased", True), ("found dead", True),
+    ("Outcome: 1 no trace.", True), ("", False), ("Wellington Park", False), ("Person Assisted", False),
+])
+def test_states_condition(text, expected):
+    assert isr.states_condition(text) is expected
+
+
+def test_complete_row_scores_13():
+    assert isr.score_minimum(make_row(), "Outcome: 1 well.") == (13, [])
+
+
+def test_person_assisted_without_condition_loses_four():
+    n, missing = isr.score_minimum(make_row(), "")
+    assert n == 8
+    assert sorted(missing) == sorted(FOUR_COUNTS + ["Comment"])
+
+
+def test_each_minimum_field_is_scored():
+    blanks = {"Incident Type": "Incident Type", "Incident Date": "SAR notified",
+              "Search Time": "Found date/time", "Lost Time": "Last seen date/time",
+              "Subject Category": "Subject Category", "IPP Lat": "IPP coordinates",
+              "IPP Lng": "IPP coordinates", "Find Lat": "Find coordinates",
+              "Find Lng": "Find coordinates", "Scenario": "Scenario"}
+    for col, field in blanks.items():
+        n, missing = isr.score_minimum(make_row(**{col: ""}), "Outcome: 1 well.")
+        assert (n, missing) == (12, [field]), col
+
+
+def test_no_trace_excuses_find_fields():
+    row = make_row(**{"Search Time": "", "Find Lat": "", "Find Lng": ""})
+    assert isr.score_minimum(row, "Outcome: 1 no trace.") == (13, [])
+    n, missing = isr.score_minimum(row, "Outcome: 1 well.")
+    assert n == 11 and sorted(missing) == ["Find coordinates", "Found date/time"]
+
+
+def test_dash_is_blank():
+    n, missing = isr.score_minimum(make_row(Scenario="-"), "Outcome: 1 well.")
+    assert (n, missing) == (12, ["Scenario"])
+    n, _ = isr.score_minimum(make_row(Scenario="  "), "Outcome: 1 well.")
+    assert n == 12
+
+
+def test_silver_sex_placeholder():
+    full = "Outcome: 1 well. Destination: home. Direction of travel: north."
+    n, missing = isr.score_silver(make_row(Sex="o"), full, set())
+    assert n == 23 and "Sex" in missing
+    assert isr.score_silver(make_row(Sex="o"), full, {"Sex"})[0] == 24
+    assert isr.score_silver(make_row(Sex=",o"), full, set())[0] == 23
+    assert isr.score_silver(make_row(Sex=","), full, {"Sex"})[0] == 23    # blank, not a confirmation target
+    assert isr.score_silver(make_row(Sex="f"), full, set())[0] == 24
+
+
+def test_silver_track_offset_never_held():
+    full = "Outcome: 1 well. Destination: home. Direction of travel: north."
+    n, missing = isr.score_silver(make_row(), full, set())
+    assert (n, missing) == (24, ["Track offset (ISRID derives)"])
+
+
+def test_silver_matches_deck_count():
+    # Shaped like the 2026-11-09 deck's complete records: Mobility blank, no destination or DOT.
+    n, missing = isr.score_silver(make_row(**{"Mobility Time": ""}), "Outcome: 1 well.", set())
+    assert n == 21
+    assert sorted(missing) == sorted(["Mobility", "Destination", "Direction of Travel",
+                                      "Track offset (ISRID derives)"])
+
+
+def test_silver_includes_minimum_gaps():
+    n, missing = isr.score_silver(make_row(Scenario=""), "Outcome: 1 well.", set())
+    assert n == 21 and "Scenario" in missing     # 12 Minimum + 9 Silver additions

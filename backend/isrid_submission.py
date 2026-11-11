@@ -101,3 +101,61 @@ def deidentify_row(row: dict[str, str], comment: str) -> dict[str, str]:
     out["Comment"] = comment
     out["County"] = IN_COUNTY
     return out
+
+
+# ── Scoring against ISRID Data Standards 2016 (App. B Minimum, App. C Silver) ──
+
+_CONDITION_RE = re.compile(r"\b(well|injured|injury|DOA|deceased|dead|no trace)\b", re.IGNORECASE)
+OUTCOME_COUNTS = ("# well", "# injured", "# DOA", "# no trace")
+TRACK_OFFSET = "Track offset (ISRID derives)"
+
+
+def _blank(value: str) -> bool:
+    return value.strip() in ("", "-")
+
+
+def states_condition(comment: str) -> bool:
+    """True when the text says how the subject was found (well, injured, DOA, no trace).
+
+    D4H's Outcome value `Person Assisted` does not (Koester p. 53), and ISRID receives only
+    the file, so the four outcome counts are met only when the comment states the condition.
+    """
+    return bool(_CONDITION_RE.search(comment))
+
+
+def score_minimum(row: dict[str, str], comment: str) -> tuple[int, list[str]]:
+    no_trace = bool(re.search(r"\bno trace\b", comment, re.IGNORECASE))
+    checks = [
+        ("Incident Type", not _blank(row["Incident Type"])),
+        ("SAR notified", not _blank(row["Incident Date"])),
+        ("Found date/time", no_trace or not _blank(row["Search Time"])),
+        ("Last seen date/time", not _blank(row["Lost Time"])),
+        ("Subject Category", not _blank(row["Subject Category"])),
+        ("IPP coordinates", not (_blank(row["IPP Lat"]) or _blank(row["IPP Lng"]))),
+        ("Find coordinates", no_trace or not (_blank(row["Find Lat"]) or _blank(row["Find Lng"]))),
+        ("Scenario", not _blank(row["Scenario"])),
+    ]
+    condition = states_condition(comment)
+    checks += [(name, condition) for name in OUTCOME_COUNTS]
+    checks.append(("Comment", bool(comment.strip())))
+    missing = [name for name, ok in checks if not ok]
+    return 13 - len(missing), missing
+
+
+def score_silver(row: dict[str, str], comment: str, confirmed: set[str]) -> tuple[int, list[str]]:
+    """Out of 25: the 13 Minimum fields plus the 12 App. C additions."""
+    n, missing = score_minimum(row, comment)
+    sex = row["Sex"].replace(",", "").strip()
+    sex_ok = bool(sex) and (set(sex) != {"o"} or "Sex" in confirmed)
+    checks = [(col, not _blank(row[col])) for col in
+              ("Environment", "Population Density", "Terrain", "Age", "Fitness", "Experience")]
+    checks += [
+        ("Mobility", not _blank(row["Mobility Time"])),
+        ("Sex", sex_ok),
+        ("Subject Status", states_condition(comment)),
+        ("Destination", bool(re.search(r"\bdestination\b", comment, re.IGNORECASE))),
+        ("Direction of Travel", bool(re.search(r"\bdirection of travel\b", comment, re.IGNORECASE))),
+        (TRACK_OFFSET, False),
+    ]
+    missing = missing + [name for name, ok in checks if not ok]
+    return 25 - len(missing), missing
