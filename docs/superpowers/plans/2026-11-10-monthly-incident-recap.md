@@ -23,7 +23,7 @@
 - Slide text never contains: subject name, DOB, phone, email, agency Event #, house-numbered address, responder names. Map pictures MAY contain CalTopo marker titles verbatim (Bill: "map labels only"); marker descriptions are never drawn.
 - Range rings, tracks, assignments, clues and all CalTopo Shapes are never drawn.
 - Every new pin is mutation-checked: reintroduce the defect, confirm the test goes red, restore (CLAUDE.md "A pin must READ production and SURVIVE MUTATION"). Record the mutation count in the PR body.
-- Work only in the worktree `$WT` (outside the repo); never switch branches in the shared main checkout.
+- Work only in the worktree `$WT` = `/private/tmp/claude-501/-Users-billburns-src-SAR-dispatch-flow/069a58d3-8cb5-4a51-b98c-e718a8c75a62/scratchpad/wt-recap` (outside the repo, created 2026-11-10; recreate with `git worktree add` if gone); never switch branches in the shared main checkout.
 - Session Rules #2 and #14: `git branch --show-current` as its own call before staging; `checkout && add && commit` in one call; never `git add -A`; never self-merge; never run `build-*.sh`.
 
 ## Review Focus
