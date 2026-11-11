@@ -224,3 +224,95 @@ class TestBuildFacts:
     def test_date_is_pacific(self):
         f = mr.build_facts(_incident(startsAt="2026-10-30T04:11:00.000Z"), [], None, TAG_TITLES, CFG)
         assert f.date_pt == "10-29"
+
+
+# ── Task 3: drafts.md ────────────────────────────────────────────────────────
+
+def _facts(**over):
+    f = mr.build_facts(_incident(), [], {"Outcome": "Life Saved", "Distance From IPP": "1.2mi",
+                                         "Direction From IPP": "NE"}, TAG_TITLES, CFG)
+    for k, v in over.items():
+        setattr(f, k, v)
+    return f
+
+
+class TestDraftsRoundTrip:
+    def test_render_then_parse(self):
+        cancelled = _facts(number="98766", event_name="EXPD Birch CANCELLED", cancelled=True, hours=None)
+        text = mr.render_drafts("2026-10", [_facts(), cancelled], [("98000", "[abcd] personal-dev suffix")])
+        d = mr.parse_drafts(text)
+        assert d.month == "2026-10"
+        assert [i.number for i in d.incidents] == ["98765", "98766"]
+        first = d.incidents[0]
+        assert first.title == "EXPD Elmwood"
+        assert first.facts["volunteer_hours"] == "10 × 6.2 h = 62"
+        assert first.facts["specialty"] == "K9"
+        assert first.facts["pls"] == "37.30000, -121.90000"
+        assert first.facts["map"] == "ZZ12AB3"
+        assert (first.summary, first.highlight, first.lessons, first.disruption) == ("[draft]", "[draft]", ["[draft]"], [])
+        second = d.incidents[1]
+        assert second.facts["hours"] == "[fill in]"
+        assert second.facts["volunteer_hours"] == "10 × not closed out"
+        assert second.facts["cancelled"] == "yes"
+        assert second.disruption == ["[draft]"]
+        assert d.excluded == ["98000 · [abcd] personal-dev suffix"]
+
+    def test_facts_order(self):
+        text = mr.render_drafts("2026-10", [_facts()], [])
+        assert list(mr.parse_drafts(text).incidents[0].facts) == list(mr.FACT_KEYS)
+
+
+EDITED = (
+    "# 2026-10 incident recap — drafts\r\n\r\nEdit anything.\r\n\r\n"
+    "## 98765 · 10-02 · EXPD Elmwood\r\n```facts\r\ndate: 10-02\r\nevent: EXPD Elmwood\r\n"
+    "found: Found well: walked home\r\n```\r\n"
+    "### Summary\r\nA man left on foot — found 1.2 mi away.\r\n\r\nSecond line kept.\r\n"
+    "### Highlight\r\nK9 picked up the trail at the bus stop.\r\n"
+    "### Lessons learned\r\n- Ask for transit early.\r\n- Brief UAS on the no-fly zone: call it out.\r\n"
+    "- A fourth thought.\r\n- And a fifth.\r\n"
+    "### Sources and conflicts\r\nnot rendered\r\n"
+)
+
+
+class TestParseBillsEdits:
+    def test_crlf_and_text_kept_exactly(self):
+        i = mr.parse_drafts(EDITED).incidents[0]
+        assert i.facts["found"] == "Found well: walked home"
+        assert i.summary == "A man left on foot — found 1.2 mi away.\n\nSecond line kept."
+        assert i.highlight == "K9 picked up the trail at the bus stop."
+        assert i.lessons == ["Ask for transit early.", "Brief UAS on the no-fly zone: call it out.",
+                             "A fourth thought.", "And a fifth."]
+
+    def test_missing_disruption_section_is_empty(self):
+        assert mr.parse_drafts(EDITED).incidents[0].disruption == []
+
+    def test_deleted_lessons_section(self):
+        text = EDITED.replace("### Lessons learned\r\n- Ask for transit early.\r\n", "### Lessons learned\r\n")
+        assert "Ask for transit early." not in mr.parse_drafts(text).incidents[0].lessons
+
+
+class TestParseRejects:
+    def test_missing_facts_block(self):
+        text = "# 2026-10 incident recap — drafts\n\n## 98765 · 10-02 · EXPD Elmwood\n### Summary\nx\n"
+        with pytest.raises(mr.DraftError, match="98765 · 10-02 · EXPD Elmwood"):
+            mr.parse_drafts(text)
+
+    def test_missing_month_header(self):
+        with pytest.raises(mr.DraftError, match="month"):
+            mr.parse_drafts("## 98765 · 10-02 · EXPD Elmwood\n```facts\ndate: 10-02\n```\n")
+
+
+class TestNextDraftsPath:
+    def test_sequence(self, tmp_path):
+        assert mr.next_drafts_path(tmp_path).name == "drafts.md"
+        (tmp_path / "drafts.md").write_text("x")
+        assert mr.next_drafts_path(tmp_path).name == "drafts-2.md"
+        (tmp_path / "drafts-2.md").write_text("x")
+        assert mr.next_drafts_path(tmp_path).name == "drafts-3.md"
+
+
+class TestConfirmMarker:
+    def test_unconfident_mutual_aid(self):
+        text = mr.render_drafts("2026-10", [_facts(mutual_aid=True, ma_confident=False)], [])
+        assert "mutual_aid: [confirm] yes" in text
+        assert mr.parse_drafts(text).incidents[0].facts["mutual_aid"] == "[confirm] yes"

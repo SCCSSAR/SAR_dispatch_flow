@@ -271,3 +271,127 @@ def build_facts(incident: dict, involved: list[dict], lpb_row: dict | None,
         pls=pls,
         subject_names=list(dict.fromkeys(names)),
     )
+
+
+# ── drafts.md ────────────────────────────────────────────────────────────────
+
+class DraftError(RecapError):
+    """drafts.md cannot be read back. The message names the incident header, never its text."""
+
+
+FACT_KEYS = ("date", "event", "attendees", "hours", "volunteer_hours", "cancelled", "mutual_aid",
+             "environment", "found", "distance", "specialty", "map", "pls")
+DRAFT = "[draft]"
+_SECTIONS = {"Summary": "summary", "Highlight": "highlight", "Lessons learned": "lessons",
+             "The disruption": "disruption", "Sources and conflicts": None}
+
+
+@dataclass
+class IncidentDraft:
+    number: str
+    title: str
+    facts: dict[str, str]
+    summary: str = ""
+    highlight: str = ""
+    lessons: list[str] = field(default_factory=list)
+    disruption: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MonthDraft:
+    month: str
+    incidents: list[IncidentDraft]
+    excluded: list[str]
+
+
+def _fact_values(f: IncidentFacts) -> dict[str, str]:
+    ma = "yes" if f.mutual_aid else "no"
+    return {
+        "date": f.date_pt,
+        "event": f.event_name,
+        "attendees": str(f.attendees),
+        "hours": FILL_IN if f.hours is None else f"{f.hours:.1f}",
+        "volunteer_hours": volunteer_hours_label(f.attendees, f.hours),
+        "cancelled": "yes" if f.cancelled else "no",
+        "mutual_aid": ma if f.ma_confident else f"[confirm] {ma}",
+        "environment": f.environment,
+        "found": f.found_status,
+        "distance": f.distance,
+        "specialty": ", ".join(f.specialty),
+        "map": f.map_id or "",
+        "pls": f"{f.pls[0]:.5f}, {f.pls[1]:.5f}" if f.pls else "",
+    }
+
+
+def render_drafts(month: str, facts: list[IncidentFacts], excluded: list[tuple[str, str]]) -> str:
+    out = [f"# {month} incident recap — drafts", "",
+           "Edit anything below. Keep the `## ` lines and the ```facts fences.", ""]
+    for f in sorted(facts, key=lambda x: x.sort_key):
+        out += [f"## {f.number} · {f.date_pt} · {f.event_name}", "```facts"]
+        out += [f"{k}: {v}" for k, v in _fact_values(f).items()]
+        out += ["```", "### Summary", DRAFT, "### Highlight", DRAFT, "### Lessons learned", f"- {DRAFT}",
+                "### The disruption"] + ([f"- {DRAFT}"] if f.cancelled else [])
+        out += ["### Sources and conflicts", "(not rendered)", ""]
+    out += ["## Excluded"] + [f"- {n} · {why}" for n, why in excluded] + [""]
+    return "\n".join(out)
+
+
+_HEADER_RE = re.compile(r"^## (\S+) · (\S+) · (.*)$")
+
+
+def parse_drafts(text: str) -> MonthDraft:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    m = next((re.match(r"^# (\d{4}-\d{2}) incident recap", l) for l in lines if l.startswith("# ")), None)
+    if not m:
+        raise DraftError("no '# YYYY-MM incident recap' month header on the first heading line")
+    blocks, current = [], None
+    for line in lines:
+        if line.startswith("## "):
+            current = [line]
+            blocks.append(current)
+        elif current is not None:
+            current.append(line)
+    incidents, excluded = [], []
+    for block in blocks:
+        header = block[0][3:].strip()
+        if header == "Excluded":
+            excluded = [l[2:].strip() for l in block[1:] if l.startswith("- ")]
+            continue
+        hm = _HEADER_RE.match(block[0])
+        if not hm or "```facts" not in [l.strip() for l in block]:
+            raise DraftError(f"incident '{header}' has no ```facts block")
+        start = [l.strip() for l in block].index("```facts")
+        try:
+            end = next(i for i in range(start + 1, len(block)) if block[i].strip() == "```")
+        except StopIteration:
+            raise DraftError(f"incident '{header}' has an unclosed ```facts block") from None
+        facts = {}
+        for l in block[start + 1:end]:
+            if ": " in l or l.endswith(":"):
+                k, _, v = l.partition(":")
+                facts[k.strip()] = v.strip()
+        sections: dict[str, list[str]] = {}
+        name = None
+        for l in block[end + 1:]:
+            if l.startswith("### "):
+                name = _SECTIONS.get(l[4:].strip())
+                if name:
+                    sections[name] = []
+            elif name:
+                sections[name].append(l)
+        inc = IncidentDraft(number=hm.group(1), title=hm.group(3).strip(), facts=facts)
+        inc.summary = "\n".join(sections.get("summary", [])).strip("\n").strip()
+        inc.highlight = "\n".join(sections.get("highlight", [])).strip("\n").strip()
+        inc.lessons = [l[2:].strip() for l in sections.get("lessons", []) if l.startswith("- ")]
+        inc.disruption = [l[2:].strip() for l in sections.get("disruption", []) if l.startswith("- ")]
+        incidents.append(inc)
+    return MonthDraft(month=m.group(1), incidents=incidents, excluded=excluded)
+
+
+def next_drafts_path(folder: Path) -> Path:
+    if not (folder / "drafts.md").exists():
+        return folder / "drafts.md"
+    n = 2
+    while (folder / f"drafts-{n}.md").exists():
+        n += 1
+    return folder / f"drafts-{n}.md"
