@@ -208,7 +208,8 @@ def environment_label(population_density: str | None, turbo_environment: str | N
     return FILL_IN
 
 
-_OUTCOMES = {"Life Saved": "Found", "Person Assisted": "Found", "Deceased": "Found deceased",
+# Turbo writes Person Assisted as a placeholder at dispatch, so it only suggests a find.
+_OUTCOMES = {"Life Saved": "Found", "Person Assisted": "[confirm] Found", "Deceased": "Found deceased",
              "Not Located": "Not found"}
 
 
@@ -249,7 +250,7 @@ def build_facts(incident: dict, involved: list[dict], lpb_row: dict | None,
     ma, confident = guess_mutual_aid(name, turbo.turbo_record, pls, cfg)
     lpb = lpb_row or {}
     distance = " ".join(x for x in (lpb.get("Distance From IPP", "").strip(),
-                                    lpb.get("Direction From IPP", "").strip()) if x)
+                                    lpb.get("Direction From IPP", "").strip()) if x and x != "-")
     names = list(turbo.subject_names)
     for person in involved or []:
         names += re.findall(r"[A-Za-z][A-Za-z'-]{2,}", person.get("name") or "")

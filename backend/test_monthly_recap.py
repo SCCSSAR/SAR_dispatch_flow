@@ -216,10 +216,16 @@ class TestBuildFacts:
         assert f.environment == "Urban"  # from Turbo's Environment line
 
     def test_outcome_mapping(self):
+        # Turbo writes Person Assisted as a placeholder at dispatch, so it is not evidence of a find.
         for outcome, want in [("Deceased", "Found deceased"), ("Not Located", "Not found"),
-                              ("Person Assisted", "Found")]:
+                              ("Person Assisted", "[confirm] Found"), ("Life Saved", "Found")]:
             f = mr.build_facts(_incident(), [], {"Outcome": outcome}, TAG_TITLES, CFG)
             assert f.found_status == want
+
+    def test_export_dash_is_blank(self):
+        # D4H's Lost Behavior export writes "-" for an empty distance (seen on the first real run).
+        f = mr.build_facts(_incident(), [], {"Distance From IPP": "-", "Direction From IPP": "-"}, TAG_TITLES, CFG)
+        assert f.distance == "[fill in]"
 
     def test_date_is_pacific(self):
         f = mr.build_facts(_incident(startsAt="2026-10-30T04:11:00.000Z"), [], None, TAG_TITLES, CFG)
