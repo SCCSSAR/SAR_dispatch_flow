@@ -35,10 +35,6 @@ EXPORT_HEADER = (
     "Find Lng", "Eco Region", "Environment", "Weather", "Equipment", "Experience", "Fitness",
     "Scenario", "Terrain", "Comment",
 )
-REWRITE_COLUMNS = ("Mission #", "Comment")
-REVIEW_COLUMNS = ("City", "Weather")
-COORDINATE_COLUMNS = ("IPP Coordinates", "IPP Lat", "IPP Lng",
-                      "Find Coordinates", "Find Lat", "Find Lng")
 IN_COUNTY = "Santa Clara"
 
 
@@ -51,14 +47,26 @@ def read_export(path: Path) -> list[dict[str, str]]:
         reader = csv.reader(f)
         header = tuple(next(reader, ()))
         if header != EXPORT_HEADER:
-            extra = [h for h in header if h not in EXPORT_HEADER]
+            known = [h for h in header if h in EXPORT_HEADER]
+            if len(known) < len(EXPORT_HEADER) // 2:
+                # Not a D4H header at all, probably a data row: never echo it (it holds PII).
+                raise SubmissionError(
+                    f"first row is not D4H's Lost Behavior header ({len(known)} of "
+                    f"{len(EXPORT_HEADER)} known column names, {len(header)} cells)")
+            extra = [h if len(h) <= 40 and not any(p.search(h) for p in _PATTERNS) else "<withheld>"
+                     for h in header if h not in EXPORT_HEADER]
             missing = [h for h in EXPORT_HEADER if h not in header]
             moved = [h for i, h in enumerate(header)
                      if h in EXPORT_HEADER and i < len(EXPORT_HEADER) and EXPORT_HEADER[i] != h]
             raise SubmissionError(
                 "export header differs from D4H's known 34 columns: "
                 f"unknown {extra}, missing {missing}, out of order {moved}")
-        return [dict(zip(EXPORT_HEADER, rec)) for rec in reader]
+        rows = []
+        for i, rec in enumerate(reader):
+            if len(rec) != len(EXPORT_HEADER):
+                raise SubmissionError(f"row {i + 2} has {len(rec)} cells, expected {len(EXPORT_HEADER)}")
+            rows.append(dict(zip(EXPORT_HEADER, rec)))
+        return rows
 
 
 _D4H_NUMBER_RE = re.compile(r"(\d{5})(?!\d)")
@@ -72,13 +80,30 @@ def d4h_number(mission: str) -> str:
 
 
 _STREET_TYPES = ("St", "Street", "Ave", "Avenue", "Rd", "Road", "Dr", "Drive", "Way", "Ct", "Court",
-                 "Blvd", "Ln", "Lane", "Pl", "Cir", "Pkwy", "Hwy")
+                 "Blvd", "Boulevard", "Ln", "Lane", "Pl", "Place", "Cir", "Circle", "Pkwy", "Parkway",
+                 "Hwy", "Highway", "Real", "Ter", "Terrace", "Trl", "Trail", "Expy", "Expressway",
+                 "Loop", "Sq", "Square", "Row", "Path", "Alley", "Plaza")
 _PATTERNS = (
-    re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"),                              # phone
+    re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"),                                # phone
+    re.compile(r"\b\d{10}\b"),                                                     # phone, bare
+    re.compile(r"\b\d{3}-\d{4}\b"),                                # phone, local; also "(408) 555-0142"
+    re.compile(r"\+\d{1,3}[\s.-]?\d[\d\s.-]{6,}\d"),                                # phone, international
     re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"),                                        # email
-    re.compile(r"\b\d{1,6}\s+(?:[A-Z][\w'.-]*\s+){1,4}(?:%s)\b" % "|".join(_STREET_TYPES)),  # address
-    re.compile(r"\b\d{2}-\d{3}-\d{3,4}\b"),                                        # agency Event #
+    re.compile(r"\b\d{1,6}[A-Za-z]?\s+(?:[A-Za-z0-9][\w'-]*\s+){1,4}(?:%s)\b" % "|".join(_STREET_TYPES),
+               re.IGNORECASE),                                                   # street address
+    re.compile(r"(?<!\d)(?:\d{2}|\d{4})-\d{3}-\d{3,4}\b"),                          # agency Event #
 )
+# Columns whose only legitimate content is a date or a coordinate: checked by shape, so free
+# text (a mis-copied map marker description) cannot ride out in them.
+_SHAPES = {
+    "Incident Date": re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?"),
+    "IPP Coordinates": re.compile(r"(-?\d{1,3}(\.\d+)?, ?-?\d{1,3}(\.\d+)?)?"),
+    "Find Coordinates": re.compile(r"(-?\d{1,3}(\.\d+)?, ?-?\d{1,3}(\.\d+)?)?"),
+    **{c: re.compile(r"(-?\d{1,3}(\.\d+)?|-)?") for c in ("IPP Lat", "IPP Lng", "Find Lat", "Find Lng")},
+}
+# Event-name words can only leak through free text; pick-lists (Fair, Rock) collide with real
+# street names, so they are not checked for them.
+_MISSION_WORD_COLUMNS = ("Comment", "Weather")
 
 
 def _mission_words(mission_raw: str) -> list[re.Pattern]:
@@ -91,11 +116,13 @@ def forbidden_hits(row: dict[str, str], mission_raw: str) -> list[str]:
     mission_words = _mission_words(mission_raw)
     hits = []
     for col in EXPORT_HEADER:
-        if col in COORDINATE_COLUMNS or col == "Incident Date":
-            continue
         value = row.get(col, "")
+        if col in _SHAPES:
+            if not _SHAPES[col].fullmatch(value.strip()):
+                hits.append(col)
+            continue
         found = any(p.search(value) for p in _PATTERNS)
-        if not found and col not in ("City", "County"):
+        if not found and col in _MISSION_WORD_COLUMNS:
             found = any(p.search(value) for p in mission_words)
         if found:
             hits.append(col)
@@ -331,21 +358,22 @@ def finalize(batch: Path) -> None:
             enriched[col] = str(cell["value"])
             sources.append(f"{col}: {raw[col]!r} -> {enriched[col]!r} ({cell['source']})")
             cells_log.append({"d4h": k, "column": col, "value": enriched[col], "source": cell["source"]})
-        comment = d["comment"].strip()
+        comment = " ".join(str(d["comment"]).split())
         out = deidentify_row(enriched, comment)
         for col in forbidden_hits(out, raw["Mission #"]):
             hits.append(f"{k}: {col}")
         confirmed = set(d.get("confirmed", []))
         before = score_minimum(raw, raw["Comment"])[0]
         after, missing = score_minimum(enriched, comment)
-        silver, _ = score_silver(enriched, comment, confirmed)
+        silver, silver_missing = score_silver(enriched, comment, confirmed)
         met_before += before == 13
         met_after += after == 13
         included.append(k)
         enriched_rows.append({**enriched, "Comment (sent)": comment, "Sources": "; ".join(sources)})
         out_rows.append(out)
         table.append((k, enriched["Incident Date"][:10], f"{after}/13", ", ".join(missing) or "—",
-                      f"{silver}/25", enriched["City"], enriched["Weather"], comment))
+                      f"{silver}/25", ", ".join(m for m in silver_missing if m not in missing) or "—",
+                      enriched["City"], enriched["Weather"], comment))
     if hits:
         raise SubmissionError("forbidden pattern in an outgoing cell (value not shown):\n  "
                               + "\n  ".join(hits))
@@ -373,8 +401,8 @@ def finalize(batch: Path) -> None:
             "Silver = the 13 plus 12 more, 25 in all (App. C). Internal metric: not sent.",
             f"- File to email to Koester after Leadership review: `{out_name}`.", "",
             "## Records in the file", "",
-            "| D4H | Date | Minimum | Missing | Silver | City | Weather | Comment sent |",
-            "|---|---|---|---|---|---|---|---|"]
+            "| D4H | Date | Minimum | Missing | Silver | Silver missing | City | Weather | Comment sent |",
+            "|---|---|---|---|---|---|---|---|---|"]
     summ += ["| " + " | ".join(_md(str(c)) for c in row) + " |" for row in table]
     summ += ["", "## Excluded", ""]
     summ += [f"- {e['row']}: {e['reason']}" for e in excluded] or ["- none"]
@@ -407,6 +435,11 @@ def mark_sent(batch: Path, sent_on: date, to: str) -> Path:
         raise SubmissionError("no manifest.json: run finalize first")
     m = json.loads(manifest_path.read_text(encoding="utf-8"))
     out = m["outgoing"]
+    if not m["included"]:
+        raise SubmissionError("this batch has no records to send")
+    overlap = sorted(set(m["included"]) & sent_numbers(batch.parent.parent))
+    if overlap:
+        raise SubmissionError(f"already recorded as sent in another batch: {', '.join(overlap)}")
     if _sha256(batch / out) != m["sha256"][out]:
         raise SubmissionError(f"{out} has changed since finalize: its sha256 no longer matches the manifest")
     sent.write_text(
