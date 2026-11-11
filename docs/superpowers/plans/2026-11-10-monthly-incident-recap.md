@@ -23,6 +23,7 @@
 - Slide text never contains: subject name, DOB, phone, email, agency Event #, house-numbered address, responder names. Map pictures MAY contain CalTopo marker titles verbatim (Bill: "map labels only"); marker descriptions are never drawn.
 - Range rings, tracks, assignments, clues and all CalTopo Shapes are never drawn.
 - Every new pin is mutation-checked: reintroduce the defect, confirm the test goes red, restore (CLAUDE.md "A pin must READ production and SURVIVE MUTATION"). Record the mutation count in the PR body.
+- Work only in the worktree `$WT` (outside the repo); never switch branches in the shared main checkout.
 - Session Rules #2 and #14: `git branch --show-current` as its own call before staging; `checkout && add && commit` in one call; never `git add -A`; never self-merge; never run `build-*.sh`.
 
 ## Review Focus
@@ -75,11 +76,14 @@
 - [ ] **Step 3: Implement** the interfaces above in `backend/monthly_recap.py`.
 - [ ] **Step 4: Run** the same command — expect all PASS; then `python3 -m pytest -q backend/` — expect no new failures.
 - [ ] **Step 5: Mutation-check** `incident_hours` (return `0.0` for equal), `is_cancelled` (drop `\b`), `guess_mutual_aid` (`"M/A"` branch removed), the support-tag exclusion: each must turn a test red. Restore.
-- [ ] **Step 6: Commit**, creating branch `feat/monthly-incident-recap` from the spec branch so the PR carries the spec and plan:
+- [ ] **Step 6: Commit.** All work happens in the worktree `$WT` (outside the repo, already on `docs/monthly-incident-recap-design`); the main checkout is shared with other sessions and never changes branch. First commit renames the branch so the PR carries spec, plan and code:
 ```bash
-git checkout -b feat/monthly-incident-recap docs/monthly-incident-recap-design && git add backend/monthly_recap.py backend/test_monthly_recap.py docs/superpowers/plans/2026-11-10-monthly-incident-recap.md && git commit -m "feat: monthly recap incident facts"
+cd "$WT" && git branch -m docs/monthly-incident-recap-design feat/monthly-incident-recap && git branch --show-current
 ```
-Later tasks commit with `git checkout feat/monthly-incident-recap && git add <their files> && git commit -m …` in one call.
+```bash
+cd "$WT" && git add backend/monthly_recap.py backend/test_monthly_recap.py && git commit -m "feat: monthly recap incident facts"
+```
+Later tasks commit the same way: `cd "$WT" && git add <their files> && git commit -m …` in one call, after a separate `git branch --show-current`.
 
 ### Task 3: `drafts.md` write and parse
 
@@ -138,7 +142,7 @@ pls: 37.30000, -121.90000
 - [ ] **Step 3: Implement** the interfaces.
 - [ ] **Step 4: Run** — expect PASS.
 - [ ] **Step 5: Mutation-check** `next_drafts_path` (always return `drafts.md`) and the facts-missing error (return an empty facts dict): tests go red. Restore.
-- [ ] **Step 6: Commit** (`git checkout feat/monthly-incident-recap && git add … && git commit -m "feat: monthly recap drafts file"`).
+- [ ] **Step 6: Commit** in `$WT` (`git add … && git commit -m "feat: monthly recap drafts file"`).
 
 ### Task 4: Map pictures (`backend/recap_map.py`)
 
