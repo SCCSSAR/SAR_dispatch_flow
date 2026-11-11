@@ -151,27 +151,67 @@ class TestFonts:
 
 
 class TestLongTextFits:
-    """The first real November render ran five edited lessons off the bottom of the slide."""
+    """Text never shrinks below 75% (the presenter, 2026-11-11: 10.5 pt bullets are the floor);
+    anything that still does not fit continues on a '(cont.)' slide."""
 
     def test_short_text_keeps_full_size(self):
         assert rp.text_scale([("A short summary.", 15, 0)], 453.6, 432) == 1.0
 
-    def test_long_text_shrinks_to_fit(self):
-        paras = [("x " * 300, 14, 4)] * 6
+    def test_moderate_text_shrinks_but_not_below_floor(self):
+        paras = [("x " * 150, 14, 4)] * 6
         scale = rp.text_scale(paras, 453.6, 432)
-        assert scale < 1.0
+        assert rp.MIN_SCALE <= scale < 1.0
         assert rp.estimated_height(paras, 453.6, scale) <= 432
 
-    def test_long_lessons_slide_shrinks_and_keeps_takeaways(self, tmp_path):
-        long = tuple(f"Lesson {i}: " + "a fairly long sentence about what happened on scene " * 4 for i in range(6))
+    def test_too_much_text_has_no_scale(self):
+        assert rp.text_scale([("x " * 300, 14, 4)] * 6, 453.6, 432) is None
+
+
+def _specs(n_lessons, words=60):
+    inc = mr.IncidentDraft(number="98701", title="EXPD Elmwood", facts={"found": "Found"},
+                           summary="A short summary.", highlight="A highlight.",
+                           lessons=[f"Lesson {i}: " + "word " * words for i in range(n_lessons)])
+    return rp._left_column(inc, False, False)
+
+
+class TestPaginate:
+    def test_fits_on_one_page(self):
+        assert len(rp.paginate(_specs(3, 10), 453.6, 432)) == 1
+
+    def test_overflow_continues_with_a_cont_heading(self):
+        pages = rp.paginate(_specs(9), 453.6, 432)
+        assert len(pages) >= 2
+        assert pages[1][0]["text"] == "LESSONS LEARNED (cont.)"
+        assert pages[-1][-1]["text"] == "TEAM TAKEAWAYS"
+        texts = [p["text"] for page in pages for p in page if p["text"].startswith("•")]
+        assert texts == [p["text"] for p in _specs(9) if p["text"].startswith("•")]  # each once, in order
+        for page in pages:
+            paras = [(p["text"], p["size"], p.get("space", 0)) for p in page]
+            assert rp.text_scale(paras, 453.6, 432) is not None
+
+    def test_no_heading_left_alone_at_a_page_bottom(self):
+        # Sweep the summary length so that, somewhere, the heading fits and its first lesson does not.
+        lesson = "A long lesson " + "about what happened " * 30
+        for words in range(20, 900, 10):
+            inc = mr.IncidentDraft(number="98701", title="T", facts={}, summary="word " * words,
+                                   highlight="", lessons=[lesson])
+            for page in rp.paginate(rp._left_column(inc, False, False), 453.6, 432):
+                assert not page[-1].get("heading") or page[-1]["text"] == "TEAM TAKEAWAYS"
+
+
+class TestContinuationSlide:
+    def test_long_lessons_continue_and_never_go_below_floor(self, tmp_path):
+        long = tuple(f"Lesson {i}: " + "a fairly long sentence about what happened on scene " * 4 for i in range(9))
         text = "\n".join(["# 2026-11 incident recap — drafts", "",
                           _section("98701", "11-07", "EXPD Elmwood", 13, "2.5", "13 × 2.5 h = 32", lessons=long), ""])
-        out = rp.build_deck(mr.parse_drafts(text), None, {}, {}, tmp_path / "d.pptx")
-        slide = pptx.Presentation(str(out)).slides[1]
-        box = next(sh for sh in slide.shapes if sh.has_text_frame and "LESSONS LEARNED" in sh.text_frame.text)
-        assert "TEAM TAKEAWAYS" in box.text_frame.text
-        sizes = [r.font.size.pt for p in box.text_frame.paragraphs for r in p.runs]
-        assert max(sizes) < 15
-        paras = [(p.text, p.runs[0].font.size.pt, (p.space_before.pt if p.space_before else 0))
-                 for p in box.text_frame.paragraphs if p.runs]
-        assert rp.estimated_height(paras, box.width / 12700, 1.0) <= box.height / 12700
+        notes = []
+        out = rp.build_deck(mr.parse_drafts(text), None, {}, {}, tmp_path / "d.pptx", notes=notes)
+        slides = pptx.Presentation(str(out)).slides
+        assert len(slides) >= 3
+        titles = ["\n".join(_texts(s)) for s in slides]
+        assert "11-07 · EXPD ELMWOOD (cont.)" in titles[2]
+        assert "TEAM TAKEAWAYS" in titles[-1] and "TEAM TAKEAWAYS" not in titles[1]
+        sizes = [r.font.size.pt for s in list(slides)[1:] for sh in s.shapes if sh.has_text_frame
+                 for p in sh.text_frame.paragraphs for r in p.runs if p.text.startswith("•")]
+        assert min(sizes) >= 14 * rp.MIN_SCALE - 0.01
+        assert len(notes) == 1 and notes[0].startswith("98701 continued onto")

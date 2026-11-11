@@ -17,6 +17,7 @@ CFG = {
     "county_extent": [[37.50, -122.20], [36.90, -121.20]],
     "in_county_agencies": ["EXSO", "EXPD", "OAKVALE"],
     "d4h_env": "prod-env",
+    "deck_folder": "Shared drive > Example Team > Monthly Incident Reviews",
 }
 
 
@@ -792,3 +793,56 @@ class TestMapIdIsValidated:
 
     def test_good_ids_pass(self):
         assert all(mr.MAP_ID_RE.fullmatch(m) for m in ("ZZ12AB3", "K0J66M5", "7CLG3JH"))
+
+
+# ── Hand-off after render (presenter, 2026-11-11) ────────────────────────────
+
+class TestHandoffMessage:
+    def test_names_the_folder_and_the_import_step(self):
+        msg = mr.handoff_message(Path("research/monthly-recap/2026-11/2026-11 Incident Recap.pptx"), CFG)
+        assert CFG["deck_folder"] in msg
+        assert "2026-11 Incident Recap.pptx" in msg
+        assert "File > Import slides" in msg
+
+    def test_config_requires_deck_folder(self, tmp_path):
+        cfg = {k: v for k, v in CFG.items() if k != "deck_folder"}
+        p = tmp_path / "config.json"
+        p.write_text(json.dumps(cfg))
+        with pytest.raises(mr.RecapError, match="deck_folder"):
+            mr.load_config(p)
+
+    def test_render_command_prints_the_next_step(self, tmp_path, monkeypatch, capsys):
+        cfg_path = _write_cfg(tmp_path)
+        deck = tmp_path / "2026-11" / "2026-11 Incident Recap.pptx"
+        drafts = tmp_path / "2026-11" / "drafts.md"
+        drafts.parent.mkdir()
+        drafts.write_text(mr.render_drafts("2026-11", [_facts()], []))
+        monkeypatch.setattr(mr, "render", lambda *a, **k: deck)
+        assert mr.main(["render", "--drafts", str(drafts), "--config", str(cfg_path)]) == 0
+        out = capsys.readouterr().out
+        assert CFG["deck_folder"] in out and "File > Import slides" in out
+
+    def test_render_command_reports_continuation_slides(self, tmp_path, monkeypatch, capsys):
+        cfg_path = _write_cfg(tmp_path)
+        drafts = tmp_path / "2026-11" / "drafts.md"
+        drafts.parent.mkdir()
+        drafts.write_text(mr.render_drafts("2026-11", [_facts()], []))
+
+        def fake_render(*a, notes=None, **k):
+            notes.append("98765 continued onto 1 more slide")
+            return tmp_path / "deck.pptx"
+
+        monkeypatch.setattr(mr, "render", fake_render)
+        assert mr.main(["render", "--drafts", str(drafts), "--config", str(cfg_path)]) == 0
+        assert "98765 continued onto 1 more slide" in capsys.readouterr().out
+
+
+class TestRenderPassesNotesToTheDeck:
+    def test_continuation_reported_through_render(self, tmp_path):
+        pytest.importorskip("pptx")
+        drafts = _collect(tmp_path)
+        long = "\n".join(f"- Lesson {i}: " + "a fairly long sentence about what happened on scene " * 4 for i in range(10))
+        drafts.write_text(drafts.read_text().replace("### Lessons learned\n- [draft]", "### Lessons learned\n" + long, 1))
+        notes = []
+        mr.render(drafts, _tile, CFG, notes=notes)
+        assert notes and notes[0].startswith("98701 continued onto")
