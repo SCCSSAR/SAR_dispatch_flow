@@ -642,3 +642,117 @@ class TestRenderMapRules:
     def test_overview_pins_in_county_only(self, tmp_path, monkeypatch):
         _, overview = self._spy(tmp_path, monkeypatch)
         assert [(n, c) for n, _, _, c in overview["pins"]] == [(1, False), (2, True)]
+
+
+# ── Final review fix pass ────────────────────────────────────────────────────
+
+TWO = ("# 2026-10 incident recap — drafts\n\n"
+       "## 98701 · 10-02 · EXPD Elmwood\n```facts\ndate: 10-02\n```\n### Summary\nFirst.\n### Lessons learned\n- One.\n"
+       "## 98702 · 10-05 · EXPD Birch\n```facts\ndate: 10-05\n```\n### Summary\nSecond.\n### Lessons learned\n- Two.\n")
+
+
+class TestParseFailsLoudly:
+    def test_deleted_header_does_not_merge(self):
+        text = TWO.replace("## 98702 · 10-05 · EXPD Birch\n", "")
+        with pytest.raises(mr.DraftError, match="98701"):
+            mr.parse_drafts(text)
+
+    def test_deleted_header_before_a_facts_only_incident(self):
+        text = TWO.replace("## 98702 · 10-05 · EXPD Birch\n", "").replace("### Summary\nSecond.\n### Lessons learned\n- Two.\n", "")
+        with pytest.raises(mr.DraftError, match="header line is missing"):
+            mr.parse_drafts(text)
+
+    def test_unknown_section_heading_refused(self):
+        with pytest.raises(mr.DraftError, match="Lesons"):
+            mr.parse_drafts(TWO.replace("### Lessons learned\n- One.", "### Lesons learned\n- One."))
+
+
+class TestParseKeepsHandText:
+    def test_section_name_any_case(self):
+        d = mr.parse_drafts(TWO.replace("### Lessons learned\n- One.", "### Lessons Learned\n- One."))
+        assert d.incidents[0].lessons == ["One."]
+
+    def test_wrapped_bullet_joined(self):
+        d = mr.parse_drafts(TWO.replace("- One.", "- One long lesson\n  that wraps."))
+        assert d.incidents[0].lessons == ["One long lesson that wraps."]
+
+    def test_star_and_numbered_bullets(self):
+        d = mr.parse_drafts(TWO.replace("- One.", "* Star.\n1. Numbered."))
+        assert d.incidents[0].lessons == ["Star.", "Numbered."]
+
+
+class TestNameTokens:
+    def test_placeholder_is_not_a_name(self):
+        t = mr.parse_turbo_description("<p>Missing Person: [not recorded]<br />Agency: EXPD</p>")
+        assert t.subject_names == []
+
+    def test_any_bracketed_placeholder(self):
+        assert mr.name_tokens("[name withheld]") == []
+
+    def test_stoplist(self):
+        assert mr.name_tokens("Unknown none NOT") == []
+
+    def test_accented_name(self):
+        assert mr.name_tokens("José Núñez") == ["José", "Núñez"]
+
+    def test_accent_folded_match(self):
+        assert mr.slide_text_hits("We found Jose Nunez at the park.", mr.name_tokens("José Núñez")) == ["subject_name"]
+        assert mr.slide_text_hits("We found José at the park.", ["Jose"]) == ["subject_name"]
+
+
+class TestSlideProseIsNotAnAddress:
+    @pytest.mark.parametrize("text", ["6 members were a 30 minute drive out", "2 teams walked the creek trail",
+                                      "3 K9 teams cleared the path", "4 members on the road"])
+    def test_clean(self, text):
+        assert mr.slide_text_hits(text, []) == []
+
+    def test_real_address_still_hits(self):
+        assert mr.slide_text_hits("Staged at 4410 Quillback Ave.", []) == ["address"]
+
+
+class TestRenderNamesRequired:
+    def test_missing_names_file_refused(self, tmp_path):
+        drafts = _collect(tmp_path)
+        (tmp_path / "2026-10" / "names.json").unlink()
+        with pytest.raises(mr.RecapError, match="names.json is missing"):
+            mr.render(drafts, _tile, CFG, build=lambda *a: None)
+
+    def test_incident_missing_from_names_refused(self, tmp_path):
+        drafts = _collect(tmp_path)
+        p = tmp_path / "2026-10" / "names.json"
+        names = json.loads(p.read_text())
+        del names["98704"]
+        p.write_text(json.dumps(names))
+        with pytest.raises(mr.RecapError, match="98704"):
+            mr.render(drafts, _tile, CFG, build=lambda *a: None)
+
+
+class TestFilledHoursReachTheSlide:
+    def test_hours_filled_after_close_out(self, tmp_path):
+        drafts = _collect(tmp_path)
+        text = drafts.read_text()
+        sec = text.split("\n## 98703")[1].split("\n## ")[0]
+        drafts.write_text(text.replace(sec, sec.replace("hours: [fill in]", "hours: 0.5", 1)))
+        got = {}
+        mr.render(drafts, _tile, CFG, build=lambda d, o, m, l, out: got.update(d=d) or out)
+        inc = next(i for i in got["d"].incidents if i.number == "98703")
+        assert inc.facts["volunteer_hours"] == "6 × 0.5 h = 3"
+
+
+class TestRenderFetchesMissingMap:
+    def test_map_id_changed_in_drafts_is_fetched(self, tmp_path):
+        drafts = _collect(tmp_path)
+        drafts.write_text(drafts.read_text().replace("map: ZZ12AB3", "map: ZZCOPY9"))
+        fetched = []
+        mr.render(drafts, _tile, CFG, build=lambda d, o, m, l, out: out,
+                  get_caltopo=lambda mid: fetched.append(mid) or CALTOPO_FEATURES)
+        assert fetched == ["ZZCOPY9"]
+        assert (tmp_path / "2026-10" / "caltopo-ZZCOPY9.json").exists()
+
+
+class TestOpenItems:
+    def test_lists_confirm_and_fill_in(self):
+        d = mr.parse_drafts(mr.render_drafts("2026-10", [_facts(mutual_aid=True, ma_confident=False, distance="[fill in]")], []))
+        items = mr.open_items(d)
+        assert "98765 mutual_aid: [confirm] yes" in items
+        assert "98765 distance: [fill in]" in items

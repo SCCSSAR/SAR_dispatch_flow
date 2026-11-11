@@ -104,7 +104,8 @@ class TestRenderMap:
     def test_markers_drawn(self, tmp_path):
         out = rm.render_map(rm.select_markers(FEATURES), 1200, 900, FakeFetcher(), tmp_path / "m.png")
         im = Image.open(out).convert("RGB")
-        assert len(_colours(im)) > 3
+        # Each drawn role's fill colour is present; tiles and the credit alone supply none of them.
+        assert {rm._ROLE_COLOUR[r] for r in ("lkp", "residence", "cp", "find")} <= _colours(im)
 
     def test_extent_widens_frame(self, tmp_path):
         fetch_a, fetch_b = FakeFetcher(), FakeFetcher()

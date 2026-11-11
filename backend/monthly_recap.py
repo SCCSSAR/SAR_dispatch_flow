@@ -146,6 +146,20 @@ class TurboLines:
         return self.map_id is not None or self.agency is not None
 
 
+_NAME_STOPWORDS = frozenset({"not", "recorded", "unknown", "none", "unk"})
+
+
+def name_tokens(text: str) -> list[str]:
+    """Name words (3+ letters, any script) for the text check. Placeholders like [not recorded] are not names."""
+    text = re.sub(r"\[[^\]]*\]", " ", text or "")
+    return [t for t in re.findall(r"[^\W\d_][^\W\d_'-]{2,}", text) if t.casefold() not in _NAME_STOPWORDS]
+
+
+def _fold(text: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).casefold()
+
+
 def _line_value(lines: list[str], label: str) -> str | None:
     for line in lines:
         m = re.match(rf"\s*{re.escape(label)}:[^\S\n]*(.*)$", line)
@@ -169,7 +183,7 @@ def parse_turbo_description(html: str | None) -> TurboLines:
         out.environment = env.split("·")[0].strip()
     person = _line_value(lines, "Missing Person")
     if person:
-        out.subject_names = re.findall(r"[A-Za-z][A-Za-z'-]{2,}", person.split(";")[0])
+        out.subject_names = name_tokens(person.split(";")[0])
     out.agency = _line_value(lines, "Agency") or None
     return out
 
@@ -260,7 +274,7 @@ def build_facts(incident: dict, involved: list[dict], lpb_row: dict | None,
                                     lpb.get("Direction From IPP", "").strip()) if x and x != "-")
     names = list(turbo.subject_names)
     for person in involved or []:
-        names += re.findall(r"[A-Za-z][A-Za-z'-]{2,}", person.get("name") or "")
+        names += name_tokens(person.get("name") or "")
     start = _utc(incident["startsAt"]).astimezone(PT)
     return IncidentFacts(
         number=str(incident.get("reference", "")),
@@ -293,6 +307,7 @@ FACT_KEYS = ("date", "event", "attendees", "hours", "volunteer_hours", "cancelle
 DRAFT = "[draft]"
 _SECTIONS = {"Summary": "summary", "Highlight": "highlight", "Lessons learned": "lessons",
              "The disruption": "disruption", "Sources and conflicts": None}
+_SECTION_KEYS = {k.casefold(): v for k, v in _SECTIONS.items()}
 
 
 @dataclass
@@ -346,6 +361,22 @@ def render_drafts(month: str, facts: list[IncidentFacts], excluded: list[tuple[s
 
 
 _HEADER_RE = re.compile(r"^## (\S+) · (\S+) · (.*)$")
+_BULLET_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(.*)$")
+
+
+def _bullets(lines: list[str]) -> list[str]:
+    """List items as written: '-', '*' or '1.' bullets; any other non-blank line continues the item above."""
+    items: list[str] = []
+    for line in lines:
+        m = _BULLET_RE.match(line)
+        if m:
+            items.append(m.group(1).strip())
+        elif line.strip():
+            if items:
+                items[-1] = f"{items[-1]} {line.strip()}"
+            else:
+                items.append(line.strip())
+    return items
 
 
 def parse_drafts(text: str) -> MonthDraft:
@@ -367,6 +398,8 @@ def parse_drafts(text: str) -> MonthDraft:
             excluded = [l[2:].strip() for l in block[1:] if l.startswith("- ")]
             continue
         hm = _HEADER_RE.match(block[0])
+        if [l.strip() for l in block].count("```facts") > 1:
+            raise DraftError(f"incident '{header}' runs into the next one: a '## ' header line is missing")
         if not hm or "```facts" not in [l.strip() for l in block]:
             raise DraftError(f"incident '{header}' has no ```facts block")
         start = [l.strip() for l in block].index("```facts")
@@ -380,10 +413,17 @@ def parse_drafts(text: str) -> MonthDraft:
                 k, _, v = l.partition(":")
                 facts[k.strip()] = v.strip()
         sections: dict[str, list[str]] = {}
+        seen: set[str] = set()
         name = None
         for l in block[end + 1:]:
             if l.startswith("### "):
-                name = _SECTIONS.get(l[4:].strip())
+                key = l[4:].strip().casefold()
+                if key not in _SECTION_KEYS:
+                    raise DraftError(f"incident '{header}': unknown section '### {l[4:].strip()}'")
+                if key in seen:
+                    raise DraftError(f"incident '{header}' repeats '### {l[4:].strip()}': a '## ' header line is missing")
+                seen.add(key)
+                name = _SECTION_KEYS[key]
                 if name:
                     sections[name] = []
             elif name:
@@ -391,8 +431,8 @@ def parse_drafts(text: str) -> MonthDraft:
         inc = IncidentDraft(number=hm.group(1), title=hm.group(3).strip(), facts=facts)
         inc.summary = "\n".join(sections.get("summary", [])).strip("\n").strip()
         inc.highlight = "\n".join(sections.get("highlight", [])).strip("\n").strip()
-        inc.lessons = [l[2:].strip() for l in sections.get("lessons", []) if l.startswith("- ")]
-        inc.disruption = [l[2:].strip() for l in sections.get("disruption", []) if l.startswith("- ")]
+        inc.lessons = _bullets(sections.get("lessons", []))
+        inc.disruption = _bullets(sections.get("disruption", []))
         incidents.append(inc)
     return MonthDraft(month=m.group(1), incidents=incidents, excluded=excluded)
 
@@ -410,11 +450,15 @@ def next_drafts_path(folder: Path) -> Path:
 
 def _text_patterns() -> list[tuple[str, re.Pattern]]:
     """The ISRID batch's outgoing-text patterns, reused rather than copied (one set to maintain)."""
-    from isrid_submission import _PATTERNS
+    from isrid_submission import _PATTERNS, _STREET_TYPES
     if len(_PATTERNS) != 7:
         raise RecapError("isrid_submission._PATTERNS changed shape: update _text_patterns")
     kinds = ("phone", "phone", "phone", "phone", "email", "address", "event_number")
-    return list(zip(kinds, _PATTERNS)) + [("dob", DOB_RE)]
+    # ISRID's address pattern ignores case, which flags slide prose ("2 teams walked the creek trail").
+    # On slides every word up to the street type must be capitalised, as an address is written.
+    address = re.compile(r"\b\d{1,6}[A-Za-z]?\s+(?:[A-Z0-9][\w'-]*\s+){1,4}(?:%s)\b" % "|".join(_STREET_TYPES))
+    pats = [address if k == "address" else p for k, p in zip(kinds, _PATTERNS)]
+    return list(zip(kinds, pats)) + [("dob", DOB_RE)]
 
 
 DOB_RE = re.compile(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b")
@@ -427,8 +471,9 @@ def slide_text_hits(text: str, subject_names: list[str]) -> list[str]:
     for kind, pattern in _text_patterns():
         if pattern.search(text) and kind not in kinds:
             kinds.append(kind)
+    folded = _fold(text)
     for name in subject_names:
-        if len(name) >= 3 and re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE):
+        if len(name) >= 3 and re.search(rf"\b{re.escape(_fold(name))}\b", folded):
             kinds.append("subject_name")
             break
     return kinds
@@ -520,14 +565,46 @@ def _caltopo_base() -> str:
                 for t in n.targets if isinstance(t, ast.Name) and t.id == "CALTOPO_BASE_URL")
 
 
-def render(drafts: Path, fetch, cfg: dict, build=None) -> Path:
+def _float(value: str) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def refresh_volunteer_hours(draft: MonthDraft) -> None:
+    """Rebuild volunteer hours from the attendees and hours facts, so filling in hours reaches the slide."""
+    for inc in draft.incidents:
+        hours = _float(inc.facts.get("hours", ""))
+        try:
+            attendees = int(inc.facts.get("attendees", ""))
+        except ValueError:
+            continue
+        if hours is not None:
+            inc.facts["volunteer_hours"] = volunteer_hours_label(attendees, hours)
+
+
+def open_items(draft: MonthDraft) -> list[str]:
+    """Every fact still marked [fill in] or [confirm], by incident, for the hand-off."""
+    return [f"{inc.number} {k}: {v}" for inc in draft.incidents for k, v in inc.facts.items()
+            if FILL_IN in v or "[confirm]" in v]
+
+
+def render(drafts: Path, fetch, cfg: dict, build=None, get_caltopo=None) -> Path:
     """Check the edited drafts, draw the maps and write the month's .pptx. Writes nothing on a refusal."""
     import math
     import recap_map as rm
     draft = parse_drafts(drafts.read_text(encoding="utf-8"))
+    refresh_volunteer_hours(draft)
     folder = drafts.parent
     names_file = folder / "names.json"
-    names = json.loads(names_file.read_text()) if names_file.exists() else {}
+    if not names_file.exists():
+        raise RecapError(f"{names_file} is missing, so the subject-name check cannot run: run collect again")
+    names = json.loads(names_file.read_text())
+    missing = [inc.number for inc in draft.incidents if inc.number not in names]
+    if missing:
+        raise RecapError("no subject names on record for " + ", ".join(missing)
+                         + ": add each to names.json, as [] only if the incident has no named subject")
     hits = check_month(draft, names)
     if hits:
         raise RecapError("slide text must not carry these; edit the drafts and render again:\n  " + "\n  ".join(hits))
@@ -552,6 +629,11 @@ def render(drafts: Path, fetch, cfg: dict, build=None) -> Path:
         if map_id:
             links[inc.number] = f"{base}/m/{map_id}"
             src = folder / f"caltopo-{map_id}.json"
+            if not src.exists() and get_caltopo:  # e.g. the drafts now name the copy the field used
+                try:
+                    src.write_text(json.dumps(get_caltopo(map_id), indent=2))
+                except Exception:
+                    pass  # the slide falls back to a PLS-only map
             if src.exists():
                 markers = rm.select_markers(json.loads(src.read_text())["result"]["state"]["features"])
         if not markers and pls:
@@ -667,7 +749,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from recap_map import cached_osm_fetcher
             fetch = cached_osm_fetcher(args.drafts.parent.parent / "tiles")
-            print(f"deck: {render(args.drafts, fetch, cfg)}")
+            cid, csec = os.environ.get("CALTOPO_CREDENTIAL_ID"), os.environ.get("CALTOPO_CREDENTIAL_SECRET")
+            getter = caltopo_getter(cid, csec) if cid and csec else None
+            print(f"deck: {render(args.drafts, fetch, cfg, get_caltopo=getter)}")
+            todo = open_items(parse_drafts(args.drafts.read_text(encoding="utf-8")))
+            if todo:
+                print("still to check on the slides:\n  " + "\n  ".join(todo))
     except RecapError as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2

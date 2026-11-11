@@ -99,10 +99,13 @@ For each incident section in the drafts file:
      or delete" in Sources and conflicts.
    - **The disruption** (cancelled callouts only): how many had answered YES, how far people got
      (still at home, en route, at staging, briefed), and when the stand-down came.
-4. **Fill facts** left as `[fill in]` only from a source: found status and distance from the
+4. **Use the map the field used.** If the report or the channel shows the field worked on a copy or
+   on a hand-built map (Turbo's map can fail), put that map's id in `map:`; `render` fetches any map
+   it has not read yet.
+5. **Fill facts** left as `[fill in]` only from a source: found status and distance from the
    report's Find data; environment from Turbo's Environment line. Settle a `[confirm]` mutual-aid
    guess with the presenter. Hours stay `[fill in]` until D4H is closed out; say so.
-5. **Under `### Sources and conflicts`**, list where each drafted line came from (report section,
+6. **Under `### Sources and conflicts`**, list where each drafted line came from (report section,
    Slack message date and time) and every disagreement between sources, with the value chosen and why.
    The precedence table is in the design document. This section is never rendered.
 
@@ -122,6 +125,9 @@ research/monthly-recap/.venv/bin/python backend/monthly_recap.py render --drafts
 
 - `REFUSED: slide text must not carry these` lists incident numbers, fields and kinds (phone,
   address, subject_name…), never the values. Ask the presenter to edit those fields, then render again.
+- `REFUSED: … names.json is missing` or `no subject names on record for <number>`: the name check
+  cannot run. Run `collect` again, or, for an incident added by hand that has no named subject, add
+  `"<number>": []` to `names.json`.
 - `REFUSED: … already exists`: a deck for that month was generated before. The presenter decides
   whether to move or rename it; never delete it yourself.
 
@@ -135,7 +141,8 @@ Tell the presenter:
 - the `.pptx` path;
 - to move it into the team's monthly-review folder in Drive and import its slides into the year's
   deck (Google Slides: File › Import slides), then add photos and corrections there;
-- every `[fill in]` still on a slide, by incident;
+- every `[fill in]` and `[confirm]` still on a slide, by incident (render prints them under
+  `still to check on the slides`); a `[confirm]` mutual-aid guess shows on the slide as M/A, so name it;
 - anything that went wrong (a map not read, an excluded record they might want back).
 
 ## Growing this skill
