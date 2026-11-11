@@ -40,7 +40,8 @@ file, not in this skill or the scripts.
 ## Step 0 — Set up, once
 
 1. Copy [config.template.json](config.template.json) to `research/monthly-recap/config.json`
-   (gitignored) and fill in every `<…>` value. The script refuses to run until it is filled in.
+   (gitignored) and fill in every `<…>` value, including `deck_folder`, the Drive folder the monthly
+   decks go into. The script refuses to run until it is filled in.
 2. Create the venv the `.pptx` writer needs (python-pptx is not on the system python):
 
    ```bash
@@ -136,13 +137,13 @@ credit.
 
 ## Step 6 — Hand off
 
-Tell the presenter:
+`render` ends by printing **Next step (by hand)**: the deck's path, the `deck_folder` from the
+config to move it into, and the Google Slides import step. Relay those lines to the presenter as
+they are, and add:
 
-- the `.pptx` path;
-- to move it into the team's monthly-review folder in Drive and import its slides into the year's
-  deck (Google Slides: File › Import slides), then add photos and corrections there;
 - every `[fill in]` and `[confirm]` still on a slide, by incident (render prints them under
   `still to check on the slides`); a `[confirm]` mutual-aid guess shows on the slide as M/A, so name it;
+- any incident that continued onto a `(cont.)` slide;
 - anything that went wrong (a map not read, an excluded record they might want back).
 
 ## Growing this skill

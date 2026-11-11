@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 PT = ZoneInfo("America/Los_Angeles")
 DEFAULT_ROOT = Path("research/monthly-recap")
 CONFIG_TEMPLATE = ".claude/skills/monthly-recap/config.template.json"
-_CONFIG_KEYS = ("county", "county_extent", "in_county_agencies", "d4h_env")
+_CONFIG_KEYS = ("county", "county_extent", "in_county_agencies", "d4h_env", "deck_folder")
 FILL_IN = "[fill in]"
 
 
@@ -42,7 +42,7 @@ def load_config(path: Path) -> dict:
     def text_ok(v):
         return isinstance(v, str) and v.strip() and "<" not in v
 
-    for k in ("county", "d4h_env"):
+    for k in ("county", "d4h_env", "deck_folder"):
         if k in cfg and not text_ok(cfg[k]):
             problems.append(f"{k}: must be filled in")
     if "in_county_agencies" in cfg and not (isinstance(cfg["in_county_agencies"], list)
@@ -730,6 +730,17 @@ def caltopo_getter(credential_id: str, secret_b64: str, opener=None, sleep=None,
     return get
 
 
+def handoff_message(deck: Path, cfg: dict) -> str:
+    """The manual steps after a render: the script never touches Drive or the year's deck."""
+    return "\n".join([
+        "Next step (by hand):",
+        f"  1. Move {deck.name} (in {deck.parent}) into {cfg['deck_folder']}.",
+        "  2. Open the year's deck in Google Slides, choose File > Import slides, pick this file,",
+        "     and import all of its slides. They go at the end; nothing already in the deck changes.",
+        "  3. Add photos and corrections in Google Slides.",
+    ])
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import os
@@ -762,10 +773,12 @@ def main(argv: list[str] | None = None) -> int:
             fetch = cached_osm_fetcher(args.drafts.parent.parent / "tiles")
             cid, csec = os.environ.get("CALTOPO_CREDENTIAL_ID"), os.environ.get("CALTOPO_CREDENTIAL_SECRET")
             getter = caltopo_getter(cid, csec) if cid and csec else None
-            print(f"deck: {render(args.drafts, fetch, cfg, get_caltopo=getter)}")
+            deck = render(args.drafts, fetch, cfg, get_caltopo=getter)
+            print(f"deck: {deck}")
             todo = open_items(parse_drafts(args.drafts.read_text(encoding="utf-8")))
             if todo:
                 print("still to check on the slides:\n  " + "\n  ".join(todo))
+            print(handoff_message(Path(deck), cfg))
     except RecapError as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2

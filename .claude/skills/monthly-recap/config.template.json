@@ -6,5 +6,7 @@
   "_in_county_agencies": "Agency names exactly as your event names start with them (the first word or words). An event name starting with one of these is treated as in-county; anything else is flagged for you to confirm.",
   "in_county_agencies": ["<AGENCY ONE>", "<AGENCY TWO>"],
   "_d4h_env": "The deploy.env ENV_NAME whose gcloud configuration reads production D4H and CalTopo.",
-  "d4h_env": "<deploy.env ENV_NAME for production>"
+  "d4h_env": "<deploy.env ENV_NAME for production>",
+  "_deck_folder": "Where the presenter keeps the monthly decks, as they would say it (for example a shared-drive path). Render prints it in the next-step message; the script never writes there.",
+  "deck_folder": "<Drive folder for the monthly decks>"
 }
