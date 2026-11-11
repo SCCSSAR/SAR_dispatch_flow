@@ -821,3 +821,28 @@ class TestHandoffMessage:
         assert mr.main(["render", "--drafts", str(drafts), "--config", str(cfg_path)]) == 0
         out = capsys.readouterr().out
         assert CFG["deck_folder"] in out and "File > Import slides" in out
+
+    def test_render_command_reports_continuation_slides(self, tmp_path, monkeypatch, capsys):
+        cfg_path = _write_cfg(tmp_path)
+        drafts = tmp_path / "2026-11" / "drafts.md"
+        drafts.parent.mkdir()
+        drafts.write_text(mr.render_drafts("2026-11", [_facts()], []))
+
+        def fake_render(*a, notes=None, **k):
+            notes.append("98765 continued onto 1 more slide")
+            return tmp_path / "deck.pptx"
+
+        monkeypatch.setattr(mr, "render", fake_render)
+        assert mr.main(["render", "--drafts", str(drafts), "--config", str(cfg_path)]) == 0
+        assert "98765 continued onto 1 more slide" in capsys.readouterr().out
+
+
+class TestRenderPassesNotesToTheDeck:
+    def test_continuation_reported_through_render(self, tmp_path):
+        pytest.importorskip("pptx")
+        drafts = _collect(tmp_path)
+        long = "\n".join(f"- Lesson {i}: " + "a fairly long sentence about what happened on scene " * 4 for i in range(10))
+        drafts.write_text(drafts.read_text().replace("### Lessons learned\n- [draft]", "### Lessons learned\n" + long, 1))
+        notes = []
+        mr.render(drafts, _tile, CFG, notes=notes)
+        assert notes and notes[0].startswith("98701 continued onto")

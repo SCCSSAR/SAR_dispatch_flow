@@ -597,7 +597,7 @@ def open_items(draft: MonthDraft) -> list[str]:
             if FILL_IN in v or "[confirm]" in v]
 
 
-def render(drafts: Path, fetch, cfg: dict, build=None, get_caltopo=None) -> Path:
+def render(drafts: Path, fetch, cfg: dict, build=None, get_caltopo=None, notes: list[str] | None = None) -> Path:
     """Check the edited drafts, draw the maps and write the month's .pptx. Writes nothing on a refusal."""
     import math
     import recap_map as rm
@@ -621,7 +621,9 @@ def render(drafts: Path, fetch, cfg: dict, build=None, get_caltopo=None) -> Path
     if out.exists():
         raise RecapError(f"{out} already exists: move or rename it to generate a new one")
     if build is None:
-        from recap_pptx import build_deck as build
+        import functools
+        from recap_pptx import build_deck
+        build = functools.partial(build_deck, notes=notes)
     extent = [tuple(p) for p in cfg["county_extent"]]
     base = _caltopo_base()
     maps, links, pins, n = {}, {}, [], 0
@@ -773,8 +775,11 @@ def main(argv: list[str] | None = None) -> int:
             fetch = cached_osm_fetcher(args.drafts.parent.parent / "tiles")
             cid, csec = os.environ.get("CALTOPO_CREDENTIAL_ID"), os.environ.get("CALTOPO_CREDENTIAL_SECRET")
             getter = caltopo_getter(cid, csec) if cid and csec else None
-            deck = render(args.drafts, fetch, cfg, get_caltopo=getter)
+            notes: list[str] = []
+            deck = render(args.drafts, fetch, cfg, get_caltopo=getter, notes=notes)
             print(f"deck: {deck}")
+            if notes:
+                print("continued onto a (cont.) slide, to keep text at 75% or larger:\n  " + "\n  ".join(notes))
             todo = open_items(parse_drafts(args.drafts.read_text(encoding="utf-8")))
             if todo:
                 print("still to check on the slides:\n  " + "\n  ".join(todo))

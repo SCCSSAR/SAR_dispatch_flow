@@ -153,12 +153,49 @@ def estimated_height(paras: list[tuple[str, float, float]], box_w_pt: float, sca
     return total
 
 
-def text_scale(paras: list[tuple[str, float, float]], box_w_pt: float, box_h_pt: float) -> float:
-    """The largest scale, in 5% steps down to 60%, at which the paragraphs fit the box."""
-    for step in range(20, 11, -1):
+# Text never shrinks below this (the presenter, 2026-11-11): 14 pt bullets become 10.5 pt.
+MIN_SCALE = 0.75
+
+
+def text_scale(paras: list[tuple[str, float, float]], box_w_pt: float, box_h_pt: float) -> float | None:
+    """The largest scale, in 5% steps down to MIN_SCALE, at which the paragraphs fit; None if none does."""
+    for step in range(20, round(MIN_SCALE * 20) - 1, -1):
         if estimated_height(paras, box_w_pt, step / 20) <= box_h_pt:
             return step / 20
-    return 0.6
+    return None
+
+
+def _fits(page: list[dict], box_w_pt: float, box_h_pt: float) -> bool:
+    paras = [(p["text"], p["size"], p.get("space", 0)) for p in page]
+    return estimated_height(paras, box_w_pt, MIN_SCALE) <= box_h_pt
+
+
+def paginate(specs: list[dict], box_w_pt: float, box_h_pt: float) -> list[list[dict]]:
+    """Split the left column into pages that each fit at MIN_SCALE.
+
+    A page that continues a list opens with '<HEADING> (cont.)', and a heading never sits alone at
+    the bottom of a page. A single paragraph too long for an empty page is placed anyway.
+    """
+    pages: list[list[dict]] = [[]]
+    section = None
+    for spec in specs:
+        if spec.get("heading"):
+            section = spec["text"]
+        page = pages[-1]
+        if not page or _fits(page + [spec], box_w_pt, box_h_pt):
+            page.append(spec)
+            continue
+        new: list[dict] = []
+        if page[-1].get("heading"):  # don't strand a heading: move it down with its first item
+            new.append(page.pop())
+        elif not spec.get("heading") and section:
+            new.append(dict(_HEADING_STYLE, text=f"{section} (cont.)", heading=True, space=0))
+        new.append(spec)
+        pages.append(new)
+    return pages
+
+
+_HEADING_STYLE = dict(size=16, bold=True, colour=ORANGE, font=HEADING_FONT, space=10)
 
 
 def _left_column(inc: IncidentDraft, cancelled: bool, ma: bool) -> list[dict]:
@@ -175,7 +212,7 @@ def _left_column(inc: IncidentDraft, cancelled: bool, ma: bool) -> list[dict]:
     out.append(dict(text="  ·  ".join(c for c in chips if c), size=12, colour="555555", space=10))
 
     def heading(text):
-        out.append(dict(text=text, size=16, bold=True, colour=ORANGE, font=HEADING_FONT, space=10))
+        out.append(dict(_HEADING_STYLE, text=text, heading=True))
 
     if cancelled and _real(inc.disruption):
         heading("THE DISRUPTION")
@@ -187,24 +224,31 @@ def _left_column(inc: IncidentDraft, cancelled: bool, ma: bool) -> list[dict]:
     return out
 
 
-def _incident_slide(prs, inc: IncidentDraft, map_png: Path | None, link: str | None) -> None:
-    s = prs.slides.add_slide(prs.slide_layouts[6])
+def _incident_slides(prs, inc: IncidentDraft, map_png: Path | None, link: str | None) -> int:
+    """One slide per page of the left column; returns the number of slides added."""
     cancelled, ma = _yes(inc.facts.get("cancelled", "")), _yes(inc.facts.get("mutual_aid", ""))
-    _bar(s, GREY if cancelled else ORANGE)
     suffix = " — CANCELLED" if cancelled else (" · M/A" if ma else "")
-    _title(s, f"{inc.facts.get('date', '')} · {_event(inc).upper()}{suffix}")
-
+    title = f"{inc.facts.get('date', '')} · {_event(inc).upper()}{suffix}"
     box_w, box_h = Inches(6.3), Inches(6.0)
-    tf = _box(s, Inches(0.5), Inches(1.2), box_w, box_h)
-    specs = _left_column(inc, cancelled, ma)
-    scale = text_scale([(p["text"], p["size"], p.get("space", 0)) for p in specs], box_w.pt, box_h.pt)
-    for i, p in enumerate(specs):
-        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        if p.get("space"):
-            para.space_before = Pt(p["space"] * scale)
-        _run(para, p["text"], font=p.get("font", BODY_FONT), size=p["size"] * scale, bold=p.get("bold", False),
-             colour=p.get("colour", INK))
+    pages = paginate(_left_column(inc, cancelled, ma), box_w.pt, box_h.pt)
+    for k, page in enumerate(pages):
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        _bar(s, GREY if cancelled else ORANGE)
+        _title(s, title if k == 0 else f"{title} (cont.)")
+        tf = _box(s, Inches(0.5), Inches(1.2), box_w, box_h)
+        scale = text_scale([(p["text"], p["size"], p.get("space", 0)) for p in page], box_w.pt, box_h.pt) \
+            or MIN_SCALE
+        for i, p in enumerate(page):
+            para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            if p.get("space"):
+                para.space_before = Pt(p["space"] * scale)
+            _run(para, p["text"], font=p.get("font", BODY_FONT), size=p["size"] * scale,
+                 bold=p.get("bold", False), colour=p.get("colour", INK))
+        _right_column(s, map_png if k == 0 else None, link if k == 0 else None)
+    return len(pages)
 
+
+def _right_column(s, map_png: Path | None, link: str | None) -> None:
     left, top, width, height = Inches(7.1), Inches(1.2), Inches(5.8), Inches(4.35)
     if map_png:
         pic = s.shapes.add_picture(str(map_png), left, top, width=width)
@@ -222,14 +266,16 @@ def _incident_slide(prs, inc: IncidentDraft, map_png: Path | None, link: str | N
 
 
 def build_deck(draft: MonthDraft, overview_png: Path | None, maps: dict[str, Path | None],
-               map_links: dict[str, str], out: Path) -> Path:
+               map_links: dict[str, str], out: Path, notes: list[str] | None = None) -> Path:
     if out.exists():
         raise FileExistsError(str(out))
     prs = Presentation()
     prs.slide_width, prs.slide_height = Emu(W), Emu(H)
     _summary_slide(prs, draft, overview_png)
     for inc in draft.incidents:
-        _incident_slide(prs, inc, maps.get(inc.number), map_links.get(inc.number))
+        n = _incident_slides(prs, inc, maps.get(inc.number), map_links.get(inc.number))
+        if n > 1 and notes is not None:
+            notes.append(f"{inc.number} continued onto {n - 1} more slide{'s' if n > 2 else ''}")
     out.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out))
     return out
