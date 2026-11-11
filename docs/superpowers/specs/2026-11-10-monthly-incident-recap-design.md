@@ -136,7 +136,8 @@ the same 500. The only route to CalTopo's own picture is the rejected permission
 policy: an identifying User-Agent, a local tile cache under the month folder, no bulk prefetch, and
 the attribution "© OpenStreetMap contributors" on every picture. A month is a few dozen tiles.
 
-**Drawn:** the markers that tell the story: LKP/PLS, residence, staging (command post and alternates),
+**Drawn:** the markers that tell the story: LKP/PLS, residence, the command post (never the staging
+alternates: Bill, 2026-11-10, after seeing seven of them crowd a cancelled callout's map),
 and the find. Symbols follow Turbo's marker conventions; titles are drawn as they appear in CalTopo.
 Marker descriptions are never drawn.
 
@@ -221,7 +222,7 @@ step 3, because the review is a person's job.
 - Full Disk Access declined; generator writes to a local folder and Bill moves the file.
 - Summary slide: table plus county pin map; incident slide: map beside the text.
 - M/A: map shows where it was relative to us; no M/A pins on the county overview.
-- OpenStreetMap base map; markers only (LKP, residence, staging, find); link to the live CalTopo map.
+- OpenStreetMap base map; markers only (LKP, residence, command post, find; no staging alternates); link to the live CalTopo map.
 - Range rings only when they match the subject's case; hidden for now.
 - Review happens in an editable markdown file; Bill corrects the slides again after generation.
 - Test month: October 2026.

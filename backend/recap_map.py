@@ -3,7 +3,8 @@
 CalTopo offers no image of a Secret map (spike 2026-11-10: every export path 404s like an invented
 one, and the /pv/ preview 500s for Secret maps whether signed or not), and changing sharing was
 rejected. So the recap draws its own picture: only the markers that tell the story (LKP, residence,
-staging, find), titles as CalTopo shows them, descriptions never. No shapes, tracks or range rings.
+the command post, the find), titles as CalTopo shows them, descriptions never. No staging alternates,
+shapes, tracks or range rings.
 
 OSM tile policy: identifying User-Agent, local cache, no prefetch, credit on every image.
 """
@@ -29,10 +30,9 @@ TILE = 256
 PIN_ORANGE = (241, 89, 42)
 PIN_GREY = (154, 154, 154)
 _ROLE_COLOUR = {"lkp": (20, 20, 20), "residence": (110, 60, 160), "cp": (210, 30, 30),
-                "staging": (30, 90, 200), "find": PIN_ORANGE}
+                "find": PIN_ORANGE}
 
 FIND_TITLE_RE = re.compile(r"\b(subject|mp)\s+(found|location)\b", re.I)
-_STAGING_TITLE_RE = re.compile(r"^\d+\.\s")
 
 
 def _caltopo_symbols() -> dict[str, str]:
@@ -65,8 +65,6 @@ def select_markers(features: list[dict]) -> list[Marker]:
             role = "find"
         elif symbol in by_symbol:
             role = by_symbol[symbol]
-        elif symbol == sym["SYMBOL_STAGING_ALT"] and _STAGING_TITLE_RE.match(title):
-            role = "staging"
         else:
             continue
         lng, lat = f["geometry"]["coordinates"][:2]

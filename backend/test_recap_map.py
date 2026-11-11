@@ -54,9 +54,10 @@ FEATURES = [
 class TestSelectMarkers:
     def test_roles(self):
         got = rm.select_markers(FEATURES)
-        assert [m.role for m in got] == ["staging", "lkp", "residence", "cp", "find"]
-        assert got[1].title == "LKP — 12 Quillback St, Oakvale"
-        assert (got[4].lat, got[4].lng) == (37.310, -121.910)
+        # Staging alternates are never drawn, only the command post (presenter, 2026-11-10).
+        assert [m.role for m in got] == ["lkp", "residence", "cp", "find"]
+        assert got[0].title == "LKP — 12 Quillback St, Oakvale"
+        assert (got[3].lat, got[3].lng) == (37.310, -121.910)
 
     def test_description_never_carried(self):
         for m in rm.select_markers(FEATURES):
