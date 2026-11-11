@@ -42,8 +42,9 @@ be a fork that never receives its author's fixes. Install them from their own so
 reach you directly. **Please do not open a PR adding a copy of a third-party skill or agent under
 `.claude/`** — it will be declined for those reasons, not on quality.
 
-The one skill this repository does ship is its own: `dispatch-after-action`, the guided call-out
-review at `.claude/skills/dispatch-after-action/SKILL.md`. It states up front which maintainer-only
+The skills this repository does ship are its own: `dispatch-after-action` (the guided call-out
+review), `isrid-quarterly` (the quarterly ISRID batch) and `monthly-recap` (the General Team incident
+slides), each under `.claude/skills/<name>/SKILL.md`. Each states up front which maintainer-only
 files it references, so the parts you can run are clear.
 
 ---
