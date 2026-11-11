@@ -1,0 +1,12 @@
+{
+  "_about": "Copy this file to research/isrid-submissions/config.json (gitignored) and replace every <...> value. backend/isrid_submission.py refuses to run until it is filled in. Keys starting with _ are notes and are ignored.",
+  "team_slug": "<team-slug, lower-case, used in the outgoing file name: isrid-<team-slug>-<quarter>-<run>.csv>",
+  "_county": "D4H exports the STATE in its County column by design. The script writes this value there for every in-county row.",
+  "county": "<Your county, as ISRID should record it>",
+  "_places": "Every city, town and unincorporated place in your county, spelled the way D4H's City column spells them. A row whose City is not on this list is flagged as possible mutual aid; the dispatcher confirms every flag.",
+  "places": ["<City one>", "<City two>", "<Unincorporated area>"],
+  "_eligible_from": "Incidents dated before this day are never selected. Set it to the first day your team's records are good enough to publish.",
+  "eligible_from": "<YYYY-MM-DD>",
+  "_d4h_env": "The deploy.env ENV_NAME whose gcloud configuration reads production D4H (the skill's Step 3 uses it).",
+  "d4h_env": "<deploy.env ENV_NAME for production>"
+}

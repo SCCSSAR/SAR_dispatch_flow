@@ -1,0 +1,894 @@
+"""Tests for backend/isrid_submission.py — the quarterly ISRID batch script.
+
+The repo is PUBLIC: every fixture here is synthetic. D4H numbers start with 9, places and
+streets are invented, and no value is copied from a real incident.
+"""
+
+import csv
+import hashlib
+import json
+from datetime import date, datetime
+from pathlib import Path
+
+import pytest
+
+import isrid_submission as isr
+from isrid_submission import (
+    EXPORT_HEADER,
+    SubmissionError,
+    d4h_number,
+    deidentify_row,
+    forbidden_hits,
+    read_export,
+)
+
+# The header D4H's Lost Behavior export carries (34 columns, measured 2026-11-09).
+EXPECTED_HEADER = (
+    "Mission #", "Incident Date", "Incident Type", "County", "City", "Subject Category",
+    "# Subjects", "Involvement", "Age", "Sex", "Search Time", "Lost Time", "Distance From IPP",
+    "Direction From IPP", "Find Feature", "Outcome", "Elevation Change", "Mobility Time",
+    "Population Density", "IPP Coordinates", "IPP Lat", "IPP Lng", "Find Coordinates", "Find Lat",
+    "Find Lng", "Eco Region", "Environment", "Weather", "Equipment", "Experience", "Fitness",
+    "Scenario", "Terrain", "Comment",
+)
+
+
+# A team config for the tests: invented places only.
+TEST_CONFIG = {
+    "team_slug": "xxsar",
+    "county": "Example",
+    "places": ["Exampleton", "Mount Example", "Springfield"],
+    "eligible_from": "2026-10-01",
+    "d4h_env": "prod",
+}
+
+def make_row(**over):
+    """A synthetic, complete row. Keyword args use the header with spaces/#/symbols replaced."""
+    row = {
+        "Mission #": "90001 XXSO Example Ave",
+        "Incident Date": "2026-10-15 21:05:00",
+        "Incident Type": "Search",
+        "County": "California",
+        "City": "Exampleton",
+        "Subject Category": "Dementia",
+        "# Subjects": "1",
+        "Involvement": "Subject",
+        "Age": "80",
+        "Sex": "f",
+        "Search Time": "5hrs 0m",
+        "Lost Time": "8hrs 0m",
+        "Distance From IPP": "1.2mi",
+        "Direction From IPP": "90.0°",
+        "Find Feature": "Road",
+        "Outcome": "Person Assisted",
+        "Elevation Change": "",
+        "Mobility Time": "2hrs 0m",
+        "Population Density": "Urban",
+        "IPP Coordinates": "37.100000, -121.900000",
+        "IPP Lat": "37.100000",
+        "IPP Lng": "-121.900000",
+        "Find Coordinates": "37.110000, -121.880000",
+        "Find Lat": "37.110000",
+        "Find Lng": "-121.880000",
+        "Eco Region": "Temperate",
+        "Environment": "Urban",
+        "Weather": "Clear, 60F",
+        "Equipment": "Fair",
+        "Experience": "Fair",
+        "Fitness": "Poor",
+        "Scenario": "Lost",
+        "Terrain": "Flat",
+        "Comment": "Found well near Example Park by a passer-by.",
+    }
+    for k, v in over.items():
+        row[k] = v
+    return row
+
+
+def write_export(path: Path, rows, header=EXPECTED_HEADER):
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for r in rows:
+            w.writerow([r.get(h, "") for h in header])
+    return path
+
+
+# ── Task 1: header allow-list and row de-identification ─────────────────────
+
+
+def test_module_header_is_the_d4h_header():
+    assert EXPORT_HEADER == EXPECTED_HEADER
+
+
+@pytest.mark.parametrize(
+    "header,offender",
+    [
+        (EXPECTED_HEADER + ("New Column",), "New Column"),
+        (("Incident Date", "Mission #") + EXPECTED_HEADER[2:], "Mission #"),
+        (EXPECTED_HEADER[:-1] + ("Notes",), "Notes"),
+    ],
+    ids=["added", "swapped", "renamed"],
+)
+def test_header_must_match_exactly(tmp_path, header, offender):
+    p = write_export(tmp_path / "x.csv", [make_row()], header=header)
+    with pytest.raises(SubmissionError) as e:
+        read_export(p)
+    assert offender in str(e.value)
+
+
+def test_read_export_returns_rows(tmp_path):
+    p = write_export(tmp_path / "x.csv", [make_row(), make_row(**{"Mission #": "90002 XXSO Other"})])
+    rows = read_export(p)
+    assert [r["Mission #"][:5] for r in rows] == ["90001", "90002"]
+
+
+def test_d4h_number():
+    assert d4h_number("90001 XXSO Example Ave") == "90001"
+    with pytest.raises(SubmissionError):
+        d4h_number("SO-17 Example")
+    with pytest.raises(SubmissionError):
+        d4h_number("900012 XXSO")      # six digits is not a D4H number
+
+
+def test_deidentify_row():
+    row = make_row()
+    out = deidentify_row(row, "Outcome: 1 well.", "Example")
+    assert out["Mission #"] == "90001"
+    assert out["Comment"] == "Outcome: 1 well."
+    assert out["County"] == "Example"
+    for h in EXPECTED_HEADER:
+        if h not in ("Mission #", "Comment", "County"):
+            assert out[h] == row[h], h
+    assert row["Mission #"] == "90001 XXSO Example Ave"   # input not mutated
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["call 408-555-0142", "mail a@b.org", "near 456 Placid Court", "event 26-001-071",
+     "by XXSO staff", "on EXAMPLE lane"],
+    ids=["phone", "email", "address", "event-number", "mission-agency", "mission-street"],
+)
+def test_forbidden_hits(value):
+    row = deidentify_row(make_row(), value, "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == ["Comment"]
+
+
+def test_forbidden_hits_clean_row():
+    row = deidentify_row(make_row(), "Outcome: 1 well. Last seen 2026-01-15 13:00; found 2026-01-16 02:15.", "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == []
+
+
+def test_forbidden_hits_skips_city_for_mission_words():
+    # A street word can equal a city word; City is reviewed by the dispatcher instead.
+    row = deidentify_row(make_row(City="Springfield"), "Outcome: 1 well.", "Example")
+    assert forbidden_hits(row, "90001 XXSO Springfield Meadow") == []
+
+
+def test_forbidden_hits_checks_weather():
+    row = deidentify_row(make_row(Weather="call 408 555 0142"), "Outcome: 1 well.", "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == ["Weather"]
+
+
+# ── Task 2: Minimum (13) and Silver (25) scoring ────────────────────────────
+
+FOUR_COUNTS = ["# well", "# injured", "# DOA", "# no trace"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Outcome: 1 well.", True), ("Found WELL by family", True), ("1 injured", True),
+    ("minor injury", True), ("DOA", True), ("subject deceased", True), ("found dead", True),
+    ("Outcome: 1 no trace.", True), ("", False), ("Wellington Park", False), ("Person Assisted", False),
+])
+def test_states_condition(text, expected):
+    assert isr.states_condition(text) is expected
+
+
+def test_complete_row_scores_13():
+    assert isr.score_minimum(make_row(), "Outcome: 1 well.") == (13, [])
+
+
+def test_person_assisted_without_condition_loses_four():
+    n, missing = isr.score_minimum(make_row(), "")
+    assert n == 8
+    assert sorted(missing) == sorted(FOUR_COUNTS + ["Comment"])
+
+
+def test_each_minimum_field_is_scored():
+    blanks = {"Incident Type": "Incident Type", "Incident Date": "SAR notified",
+              "Search Time": "Found date/time", "Lost Time": "Last seen date/time",
+              "Subject Category": "Subject Category", "IPP Lat": "IPP coordinates",
+              "IPP Lng": "IPP coordinates", "Find Lat": "Find coordinates",
+              "Find Lng": "Find coordinates", "Scenario": "Scenario"}
+    for col, field in blanks.items():
+        n, missing = isr.score_minimum(make_row(**{col: ""}), "Outcome: 1 well.")
+        assert (n, missing) == (12, [field]), col
+
+
+def test_no_trace_excuses_find_fields():
+    row = make_row(**{"Search Time": "", "Find Lat": "", "Find Lng": ""})
+    assert isr.score_minimum(row, "Outcome: 1 no trace.") == (13, [])
+    n, missing = isr.score_minimum(row, "Outcome: 1 well.")
+    assert n == 11 and sorted(missing) == ["Find coordinates", "Found date/time"]
+
+
+def test_dash_is_blank():
+    n, missing = isr.score_minimum(make_row(Scenario="-"), "Outcome: 1 well.")
+    assert (n, missing) == (12, ["Scenario"])
+    n, _ = isr.score_minimum(make_row(Scenario="  "), "Outcome: 1 well.")
+    assert n == 12
+
+
+def test_silver_sex_placeholder():
+    full = "Outcome: 1 well. Destination: home. Direction of travel: north."
+    n, missing = isr.score_silver(make_row(Sex="o"), full, set())
+    assert n == 23 and "Sex" in missing
+    assert isr.score_silver(make_row(Sex="o"), full, {"Sex"})[0] == 24
+    assert isr.score_silver(make_row(Sex=",o"), full, set())[0] == 23
+    assert isr.score_silver(make_row(Sex=","), full, {"Sex"})[0] == 23    # blank, not a confirmation target
+    assert isr.score_silver(make_row(Sex="f"), full, set())[0] == 24
+
+
+def test_silver_track_offset_never_held():
+    full = "Outcome: 1 well. Destination: home. Direction of travel: north."
+    n, missing = isr.score_silver(make_row(), full, set())
+    assert (n, missing) == (24, ["Track offset (ISRID derives)"])
+
+
+def test_silver_matches_deck_count():
+    # A typical complete record: Mobility blank, no destination or direction of travel.
+    n, missing = isr.score_silver(make_row(**{"Mobility Time": ""}), "Outcome: 1 well.", set())
+    assert n == 21
+    assert sorted(missing) == sorted(["Mobility", "Destination", "Direction of Travel",
+                                      "Track offset (ISRID derives)"])
+
+
+def test_silver_includes_minimum_gaps():
+    n, missing = isr.score_silver(make_row(Scenario=""), "Outcome: 1 well.", set())
+    assert n == 21 and "Scenario" in missing     # 12 Minimum + 9 Silver additions
+
+
+# ── Task 3: prepare ─────────────────────────────────────────────────────────
+
+NOW = datetime(2026, 11, 10, 14, 32)
+
+
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def batch_with(tmp_path, rows, now=NOW):
+    export = write_export(tmp_path / "export.csv", rows)
+    root = tmp_path / "root"
+    return isr.prepare(export, root, now, TEST_CONFIG), export, root
+
+
+def test_quarter_label():
+    assert isr.quarter_label(datetime(2026, 11, 10)) == "2026-Q4"
+    assert isr.quarter_label(datetime(2027, 1, 1)) == "2027-Q1"
+    assert isr.quarter_label(datetime(2026, 6, 30)) == "2026-Q2"
+    assert isr.quarter_label(datetime(2026, 7, 1)) == "2026-Q3"
+
+
+def test_prepare_copies_raw_bytes(tmp_path):
+    batch, export, root = batch_with(tmp_path, [make_row()])
+    assert batch == root / "2026-Q4" / "20261110-1432"
+    raw = batch / "raw-d4h-export.csv"
+    assert raw.read_bytes() == export.read_bytes()
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert wl["raw_sha256"] == sha(export)
+    assert (wl["quarter"], wl["run"], wl["rules_version"]) == ("2026-Q4", "20261110-1432", "1")
+
+
+def test_prepare_refuses_existing_folder(tmp_path):
+    batch, export, root = batch_with(tmp_path, [make_row()])
+    with pytest.raises(SubmissionError):
+        isr.prepare(export, root, NOW, TEST_CONFIG)
+
+
+def test_prepare_refuses_bad_header(tmp_path):
+    export = write_export(tmp_path / "export.csv", [make_row()], header=EXPECTED_HEADER + ("X",))
+    with pytest.raises(SubmissionError):
+        isr.prepare(export, tmp_path / "root", NOW, TEST_CONFIG)
+    assert not (tmp_path / "root").exists()
+
+
+def test_prepare_skips_sent(tmp_path):
+    root = tmp_path / "root"
+    earlier = root / "2026-Q3" / "20260930-0900"
+    earlier.mkdir(parents=True)
+    (earlier / "SENT.md").write_text("Sent on: 2026-09-30\nD4H numbers: 90001, 90003\n")
+    export = write_export(tmp_path / "export.csv",
+                          [make_row(), make_row(**{"Mission #": "90002 XXSO Other"})])
+    batch = isr.prepare(export, root, NOW, TEST_CONFIG)
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert wl["already_sent"] == ["90001"]
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"]
+    assert isr.sent_numbers(root) == {"90001", "90003"}
+
+
+def test_unsent_batch_does_not_count_as_sent(tmp_path):
+    batch, export, root = batch_with(tmp_path, [make_row()])
+    batch2 = isr.prepare(export, root, datetime(2026, 11, 10, 15, 0), TEST_CONFIG)
+    assert [r["d4h"] for r in json.loads((batch2 / "worklist.json").read_text())["rows"]] == ["90001"]
+
+
+@pytest.mark.parametrize("city,county,flag", [
+    ("Exampleton", "California", "in-county"), ("mount example", "California", "in-county"),
+    ("Mount Example", "California", "in-county"), ("Faraway", "California", "mutual-aid?"),
+    ("", "California", "check"), ("Exampleton", "", "check"),
+])
+def test_flags(city, county, flag):
+    assert isr.flag_row(make_row(City=city, County=county), TEST_CONFIG["places"]) == flag
+
+
+def test_bad_mission_number_is_flagged(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(), make_row(**{"Mission #": "SO-17 Example"})])
+    rows = json.loads((batch / "worklist.json").read_text())["rows"]
+    assert rows[1]["d4h"] is None and rows[1]["flag"] == "bad-mission-number" and rows[1]["line"] == 3
+
+
+def test_worklist_minimum_as_exported(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(), make_row(**{"Mission #": "90002 XXSO Other",
+                                                               "Comment": "", "Scenario": ""})])
+    rows = json.loads((batch / "worklist.json").read_text())["rows"]
+    assert [r["minimum_as_exported"] for r in rows] == [13, 7]
+
+
+def test_worklist_holds_no_free_text(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(City="Uptown", Weather="Foggy morning")])
+    text = (batch / "worklist.json").read_text()
+    for value in ("Uptown", "Foggy", "Example Ave", "XXSO", "passer-by", "Dementia"):
+        assert value not in text, value
+
+
+def test_cli_prepare(tmp_path, capsys):
+    export = write_export(tmp_path / "export.csv", [make_row(), make_row(**{"Mission #": "90002 X", "City": "Elsewhere"})])
+    (tmp_path / "root").mkdir(); write_config(tmp_path / "root" / "config.json")
+    assert isr.main(["prepare", str(export), "--root", str(tmp_path / "root")]) == 0
+    out = capsys.readouterr().out
+    assert "rows to decide: 2" in out and "in-county: 1" in out and "mutual-aid?: 1" in out
+    assert "Exampleton" not in out and "Elsewhere" not in out
+
+
+def test_cli_refusal_exits_1(tmp_path, capsys):
+    export = write_export(tmp_path / "export.csv", [make_row()], header=EXPECTED_HEADER[1:])
+    (tmp_path / "root").mkdir(); write_config(tmp_path / "root" / "config.json")
+    assert isr.main(["prepare", str(export), "--root", str(tmp_path / "root")]) == 1
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "header" in err
+
+
+# ── Task 4: finalize ────────────────────────────────────────────────────────
+
+GOOD_COMMENT = "Outcome: 1 well. Last seen 2026-01-15 13:00; found 2026-01-16 02:15."
+BASE_FILES = {"raw-d4h-export.csv", "worklist.json", "decisions.json"}
+
+
+def two_row_batch(tmp_path, decisions=None, **row2):
+    rows = [make_row(), make_row(**{"Mission #": "90002 XXSO Faraway Rd", "City": "Faraway",
+                                    **row2})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    if decisions is None:
+        decisions = {"rows": {
+            "90001": {"include": True, "comment": GOOD_COMMENT,
+                      "cells": {"Incident Type": {"value": "Search", "source": "AAR report"}}},
+            "90002": {"include": False, "reason": "mutual aid"}}}
+    (batch / "decisions.json").write_text(json.dumps(decisions))
+    return batch
+
+
+def outgoing(batch):
+    files = list(batch.glob("isrid-*.csv"))
+    assert len(files) == 1
+    with open(files[0], encoding="utf-8-sig", newline="") as f:
+        r = csv.reader(f)
+        return next(r), [dict(zip(EXPECTED_HEADER, rec)) for rec in r], files[0]
+
+
+def test_finalize_writes_the_batch(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    names = {p.name for p in batch.iterdir()}
+    assert names == BASE_FILES | {"enriched-PRIVATE.csv", "isrid-xxsar-2026-Q4-20261110-1432.csv",
+                                  "fix-in-d4h.md", "leadership-summary.md", "manifest.json"}
+
+
+def test_outgoing_file(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {"Scenario": {"value": "Investigative", "source": "AAR report"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    isr.finalize(batch)
+    header, rows, path = outgoing(batch)
+    assert tuple(header) == EXPECTED_HEADER
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")          # BOM, matching D4H
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["Mission #"], r["County"], r["Scenario"], r["Comment"]) == \
+        ("90001", "Example", "Investigative", GOOD_COMMENT)
+    assert r["City"] == "Exampleton" and r["IPP Lat"] == "37.100000"
+
+
+def test_outgoing_has_no_d4h_comment(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    _, _, path = outgoing(batch)
+    assert "passer-by" not in path.read_text(encoding="utf-8-sig")
+    assert "XXSO" not in path.read_text(encoding="utf-8-sig")
+    assert "passer-by" in (batch / "enriched-PRIVATE.csv").read_text(encoding="utf-8-sig")
+
+
+def _refuses(batch, *must_mention):
+    with pytest.raises(SubmissionError) as e:
+        isr.finalize(batch)
+    for m in must_mention:
+        assert m in str(e.value)
+    assert {p.name for p in batch.iterdir()} == BASE_FILES
+    return str(e.value)
+
+
+def test_refuses_missing_decision(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT}}})
+    _refuses(batch, "90002")
+
+
+def test_refuses_unknown_decision(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "90002": {"include": False, "reason": "mutual aid"},
+        "90009": {"include": False, "reason": "typo"}}})
+    _refuses(batch, "90009")
+
+
+def test_refuses_exclusion_without_reason(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "90002": {"include": False}}})
+    _refuses(batch, "90002")
+
+
+def test_refuses_included_without_comment(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": "  "},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    _refuses(batch, "90001")
+
+
+def test_refuses_including_bad_mission_number(tmp_path):
+    rows = [make_row(), make_row(**{"Mission #": "SO-17 Example"})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "line-3": {"include": True, "comment": GOOD_COMMENT}}}))
+    _refuses(batch, "line-3")
+
+
+def test_bad_mission_number_can_be_excluded(tmp_path):
+    rows = [make_row(), make_row(**{"Mission #": "SO-17 Example"})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT},
+        "line-3": {"include": False, "reason": "hand-entered, no D4H number"}}}))
+    isr.finalize(batch)
+    assert len(outgoing(batch)[1]) == 1
+
+
+@pytest.mark.parametrize("column", ["Mission #", "Comment", "County", "Not A Column"])
+def test_refuses_rewrite_column_in_cells(tmp_path, column):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {column: {"value": "x", "source": "AAR"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    _refuses(batch, "90001", column)
+
+
+@pytest.mark.parametrize("cell", [{"value": "Search"}, {"value": "Search", "source": " "}, {"source": "AAR"}])
+def test_refuses_cell_without_source_or_value(tmp_path, cell):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT, "cells": {"Incident Type": cell}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    _refuses(batch, "90001", "Incident Type")
+
+
+def test_forbidden_comment_writes_nothing(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": "Outcome: 1 well near 456 Placid Court."},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    msg = _refuses(batch, "90001", "Comment")
+    assert "Placid" not in msg
+
+
+def test_forbidden_filled_cell_writes_nothing(tmp_path):
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {"Weather": {"value": "call 408-555-0142", "source": "Slack"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    msg = _refuses(batch, "90001", "Weather")
+    assert "555" not in msg
+
+
+def test_refuses_tampered_raw(tmp_path):
+    batch = two_row_batch(tmp_path)
+    raw = batch / "raw-d4h-export.csv"
+    raw.write_bytes(raw.read_bytes().replace(b"Lost", b"Lose", 1))
+    _refuses(batch, "sha256")
+
+
+def test_refuses_existing_output(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    with pytest.raises(SubmissionError):
+        isr.finalize(batch)
+
+
+def test_metric_before_and_after(tmp_path):
+    rows = [make_row(**{"Incident Type": "", "Comment": "picked up by family"})]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {
+        "include": True, "comment": GOOD_COMMENT,
+        "cells": {"Incident Type": {"value": "Search", "source": "AAR report"}}}}}))
+    isr.finalize(batch)
+    m = json.loads((batch / "manifest.json").read_text())
+    assert m["minimum"] == {"records": 1, "met_as_exported": 0, "met_as_sent": 1,
+                            "pct_as_exported": 0, "pct_as_sent": 100}
+    summary = (batch / "leadership-summary.md").read_text()
+    assert "0% as exported" in summary and "100% as sent" in summary
+
+
+def test_manifest(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    m = json.loads((batch / "manifest.json").read_text())
+    assert m["rules_version"] == "1"
+    assert m["included"] == ["90001"]
+    assert m["excluded"] == [{"row": "90002", "reason": "mutual aid"}]
+    assert m["cells"] == [{"d4h": "90001", "column": "Incident Type", "value": "Search", "source": "AAR report"}]
+    assert m["outgoing"] == "isrid-xxsar-2026-Q4-20261110-1432.csv"
+    assert set(m["sha256"]) == {"raw-d4h-export.csv", "enriched-PRIVATE.csv", m["outgoing"],
+                                "fix-in-d4h.md", "leadership-summary.md"}
+    for name, digest in m["sha256"].items():
+        assert sha(batch / name) == digest, name
+
+
+def test_fix_in_d4h_lists_every_cell(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    text = (batch / "fix-in-d4h.md").read_text()
+    assert "90001" in text and "Incident Type" in text and "Search" in text and "AAR report" in text
+
+
+def test_summary_shows_review_columns_and_scores(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    s = (batch / "leadership-summary.md").read_text()
+    assert "Exampleton" in s and "Clear, 60F" in s and GOOD_COMMENT in s
+    assert "13/13" in s and "/25" in s and "mutual aid" in s
+    assert "passer-by" not in s and "XXSO" not in s
+
+
+def test_confirmed_sex_reaches_silver(tmp_path):
+    rows = [make_row(Sex="o")]
+    batch, _, _ = batch_with(tmp_path, rows)
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {
+        "include": True, "comment": GOOD_COMMENT, "confirmed": ["Sex"]}}}))
+    isr.finalize(batch)
+    assert "22/25" in (batch / "leadership-summary.md").read_text()
+
+
+def test_cli_finalize(tmp_path, capsys):
+    batch = two_row_batch(tmp_path)
+    assert isr.main(["finalize", str(batch)]) == 0
+    out = capsys.readouterr().out
+    assert "isrid-xxsar-2026-Q4-20261110-1432.csv" in out and "100% as sent" in out
+
+
+def test_refuses_worklist_edited_to_another_incident(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row()])
+    wl = json.loads((batch / "worklist.json").read_text())
+    wl["rows"][0]["d4h"] = "90005"
+    (batch / "worklist.json").write_text(json.dumps(wl))
+    (batch / "decisions.json").write_text(json.dumps({"rows": {
+        "90005": {"include": True, "comment": GOOD_COMMENT}}}))
+    _refuses(batch, "90005")
+
+
+# ── Task 5: mark-sent ───────────────────────────────────────────────────────
+
+def finalized(tmp_path):
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    return batch
+
+
+def test_mark_sent_round_trip(tmp_path):
+    batch = finalized(tmp_path)
+    path = isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    text = path.read_text()
+    assert path == batch / "SENT.md"
+    assert "Sent on: 2026-11-12" in text and "To: isrid@example.org" in text
+    assert "File: isrid-xxsar-2026-Q4-20261110-1432.csv" in text
+    m = json.loads((batch / "manifest.json").read_text())
+    assert f"sha256: {m['sha256'][m['outgoing']]}" in text
+    assert "D4H numbers: 90001\n" in text
+    nxt = isr.prepare(tmp_path / "export.csv", tmp_path / "root", datetime(2027, 1, 5, 9, 0), TEST_CONFIG)
+    wl = json.loads((nxt / "worklist.json").read_text())
+    assert wl["already_sent"] == ["90001"]
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"]     # the excluded row stays selectable
+
+
+def test_mark_sent_refuses_edited_file(tmp_path):
+    batch = finalized(tmp_path)
+    out = batch / "isrid-xxsar-2026-Q4-20261110-1432.csv"
+    out.write_bytes(out.read_bytes() + b"\r\n")
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    assert not (batch / "SENT.md").exists()
+
+
+def test_mark_sent_refuses_twice(tmp_path):
+    batch = finalized(tmp_path)
+    isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 13), "isrid@example.org")
+
+
+def test_mark_sent_refuses_unfinalized(tmp_path):
+    batch = two_row_batch(tmp_path)
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+
+
+def test_cli_mark_sent(tmp_path, capsys):
+    batch = finalized(tmp_path)
+    assert isr.main(["mark-sent", str(batch), "--to", "isrid@example.org", "--on", "2026-11-12"]) == 0
+    assert "Sent on: 2026-11-12" in (batch / "SENT.md").read_text()
+
+
+# ── Final review fixes ──────────────────────────────────────────────────────
+
+TEMPLATE_COMMENT = (
+    "Outcome: 1 well. Last seen 2026-01-15 18:40; SAR notified 2026-01-15 21:05; found 2026-01-16 02:15. "
+    "IPP: point last seen (later sighting, not residence). Cause: despondent. Found by: SAR ground. "
+    "Incident outcome: closed by search. Resources: 6 tasks, 1 dog, 1 UAS, 18 personnel. "
+    "Subject: 5'6\", 140 lb, slim.")
+
+
+@pytest.mark.parametrize("col", ["Incident Date", "IPP Coordinates", "IPP Lat", "IPP Lng",
+                                 "Find Coordinates", "Find Lat", "Find Lng"])
+def test_shape_checked_columns_refuse_text(col):        # review C1
+    row = deidentify_row(make_row(**{col: "Jane Doe"}), "Outcome: 1 well.", "Example")   # no other pattern matches
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == [col]
+
+
+def test_real_coordinate_shapes_are_clean():              # review C1
+    row = deidentify_row(make_row(**{
+        "IPP Coordinates": "37.1234,-121.9876", "Find Coordinates": "", "Find Lat": "", "Find Lng": "-",
+        "Incident Date": "2026-01-15 21:05"}), "Outcome: 1 well.", "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == []
+
+
+def test_filled_coordinate_text_refused_by_finalize(tmp_path):   # review C1
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": GOOD_COMMENT,
+                  "cells": {"Find Coordinates": {"value": "Jane Doe, 456 placid court", "source": "AAR"}}},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    assert "Jane" not in _refuses(batch, "90001", "Find Coordinates")
+
+
+@pytest.mark.parametrize("value", [
+    "(408) 555-0142", "4085550142", "call 555-0142", "+44 20 7946 0958",
+    "456 placid court", "456 PLACID COURT", "100 5th Ave", "1500 E 10th St", "123 El Camino Real",
+    "12 Oak Terrace", "12 Oak Trl", "99 Mission Boulevard", "4 Elm Place",
+    "SO26-212-071", "2026-212-071",
+])
+def test_forbidden_hits_wider_shapes(value):              # review I1
+    row = deidentify_row(make_row(), value, "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == ["Comment"]
+
+
+def test_template_comment_and_display_strings_stay_clean():   # review I1 false-positive guard
+    row = deidentify_row(make_row(**{"Distance From IPP": "296.4yd", "Search Time": "73hrs 0m",
+                                     "Direction From IPP": "325.0°"}), TEMPLATE_COMMENT, "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == []
+
+
+@pytest.mark.parametrize("mission,cols", [
+    ("90001 XXPD Fair Meadow", {"Equipment": "Fair", "Experience": "Fair"}),
+    ("90001 XXPD Granite Rock", {"Find Feature": "Rock"}),
+])
+def test_mission_words_skip_pick_lists(mission, cols):    # review I2
+    row = deidentify_row(make_row(**{"Mission #": mission, **cols}), "Outcome: 1 well.", "Example")
+    assert forbidden_hits(row, mission) == []
+
+
+def test_mission_words_checked_in_weather():              # review I2
+    row = deidentify_row(make_row(Weather="rain over example hills"), "Outcome: 1 well.", "Example")
+    assert forbidden_hits(row, "90001 XXSO Example Ave") == ["Weather"]
+
+
+@pytest.mark.parametrize("n", [33, 35])
+def test_row_with_wrong_field_count_refused(tmp_path, n):   # review I3
+    p = tmp_path / "x.csv"
+    with open(p, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(EXPECTED_HEADER)
+        w.writerow([make_row()[h] for h in EXPECTED_HEADER])
+        w.writerow(["90002 X"] + ["v"] * (n - 1))
+    with pytest.raises(SubmissionError) as e:
+        read_export(p)
+    assert "row 3" in str(e.value)
+    with pytest.raises(SubmissionError):
+        isr.prepare(p, tmp_path / "root", NOW, TEST_CONFIG)
+    assert not (tmp_path / "root").exists()
+
+
+def test_metric_as_exported_uses_d4h_comment(tmp_path):   # review I4
+    batch, _, _ = batch_with(tmp_path, [make_row(Comment="picked up by family")])
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {
+        "include": True, "comment": GOOD_COMMENT}}}))
+    isr.finalize(batch)
+    m = json.loads((batch / "manifest.json").read_text())["minimum"]
+    assert (m["met_as_exported"], m["met_as_sent"]) == (0, 1)
+
+
+def test_enriched_notes_sources(tmp_path):               # review I4
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    with open(batch / "enriched-PRIVATE.csv", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert "Incident Type" in rows[0]["Sources"] and "AAR report" in rows[0]["Sources"]
+    assert rows[0]["Comment (sent)"] == GOOD_COMMENT
+
+
+def test_header_refusal_withholds_values(tmp_path):      # review M1, regraded: PII to stderr
+    p = tmp_path / "x.csv"
+    p.write_text("90001 XXSO Example Ave,Jane Doe,408-555-0142\n", encoding="utf-8")
+    with pytest.raises(SubmissionError) as e:
+        read_export(p)
+    msg = str(e.value)
+    assert "Jane" not in msg and "555" not in msg and "Example" not in msg
+
+
+def test_comment_newlines_collapsed(tmp_path):           # review M2, regraded: every 3-line template
+    batch = two_row_batch(tmp_path, decisions={"rows": {
+        "90001": {"include": True, "comment": "Outcome: 1 well.\nFound by: SAR ground.\n"},
+        "90002": {"include": False, "reason": "mutual aid"}}})
+    isr.finalize(batch)
+    assert outgoing(batch)[1][0]["Comment"] == "Outcome: 1 well. Found by: SAR ground."
+
+
+def test_mark_sent_refuses_records_sent_elsewhere(tmp_path):   # review M5, regraded: duplicates at ISRID
+    batch = finalized(tmp_path)
+    other = tmp_path / "root" / "2026-Q4" / "20261110-1500"
+    other.mkdir()
+    (other / "SENT.md").write_text("D4H numbers: 90001\n")
+    with pytest.raises(SubmissionError) as e:
+        isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+    assert "90001" in str(e.value)
+
+
+def test_mark_sent_refuses_empty_batch(tmp_path):        # review M5
+    batch, _, _ = batch_with(tmp_path, [make_row()])
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {"include": False, "reason": "test"}}}))
+    isr.finalize(batch)
+    with pytest.raises(SubmissionError):
+        isr.mark_sent(batch, date(2026, 11, 12), "isrid@example.org")
+
+
+def test_summary_lists_silver_missing(tmp_path):         # review M6, regraded: spec lines 205-206
+    batch = two_row_batch(tmp_path)
+    isr.finalize(batch)
+    s = (batch / "leadership-summary.md").read_text()
+    assert "Silver missing" in s and "Track offset (ISRID derives)" in s and "Destination" in s
+
+
+
+# ── ISRID cutoff: only incidents from the team's configured date ──
+
+
+def test_rows_before_cutoff_are_never_selected(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [
+        make_row(**{"Mission #": "90001 X", "Incident Date": "2026-09-30 23:59:00"}),
+        make_row(**{"Mission #": "90002 X", "Incident Date": "2026-10-01 00:00:00"}),
+        make_row(**{"Mission #": "SO-17 X", "Incident Date": "2026-01-08 10:00:00"})])
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"]
+    assert wl["before_cutoff"] == ["90001", "line-4"]
+    assert wl["eligible_from"] == "2026-10-01"
+
+
+def test_summary_counts_rows_before_cutoff(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [
+        make_row(), make_row(**{"Mission #": "90002 X", "Incident Date": "2026-09-28 10:15:00"})])
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90001": {"include": True, "comment": GOOD_COMMENT}}}))
+    isr.finalize(batch)
+    assert "Before the 2026-10-01 cutoff (never sent): 1" in (batch / "leadership-summary.md").read_text()
+
+
+def test_unreadable_date_is_not_silently_cut(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row(**{"Incident Date": ""})])
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert [r["d4h"] for r in wl["rows"]] == ["90001"] and wl["before_cutoff"] == []
+
+
+
+# ── Team config: no team-specific value lives in the public code ─────────────
+
+def write_config(path, **over):
+    cfg = {**TEST_CONFIG, **over}
+    path.write_text(json.dumps(cfg))
+    return path
+
+
+def test_load_config_round_trip(tmp_path):
+    cfg = isr.load_config(write_config(tmp_path / "config.json"))
+    assert cfg == TEST_CONFIG
+
+
+def test_load_config_ignores_about_keys(tmp_path):
+    cfg = isr.load_config(write_config(tmp_path / "config.json", _about="notes for the team"))
+    assert "_about" not in cfg
+
+
+def test_load_config_missing_file_points_at_template(tmp_path):
+    with pytest.raises(SubmissionError) as e:
+        isr.load_config(tmp_path / "config.json")
+    assert "config.template.json" in str(e.value)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("team_slug", "XX SAR"), ("team_slug", ""), ("county", " "), ("places", []), ("places", "Exampleton"),
+    ("eligible_from", "Oct 1"), ("d4h_env", ""), ("county", "<Your county>"), ("places", ["<City>"]),
+])
+def test_load_config_rejects_bad_values(tmp_path, key, value):
+    with pytest.raises(SubmissionError) as e:
+        isr.load_config(write_config(tmp_path / "config.json", **{key: value}))
+    assert key in str(e.value)
+
+
+@pytest.mark.parametrize("key", ["team_slug", "county", "places", "eligible_from", "d4h_env"])
+def test_load_config_requires_every_key(tmp_path, key):
+    cfg = dict(TEST_CONFIG); del cfg[key]
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+    with pytest.raises(SubmissionError) as e:
+        isr.load_config(tmp_path / "config.json")
+    assert key in str(e.value)
+
+
+def test_shipped_template_has_every_key_and_is_unfilled():
+    template = Path(__file__).resolve().parent.parent / ".claude/skills/isrid-quarterly/config.template.json"
+    data = json.loads(template.read_text())
+    assert {k for k in data if not k.startswith("_")} == set(TEST_CONFIG)
+    with pytest.raises(SubmissionError):          # placeholders must be replaced before use
+        isr.load_config(template)
+
+
+def test_worklist_carries_the_config(tmp_path):
+    batch, _, _ = batch_with(tmp_path, [make_row()])
+    assert json.loads((batch / "worklist.json").read_text())["config"] == TEST_CONFIG
+
+
+def test_config_drives_county_slug_and_cutoff(tmp_path):
+    cfg = {**TEST_CONFIG, "county": "Otherplace", "team_slug": "yysar", "eligible_from": "2026-10-20",
+           "places": ["Exampleton"]}
+    export = write_export(tmp_path / "export.csv", [make_row(), make_row(**{"Mission #": "90002 X",
+                                                    "Incident Date": "2026-10-25 09:00:00"})])
+    batch = isr.prepare(export, tmp_path / "root", NOW, cfg)
+    wl = json.loads((batch / "worklist.json").read_text())
+    assert [r["d4h"] for r in wl["rows"]] == ["90002"] and wl["before_cutoff"] == ["90001"]
+    (batch / "decisions.json").write_text(json.dumps({"rows": {"90002": {"include": True, "comment": GOOD_COMMENT}}}))
+    isr.finalize(batch)
+    header, rows, path = outgoing(batch)
+    assert path.name == "isrid-yysar-2026-Q4-20261110-1432.csv" and rows[0]["County"] == "Otherplace"
+    assert "Before the 2026-10-20 cutoff (never sent): 1" in (batch / "leadership-summary.md").read_text()
+
+
+def test_cli_prepare_uses_root_config(tmp_path, capsys):
+    export = write_export(tmp_path / "export.csv", [make_row()])
+    root = tmp_path / "root"; root.mkdir()
+    assert isr.main(["prepare", str(export), "--root", str(root)]) == 1      # no config yet
+    assert "config" in capsys.readouterr().err
+    write_config(root / "config.json")
+    assert isr.main(["prepare", str(export), "--root", str(root)]) == 0
