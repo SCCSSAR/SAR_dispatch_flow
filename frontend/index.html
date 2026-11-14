@@ -4792,9 +4792,10 @@
         alert(turnedAway);
       } else {
         // PR-J #13: canned alert for the generic failure case (e.g.,
-        // bad credentials, _create_map itself failed before any
-        // marker work). raw err already logged above.
-        alert("Map creation failed. Check CalTopo credentials and try again.");
+        // _create_map itself failed before any marker work). raw err
+        // already logged above. Credentials live in Secret Manager, so
+        // the alert names what a dispatcher can do instead.
+        alert("Map creation failed. Try again once. If it fails again, create the map in CalTopo by hand.");
       }
     }
   });

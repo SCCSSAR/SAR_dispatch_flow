@@ -186,3 +186,23 @@ class TestExtractStatus:
     def test_old_messages_are_gone(self):
         assert "seconds before trying again" not in HTML
         assert HTML.count("resp.status === 429") == 1, "one 429 branch in the Extract handler"
+
+
+class TestMapGenericAlert:
+    """A dispatcher cannot check CalTopo credentials: they live in Secret
+    Manager. The generic map alert now says what the dispatcher CAN do."""
+
+    NEW = "Map creation failed. Try again once. If it fails again, create the map in CalTopo by hand."
+
+    def _map_catch(self) -> str:
+        start = HTML.index("let resp = await fetch('/create-map'")
+        catch = HTML.index("} catch (err) {", start)
+        return HTML[catch:HTML.index("\n  });", catch)]
+
+    def test_generic_branch_shows_the_new_text(self):
+        catch = self._map_catch()
+        tail = catch[catch.index("} else if (turnedAway) {"):]
+        assert re.search(r"\} else \{\s*(//[^\n]*\s*)*alert\(" + re.escape(f'"{self.NEW}"') + r"\);", tail)
+
+    def test_credentials_advice_is_gone(self):
+        assert "Check CalTopo credentials" not in HTML
