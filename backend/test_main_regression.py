@@ -10056,7 +10056,7 @@ class TestFrontendOrphanMapAlert:
         from pathlib import Path
         index_html = Path(__file__).parent.parent / "frontend" / "index.html"
         source = index_html.read_text()
-        marker = "Map creation failed. Check CalTopo credentials"
+        marker = "Map creation failed. Try again once."
         assert marker in source, (
             "Canned alert literal not found in index.html — handler "
             "may have been refactored; update this test's marker"
