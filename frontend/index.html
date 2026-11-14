@@ -3574,6 +3574,57 @@
     });
   }
 
+  // A failed fetch as an Error that keeps what the status handling needs.
+  // .message stays the server's detail: the map handler finds an orphan map
+  // by searching it.
+  function _httpError(resp, body) {
+    const e = new Error((body && body.detail) || `HTTP ${resp.status}`);
+    e.status = resp.status;
+    e.retryAfter = resp.headers.get('Retry-After');
+    e.detail = body && body.detail;
+    return e;
+  }
+
+  // The day limits reset at 00:00 UTC (rate_limit.py), which is 4 PM or 5 PM
+  // Pacific depending on daylight time.
+  function _nextUtcMidnightPacific(now) {
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    return next.toLocaleTimeString('en-US', {
+      timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit',
+    }) + ' Pacific';
+  }
+
+  // The app turns a click away before CalTopo or Drive is ever called on a
+  // rate limit (429), the team-wide daily cap (503) or a refused sign-in
+  // (401/403). The buttons' canned alerts blamed CalTopo credentials or Drive
+  // consent for all of those. Returns null when the failure is the button's
+  // own, so its existing alert still shows. Retry-After is fixed per window
+  // (60 / 3600 / 86400), so it names the window, not the time remaining.
+  function _turnedAwayMessage(action, err, now = new Date()) {
+    const status = err && err.status;
+    if (status === 401 || status === 403) {
+      return `${action}: the app did not accept your sign-in. Sign out, sign in again, then try again.`;
+    }
+    if (status === 429) {
+      if (err.retryAfter === '86400') {
+        return `${action}: you reached the app's daily limit. It resets at ${_nextUtcMidnightPacific(now)}. Do this step by hand.`;
+      }
+      if (err.retryAfter === '3600') {
+        return `${action}: you reached the app's hourly limit. It resets at the start of the next hour. If you cannot wait, do this step by hand.`;
+      }
+      return `${action}: you reached the app's limit for one minute. Wait one minute, then try again.`;
+    }
+    if (status === 503) {
+      if (err.detail === "Service temporarily unavailable") {
+        return `${action}: the app reached its daily limit for the whole team. It resets at ${_nextUtcMidnightPacific(now)}. Do this step by hand.`;
+      }
+      if (err.retryAfter) {
+        return `${action}: the service is busy. Wait ${err.retryAfter} seconds, then try again.`;
+      }
+    }
+    return null;
+  }
+
   // Both dispatch buttons pre-open a blank tab synchronously (Safari only
   // allows window.open from a user gesture, not after an await). When a gate
   // then blocks the action, the browser has already switched focus to that
@@ -4414,7 +4465,7 @@
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${resp.status}`);
+        throw _httpError(resp, err);
       }
       const { doc_url } = await resp.json();
       stopDocTimer();
@@ -4435,7 +4486,12 @@
       // PR-J #13: log raw err for debugging, surface canned message to dispatcher
       // (avoids leaking backend internal paths via FastAPI tracebacks).
       console.error('Google Doc creation failed:', err);
-      alert('Google Doc creation failed. Try again, or verify you granted Drive access in the consent popup.');
+      const turnedAway = _turnedAwayMessage('Incident Log not created', err);
+      if (turnedAway) {
+        alert(turnedAway);
+      } else {
+        alert('Google Doc creation failed. Try again, or verify you granted Drive access in the consent popup.');
+      }
     }
   });
 
@@ -4675,7 +4731,7 @@
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${resp.status}`);
+        throw _httpError(resp, err);
       }
 
       const result = await resp.json();
@@ -4733,8 +4789,11 @@
       // asking the maintainer for cleanup. The backend deliberately
       // doesn't have CalTopo DELETE privileges, so the orphan map
       // sits on CalTopo's team account until manually deleted.
+      const turnedAway = _turnedAwayMessage('Map not created', err);
       if (err && err.message && err.message.indexOf("orphan map id:") !== -1) {
         alert(err.message);
+      } else if (turnedAway) {
+        alert(turnedAway);
       } else {
         // PR-J #13: canned alert for the generic failure case (e.g.,
         // bad credentials, _create_map itself failed before any
