@@ -3946,15 +3946,11 @@
         showStatus("error", "File too large (max 10 MB).");
         return;
       }
-      if (resp.status === 429) {
+      if (resp.status === 429 || resp.status === 503) {
         _hideNotifyChecklist();
-        const retryAfter = resp.headers.get("Retry-After") || "60";
-        showStatus("error", `Rate limit reached. Please wait ${retryAfter} seconds before trying again.`);
-        return;
-      }
-      if (resp.status === 503) {
-        _hideNotifyChecklist();
-        showStatus("error", "Service temporarily unavailable. Please try again in a few minutes.");
+        const body = await resp.json().catch(() => ({}));
+        showStatus("error", _turnedAwayMessage("Form not read", _httpError(resp, body))
+          || "Service temporarily unavailable. Please try again in a few minutes.");
         return;
       }
       if (!resp.ok) {
@@ -5011,7 +5007,9 @@
 
       if (!resp.ok) {
         const errText = await resp.text();
-        throw new Error(`Send failed (${resp.status}): ${errText}`);
+        let errBody = {};
+        try { errBody = JSON.parse(errText) || {}; } catch (_) {}
+        throw _httpError(resp, errBody);
       }
 
       const data    = await resp.json();
@@ -5119,8 +5117,14 @@
       _setIndicator('slack-indicator', '🔴 Slack', 'EB/Slack send failed');
       _setIndicator('d4h-indicator',   '⚪ D4H',   'D4H: Not Started');
       if (deepWin && !deepWin.closed) deepWin.close();
-      // PR-J #13: canned alert; raw err already logged above.
-      alert('Send failed. The notification was NOT sent. Check the connection and try again.');
+      // PR-J #13: canned alert; raw err already logged above. A 429 or 503
+      // is refused before any side effect, so "not sent" holds there too.
+      const turnedAway = _turnedAwayMessage('Notification not sent', err);
+      if (turnedAway) {
+        alert(turnedAway);
+      } else {
+        alert('Send failed. The notification was NOT sent. Check the connection and try again.');
+      }
     }
   });
 

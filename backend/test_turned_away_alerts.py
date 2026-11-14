@@ -134,21 +134,55 @@ class TestWiring:
         fn = _js_fn(HTML, "function _turnedAwayMessage(")
         assert f"=== {json.dumps(_global_cap_detail())}" in fn
 
-    @pytest.mark.parametrize("handler_start, action", [
-        ("const resp = await fetch(`${BACKEND_URL}/create-doc`", "Incident Log not created"),
-        ("let resp = await fetch('/create-map'", "Map not created"),
+    @pytest.mark.parametrize("handler_start, action, old_throw", [
+        ("const resp = await fetch(`${BACKEND_URL}/create-doc`", "Incident Log not created",
+         "throw new Error(err.detail"),
+        ("let resp = await fetch('/create-map'", "Map not created",
+         "throw new Error(err.detail"),
+        ("let resp = await fetch(`${BACKEND_URL}/send-notification`", "Notification not sent",
+         "throw new Error(`Send failed (${resp.status}): ${errText}`)"),
     ])
-    def test_both_buttons_route_failures_through_the_helpers(self, handler_start, action):
+    def test_each_button_routes_failures_through_the_helpers(self, handler_start, action, old_throw):
         start = HTML.index(handler_start)
         catch = HTML.index("} catch (err) {", start)
         body = HTML[start:catch]
         end = HTML.index("\n  });", catch)
         catch_block = "\n".join(l.split("//")[0] for l in HTML[catch:end].splitlines())
-        assert "throw _httpError(resp, " in body
-        assert "throw new Error(err.detail" not in body
+        not_ok = body.index("if (!resp.ok) {")
+        block = body[not_ok:body.index("\n      }", not_ok)]
+        assert "throw _httpError(resp, " in block
+        assert old_throw not in body
+        if "resp.text()" in block:
+            # Send reads text; without the parse the team cap's detail is lost.
+            assert "errBody = JSON.parse(errText)" in block
         call = f"_turnedAwayMessage('{action}', err)"
         assert call in catch_block
         # The helper's answer must be what the alert shows, under its own test.
         guard = re.search(r"if \(turnedAway\) \{\s*alert\(turnedAway\);", catch_block)
         assert guard, "alert(turnedAway) must sit directly under `if (turnedAway)`"
         assert catch_block.index(call) < guard.start()
+
+
+class TestExtractStatus:
+    """Extract showed "wait 3600 seconds" or "86400 seconds" on a 429, and
+    called the all-day team cap "try again in a few minutes"."""
+
+    BRANCH = "if (resp.status === 429 || resp.status === 503) {"
+
+    def _branch(self) -> str:
+        start = HTML.index(self.BRANCH)
+        return HTML[start:HTML.index("return;", start)]
+
+    def test_limits_go_through_the_helper(self):
+        branch = self._branch()
+        assert "_hideNotifyChecklist();" in branch
+        assert ('showStatus("error", _turnedAwayMessage("Form not read", '
+                '_httpError(resp, ') in branch
+
+    def test_a_bare_503_keeps_the_old_message(self):
+        assert ('|| "Service temporarily unavailable. Please try again in a few minutes.");'
+                in self._branch())
+
+    def test_old_messages_are_gone(self):
+        assert "seconds before trying again" not in HTML
+        assert HTML.count("resp.status === 429") == 1, "one 429 branch in the Extract handler"
