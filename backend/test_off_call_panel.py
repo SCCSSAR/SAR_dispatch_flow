@@ -211,8 +211,12 @@ class TestWaitingPanelFrontend:
         assert "${BACKEND_URL}/off-call-now" in self._html()
 
     def test_footer_wording_agreed_with_bill(self):
+        # Names the field, not a step: the app's "Step 3" is the guides' Step 4
+        # (Bill, 2026-11-13).
+        html = self._html()
         assert ("Off-call members aren't paged through their groups. "
-                "To page one anyway, add them by name in Step 3.") in self._html()
+                "To page one anyway, add them under Individual contacts.") in html
+        assert "add them by name in Step 3" not in html
 
     def test_one_footer_for_every_mode(self):
         # The draft sentence only mattered in personal-dev testing (Bill, 2026-11-08).
