@@ -714,7 +714,7 @@ To prevent surprise credential expirations mid-incident, every monitored secret 
 | Secret | Period | Status |
 |---|---|---|
 | `d4h-access-token` | 365 days | ✅ actively monitored |
-| `everbridge-credentials` | 180 days (planned) | Registry entry commented — uncomment when EB rotation is operationalized |
+| `everbridge-credentials` | 90 days | ✅ actively monitored. The API keeps accepting a password the web UI has expired; it stops when the password is changed in the UI, so rotate both envs and roll a new revision in the same sitting |
 | `slack-bot-token` | 365 days (planned) | Registry entry commented — uncomment when Slack rotation is operationalized |
 
 **Planned (aspirational):** Slack-channel notification (e.g., to a `#secrets-rotation` admin channel) when a secret crosses the warning threshold — currently dispatcher-banner-only. Goal: surface expirations days before any dispatcher experiences an unexpected auth failure mid-incident, and reach the rotation owner even if no dispatch is in flight when the threshold is crossed.

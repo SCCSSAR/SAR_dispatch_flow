@@ -16,7 +16,7 @@ _WARN_DAYS = 30  # surface banner when this many days or fewer remain
 # Add new integrations as one-liners when their rotation lifecycle is operationalized.
 _MONITORED_SECRETS: dict[str, int] = {
     "d4h-access-token": 365,
-    # "everbridge-credentials": 180,  # uncomment when EB rotation is operationalized
+    "everbridge-credentials": 90,
     # "slack-bot-token": 365,          # uncomment when Slack rotation is operationalized
 }
 
