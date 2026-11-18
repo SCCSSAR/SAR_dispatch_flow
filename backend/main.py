@@ -286,6 +286,37 @@ def _subject_last_seen_wearing_value(summary: str) -> str:
     return value
 
 
+def _residence_marker_description_lines(summary: str) -> list:
+    """Lines of the CalTopo Residence marker description, before any geocode note.
+
+    ``MP:`` (name, everything before the "; at-risk:" qualifier), ``DOB:``,
+    then ``Wearing:`` (ops#860), then the fixed ``Subject's residence`` line.
+    Each subject line is omitted when the summary does not carry it.
+
+    Wearing goes on the RESIDENCE marker only, never on a staging/PLS marker
+    (Bill, 2026-11-18): PLS markers are added after arrival on scene, so the
+    Residence marker is the one place on the map that reliably carries subject
+    information. Its value comes from ``_subject_last_seen_wearing_value``, the
+    same rule the Slack welcome and the D4H record use, so a blank box
+    ("Not recorded" / "Unknown" / "N/A" / a bracketed template leak) adds no
+    line here either.
+    """
+    lines = []
+    mp_name_match = re.search(r"^Missing Person:\s*([^;]+)", summary, re.MULTILINE)
+    mp_name = mp_name_match.group(1).strip() if mp_name_match else None
+    if mp_name:
+        lines.append(f"MP: {mp_name}")
+    dob_match = re.search(r"^DOB:\s*(.+)", summary, re.MULTILINE)
+    dob_str = dob_match.group(1).strip() if dob_match else None
+    if dob_str:
+        lines.append(f"DOB: {dob_str}")
+    wearing = _subject_last_seen_wearing_value(summary)
+    if wearing:
+        lines.append(f"Wearing: {wearing}")
+    lines.append("Subject's residence")
+    return lines
+
+
 # Issue #847 — parse the Koester distance lines out of the LPB Range Ring
 # Analysis section so they can be DRAWN, inside a hidden "Planning" folder.
 #
@@ -5712,19 +5743,8 @@ async def ocr(
         res_label_match = re.search(r"^Residence Address:\s*(.+)", summary, re.MULTILINE)
         res_label = res_label_match.group(1).strip() if res_label_match else "Residence"
 
-        # Extract MP name (everything before the "; at-risk:" qualifier) and DOB for marker description
-        mp_name_match = re.search(r"^Missing Person:\s*([^;]+)", summary, re.MULTILINE)
-        mp_name = mp_name_match.group(1).strip() if mp_name_match else None
-        dob_match = re.search(r"^DOB:\s*(.+)", summary, re.MULTILINE)
-        dob_str = dob_match.group(1).strip() if dob_match else None
-
-        # Build residence marker description: MP name + DOB at top, geocode note at bottom
-        res_desc_lines = []
-        if mp_name:
-            res_desc_lines.append(f"MP: {mp_name}")
-        if dob_str:
-            res_desc_lines.append(f"DOB: {dob_str}")
-        res_desc_lines.append("Subject's residence")
+        # Residence marker description: MP, DOB, Wearing at top, geocode note at bottom
+        res_desc_lines = _residence_marker_description_lines(summary)
 
         if res_lat is not None and res_lng is not None:
             map_data["residence"] = {
