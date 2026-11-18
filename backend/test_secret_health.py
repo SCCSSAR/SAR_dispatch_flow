@@ -9,7 +9,14 @@ secret_health would fail at collection time.
 When updating helpers in secret_health.py, ALSO update the mirror here. The
 mirror IS the test contract — drift surfaces in production behavior.
 """
+import ast
 import datetime
+import re
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SECRET_HEALTH_SRC = _REPO_ROOT / "backend" / "secret_health.py"
+_TF_ENVS = ("sccssar-dev", "dev")
 
 
 # --------------------------------------------------------------------------
@@ -22,7 +29,7 @@ _WARN_DAYS = 30
 # --- Mirror ---
 _MONITORED_SECRETS: dict[str, int] = {
     "d4h-access-token": 365,
-    # "everbridge-credentials": 180,  # uncomment when EB rotation is operationalized
+    "everbridge-credentials": 90,
     # "slack-bot-token": 365,          # uncomment when Slack rotation is operationalized
 }
 
@@ -154,3 +161,54 @@ class TestOrchestrate:
         result = _orchestrate("test-project", lambda name, pid: {})
         assert result["d4h-access-token"]["days_remaining"] is None
         assert result["d4h-access-token"]["warn"] is False
+
+
+# --------------------------------------------------------------------------
+# Tests — production registry (reads secret_health.py and Terraform; no mirror)
+# --------------------------------------------------------------------------
+
+def _production_registry() -> dict[str, int]:
+    """The _MONITORED_SECRETS literal as written in secret_health.py.
+
+    Parsed with ast, so a commented-out entry is absent, which is the exact
+    difference between monitored and not.
+    """
+    tree = ast.parse(_SECRET_HEALTH_SRC.read_text())
+    for node in tree.body:
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and node.target.id == "_MONITORED_SECRETS"):
+            return ast.literal_eval(node.value)
+    raise AssertionError("_MONITORED_SECRETS not found at module level in secret_health.py")
+
+
+def _terraform_viewer_secrets(env: str) -> set[str]:
+    """Secret IDs in local.dispatch_runner_viewer_secrets for one Terraform env."""
+    src = (_REPO_ROOT / "terraform" / "environments" / env / "main.tf").read_text()
+    m = re.search(r"dispatch_runner_viewer_secrets\s*=\s*toset\(\[(.*?)\]\)", src, re.S)
+    assert m, f"dispatch_runner_viewer_secrets block not found in {env}/main.tf"
+    body = "\n".join(line.split("#")[0] for line in m.group(1).splitlines())
+    return set(re.findall(r'"([^"]+)"', body))
+
+
+class TestProductionRegistry:
+    def test_everbridge_credentials_is_monitored(self):
+        """Everbridge's API credential expires on a password policy; an unmonitored
+        expiry is found by a dispatcher mid-callout (2026-11-17)."""
+        assert "everbridge-credentials" in _production_registry()
+
+    def test_d4h_access_token_is_monitored(self):
+        assert "d4h-access-token" in _production_registry()
+
+    def test_mirror_matches_production(self):
+        """The mirror above is what the behavioural tests exercise; it must be
+        the production registry, or they test a copy."""
+        assert _MONITORED_SECRETS == _production_registry()
+
+    def test_every_monitored_secret_has_viewer_grant_in_both_envs(self):
+        """_fetch_labels swallows a 403 into {}, which renders as 'never rotated'
+        and shows NO banner. A monitored secret without secretmanager.viewer is
+        therefore silently unmonitored."""
+        registry = set(_production_registry())
+        for env in _TF_ENVS:
+            missing = registry - _terraform_viewer_secrets(env)
+            assert not missing, f"{env}: no viewer grant for {sorted(missing)}"
