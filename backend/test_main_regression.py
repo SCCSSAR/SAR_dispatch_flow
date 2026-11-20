@@ -1595,6 +1595,351 @@ class TestUnnavigableSubstitutionBehaviour:
         assert self._run(rec, self.LKP) == {"needs": False, "nav": False}
 
 
+
+class TestSummaryLineClasses:
+    """ops#715 interim: the summary textarea is tinted by what a dispatcher
+    may safely edit (Bill, 2026-11-19). Executes the real classifier and
+    renderer from index.html under node.
+
+    Classes: "edit" (green, the edit goes into the incident record), "map"
+    (amber, the text changes but the CalTopo marker does not), "lock" (red,
+    use Address Override), "" (no tint).
+    """
+
+    FIXTURE = "\n".join([
+        "Initial Incident Summary:",
+        "Event Name: 2026-11-18 SJPD Elm",
+        "Event #: 26-322-0412",
+        "Agency: San Jose Police Department",
+        "Contact: SGT. Example 408-555-0100",
+        "Missing Person: Alex Sample; at-risk: Dementia, Alone",
+        "DOB: 1951-03-02 (75 years old)",
+        "Last Seen At: 2026-11-18 14:30",
+        "Last Known Position: 1200 Elm St, San Jose, CA",
+        "Residence Address: 1200 Elm St, San Jose, CA",
+        "Last Seen Wearing: Blue jacket",
+        "Last Seen With: Not recorded",
+        "Request: K9 and ground teams",
+        "Staging Area for Resources: Oak Park, San Jose",
+        "CalTopo Map ID:",
+        "Dispatcher: Burns",
+        "---",
+        "Event Log:",
+        "2026-11-18 14:52 - Request received from SJPD",
+        "2026-11-18 15:01 - v2 Intake form processed; Initial Incident Summary created",
+        "---",
+        "LPB Questionnaire:",
+    ] + [f"Q{n} - No - question {n}" for n in range(1, 13)] + [
+        "Q13 - No - not a real question",
+        "  Request: indented, not a label",
+        "---",
+        "Staging Area Recommendations (quality-ranked, top-to-bottom):",
+        "1. Oak Park, San Jose — City park. 0.3 mi from LKP",
+        "2. 610 Oak Ave, San Jose — Elementary school. 0.4 mi from LKP",
+        "---",
+        "LPB Range Ring Analysis:",
+        "1. Subject Category: Hiker. Key factors: At-risk.",
+        "2. Koester Statistics for this category:",
+    ])
+
+    @staticmethod
+    def _node(call_js: str):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        src = (Path(__file__).parent.parent / "frontend" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        parts = []
+        for name in ("_summaryLineClasses", "_summaryTintHtml"):
+            fn = re.search(rf"^  function {name}\(.*?\n  \}}$", src, re.M | re.S)
+            assert fn, f"{name} not found"
+            parts.append(fn.group(0))
+        program = "\n".join(parts) + f"\nconsole.log(JSON.stringify({call_js}));"
+        out = subprocess.run(
+            [node, "-e", program], capture_output=True, text=True, timeout=30
+        )
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def _pairs(self, text=None):
+        text = self.FIXTURE if text is None else text
+        classes = self._node(f"_summaryLineClasses({json.dumps(text)})")
+        return list(zip(text.split("\n"), classes))
+
+    def _class_of(self, line):
+        hits = [c for l, c in self._pairs() if l == line]
+        assert len(hits) == 1, f"fixture line not unique: {line!r}"
+        return hits[0]
+
+    def test_edit_lines(self):
+        pairs = dict(self._pairs())
+        labels = ("Event Name:", "Event #:", "Agency:", "Contact:", "Missing Person:",
+                  "DOB:", "Last Seen At:", "Last Seen Wearing:", "Last Seen With:",
+                  "Request:", "Dispatcher:")
+        for label in labels:
+            line = next(l for l in pairs if l.startswith(label))
+            assert pairs[line] == "edit", line
+        for n in range(1, 13):
+            assert self._class_of(f"Q{n} - No - question {n}") == "edit", n
+
+    def test_map_lines(self):
+        assert self._class_of("Last Known Position: 1200 Elm St, San Jose, CA") == "map"
+        assert self._class_of("Residence Address: 1200 Elm St, San Jose, CA") == "map"
+
+    def test_lock_lines(self):
+        assert self._class_of("Staging Area for Resources: Oak Park, San Jose") == "lock"
+        assert self._class_of("1. Oak Park, San Jose — City park. 0.3 mi from LKP") == "lock"
+
+    def test_lpb_numbered_line_not_locked(self):
+        # Review Focus 1: only the recommendations section's "1." is locked.
+        assert self._class_of("1. Subject Category: Hiker. Key factors: At-risk.") == ""
+
+    def test_unlisted_lines_plain(self):
+        for line in ("Initial Incident Summary:", "Event Log:", "CalTopo Map ID:",
+                     "2026-11-18 14:52 - Request received from SJPD",
+                     "2. 610 Oak Ave, San Jose — Elementary school. 0.4 mi from LKP",
+                     "Q13 - No - not a real question",
+                     "  Request: indented, not a label",
+                     "Staging Area Recommendations (quality-ranked, top-to-bottom):",
+                     "2. Koester Statistics for this category:"):
+            assert self._class_of(line) == "", line
+        assert all(c == "" for l, c in self._pairs() if l == "---")
+
+    def test_one_class_per_line(self):
+        for text in (self.FIXTURE, "", "Event Name: x\n"):
+            classes = self._node(f"_summaryLineClasses({json.dumps(text)})")
+            assert len(classes) == len(text.split("\n")), repr(text)
+
+    def test_tint_html_escapes(self):
+        html = self._node(
+            '_summaryTintHtml("Contact: <b>A & B</b>\\n\\nStaging Area for Resources: x")'
+        )
+        assert "&lt;b&gt;A &amp; B&lt;/b&gt;" in html
+        assert "<b>" not in html
+        assert html.count('<div class="tint-line') == 3
+        assert '<div class="tint-line tint-edit">' in html
+        assert '<div class="tint-line tint-lock">' in html
+        assert '<div class="tint-line">​</div>' in html
+
+
+
+class TestSummaryTintWiring:
+    """ops#715 interim: the tint layer behind #result-text. About 15 code paths
+    assign ta.value directly and fire no input event, so the repaint hangs off
+    a value hook on that one element (Review Focus 2). The hook is executed
+    under node against a fake textarea; layout and copy are source pins.
+    """
+
+    LEGEND = (
+        "Edit freely: your edit goes into the incident record",
+        "Changes here require manual edit of CalTopo marker location",
+        "Do not type: use Address Override",
+    )
+
+    @staticmethod
+    def _src() -> str:
+        return (Path(__file__).parent.parent / "frontend" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+    @classmethod
+    def _fn(cls, name: str) -> str:
+        fn = re.search(rf"^  function {name}\(.*?\n  \}}$", cls._src(), re.M | re.S)
+        assert fn, f"{name} not found"
+        return fn.group(0)
+
+    @classmethod
+    def _css_rule(cls, selector_re: str) -> str:
+        m = re.search(selector_re + r"\s*\{([^}]*)\}", cls._src())
+        assert m, f"CSS rule not found: {selector_re}"
+        return m.group(1)
+
+    def test_programmatic_write_repaints(self):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        harness = r"""
+class HTMLTextAreaElement {
+  constructor() { this._v = ""; this.scrollTop = 0; this._l = {}; }
+  addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); }
+}
+Object.defineProperty(HTMLTextAreaElement.prototype, "value", {
+  configurable: true, get() { return this._v; }, set(v) { this._v = String(v); },
+});
+const ta = new HTMLTextAreaElement();
+const tint = { innerHTML: "", scrollTop: 0 };
+var document = { getElementById: (id) => id === "result-text" ? ta : id === "result-tint" ? tint : null };
+var ResizeObserver = class { constructor(f) { this.f = f; } observe() {} };
+"""
+        fns = "\n".join(self._fn(n) for n in (
+            "_summaryLineClasses", "_summaryTintHtml", "_summaryTintRepaint", "_summaryTintInstall"))
+        run = r"""
+_summaryTintInstall();
+ta.value = "Event Name: x\nStaging Area for Resources: y";
+const afterWrite = tint.innerHTML, readBack = ta.value;
+ta._v = "Last Known Position: z";
+(ta._l.input || []).forEach((f) => f());
+const afterTyping = tint.innerHTML;
+ta.scrollTop = 40;
+(ta._l.scroll || []).forEach((f) => f());
+console.log(JSON.stringify({ afterWrite, readBack, afterTyping, scroll: tint.scrollTop }));
+"""
+        out = subprocess.run([node, "-e", harness + fns + run],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        r = json.loads(out.stdout)
+        assert "tint-edit" in r["afterWrite"] and "tint-lock" in r["afterWrite"], (
+            "a plain ta.value assignment must repaint the tint")
+        assert r["readBack"] == "Event Name: x\nStaging Area for Resources: y", (
+            "the hook must not change what reads of ta.value return")
+        assert "tint-map" in r["afterTyping"], "typing (input event) must repaint"
+        assert r["scroll"] == 40, "the tint must follow the textarea's scroll"
+
+    def test_install_observes_resize_and_runs_once(self):
+        body = self._fn("_summaryTintInstall")
+        assert re.search(r"new ResizeObserver\(\s*_summaryTintRepaint\s*\)\.observe\(", body)
+        calls = [l for l in self._src().splitlines()
+                 if re.match(r"\s*_summaryTintInstall\(\);", l.split("//")[0])]
+        assert len(calls) == 1, "_summaryTintInstall() must be called exactly once"
+
+    def test_markup_puts_tint_behind_textarea(self):
+        assert re.search(
+            r'<div class="summary-wrap">\s*<div id="result-tint" aria-hidden="true"></div>'
+            r'\s*<textarea id="result-text"[^>]*></textarea>\s*</div>',
+            self._src(),
+        ), "the tint must sit first inside the wrapper, with the textarea over it"
+
+    def test_legend_copy_exact(self):
+        src = self._src()
+        m = re.search(r'<div class="summary-legend"[^>]*>(.*?)\n    </div>', src, re.S)
+        assert m, "summary legend not found"
+        for text in self.LEGEND:
+            assert src.count(text) == 1 and text in m.group(1), text
+
+    def test_textarea_is_transparent_over_the_wrapper(self):
+        assert re.search(r"background:\s*transparent", self._css_rule(r"\n    #result-text"))
+        assert re.search(r"background:\s*#0d1117", self._css_rule(r"\n    \.summary-wrap"))
+
+    def test_both_layers_share_box_metrics(self):
+        rule = self._css_rule(r"\n    #result-text,\s*#result-tint")
+        for prop in (r"padding:", r"font-family:", r"font-size:", r"line-height:",
+                     r"white-space:\s*pre-wrap", r"overflow-wrap:\s*break-word",
+                     r"scrollbar-gutter:\s*stable", r"border:", r"box-sizing:\s*border-box"):
+            assert re.search(prop, rule), f"shared rule lacks {prop}"
+        # (?<!,) skips the shared rule, whose second selector also starts a line.
+        own = (self._css_rule(r"(?<!,)\n    #result-text")
+               + self._css_rule(r"(?<!,)\n    #result-tint"))
+        for prop in ("padding:", "font-size:", "line-height:", "font-family:"):
+            assert prop not in own, f"{prop} must live only in the shared rule"
+
+    def test_locked_state_moves_the_tint_border_and_dims(self):
+        rule = self._css_rule(r"\.summary-wrap:has\(#result-text\[readonly\]\) #result-tint")
+        assert re.search(r"border-left-width:\s*1px", rule), (
+            "locking narrows the textarea's left border; the tint must follow")
+        assert re.search(r"opacity:\s*0?\.\d+", rule), "locked tints dim"
+
+
+
+class TestSummaryTintHardening:
+    """Final-review fixes for the ops#715 tint layer (2026-11-19): what keeps the
+    tint aligned with its text, legend icons for colour-blind readers, two
+    WebKit guards, and a repaint that can never break a dispatch-path write.
+    """
+
+    W = TestSummaryTintWiring
+
+    def _hook(self, run_js: str, pre_js: str = ""):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        harness = r"""
+class HTMLTextAreaElement {
+  constructor() { this._v = ""; this.scrollTop = 0; this._l = {}; }
+  addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); }
+}
+Object.defineProperty(HTMLTextAreaElement.prototype, "value", {
+  configurable: true, get() { return this._v; }, set(v) { this._v = String(v); },
+});
+const ta = new HTMLTextAreaElement();
+const tint = { innerHTML: "", scrollTop: 0 };
+var document = { getElementById: (id) => id === "result-text" ? ta : id === "result-tint" ? tint : null };
+var ResizeObserver = class { constructor(f) {} observe() {} };
+"""
+        fns = "\n".join(self.W._fn(n) for n in (
+            "_summaryLineClasses", "_summaryTintHtml", "_summaryTintRepaint", "_summaryTintInstall"))
+        out = subprocess.run([node, "-e", harness + fns + pre_js + run_js],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def test_repaint_copies_scroll_position(self):
+        r = self._hook(r"""
+_summaryTintInstall();
+ta.scrollTop = 25;
+ta.value = "Event Name: x\nContact: y";
+console.log(JSON.stringify({ scroll: tint.scrollTop }));
+""")
+        assert r["scroll"] == 25, "a repaint must leave the tint at the textarea's scroll"
+
+    def test_repaint_error_never_breaks_a_write(self):
+        r = self._hook(r"""
+_summaryTintInstall();
+_summaryTintHtml = () => { throw new Error("tint bug"); };
+let threw = false;
+try { ta.value = "Staging Area for Resources: x"; } catch (e) { threw = true; }
+console.log(JSON.stringify({ threw, readBack: ta.value }));
+""")
+        assert r == {"threw": False, "readBack": "Staging Area for Resources: x"}, (
+            "a tint failure must not throw into the override, Event Log or map-URL writes")
+
+    def test_tint_layer_positioning(self):
+        tint = self.W._css_rule(r"(?<!,)\n    #result-tint")
+        for prop in (r"position:\s*absolute", r"inset:\s*0", r"overflow:\s*hidden",
+                     r"pointer-events:\s*none", r"color:\s*transparent"):
+            assert re.search(prop, tint), f"#result-tint lacks {prop}"
+        assert re.search(r"position:\s*relative", self.W._css_rule(r"\n    \.summary-wrap"))
+
+    @staticmethod
+    def _px(rule: str, prop_re: str) -> int:
+        m = re.search(prop_re + r":\s*(\d+)px", rule)
+        assert m, f"{prop_re} not found"
+        return int(m.group(1))
+
+    def test_left_border_matches_textarea_unlocked(self):
+        ta = self.W._css_rule(r"\n    #result-text:not\(\[readonly\]\)")
+        tint = self.W._css_rule(r"(?<!,)\n    #result-tint")
+        assert self._px(ta, "border-left") == self._px(tint, "border-left-width"), (
+            "unlocked, the tint's left border must equal the textarea's or every line shifts")
+
+    def test_left_border_matches_textarea_locked(self):
+        shared = self.W._css_rule(r"\n    #result-text,\s*#result-tint")
+        locked_ta = self.W._css_rule(r"\n    #result-text\[readonly\]")
+        locked_tint = self.W._css_rule(r"\.summary-wrap:has\(#result-text\[readonly\]\) #result-tint")
+        assert "border-left" not in locked_ta and "border-width" not in locked_ta, (
+            "the locked textarea must keep the shared border width")
+        assert self._px(shared, "border") == self._px(locked_tint, "border-left-width")
+
+    def test_legend_entries_carry_the_line_icons(self):
+        src = self.W._src()
+        for kind in ("edit", "map", "lock"):
+            assert re.search(
+                rf"\.tint-{kind}::before,\s*\.summary-legend \.lg-{kind}::before\s*\{{"
+                r'[^}]*background-image:\s*url\("data:image/svg\+xml',
+                src,
+            ), f"the {kind} legend entry must show the same icon as its lines"
+        assert not re.search(r"\.summary-legend \.lg-\w+::before\s*\{\s*background:\s*#", src), (
+            "plain colour squares are back in the legend")
+
+    def test_webkit_guards(self):
+        assert re.search(r"-webkit-text-size-adjust:\s*100%",
+                         self.W._css_rule(r"\n    #result-text,\s*#result-tint")), (
+            "iOS must not inflate one layer's text and not the other's")
+        after = self.W._css_rule(r"\n    #result-tint::after")
+        assert re.search(r"content:\s*\"\"", after) and re.search(r"height:\s*1rem", after), (
+            "a bottom spacer keeps the tint's scroll range at least the textarea's")
+
+
 class TestTruncateOnWord:
     """#721 secondary defect: the Event Log cut the officer's text mid-word."""
 

@@ -240,18 +240,102 @@
     /* Results */
     #results-card { display: none; }
 
-    #result-text {
-      width: 100%;
-      min-height: 400px;
-      background: #0d1117;
-      color: #c9d1d9;
-      border: 1px solid #30363d;
+    /* ops#715 interim: a tint layer sits behind a transparent textarea and
+       must wrap exactly like it, so every box metric lives in this one rule. */
+    #result-text,
+    #result-tint {
+      box-sizing: border-box;
+      border: 1px solid transparent;
       border-radius: 6px;
-      padding: 1rem;
+      padding: 1rem 1rem 1rem calc(1rem + 18px);
       font-family: "SF Mono", "Fira Code", monospace;
       font-size: 0.85rem;
       line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      scrollbar-gutter: stable;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+      margin: 0;
+    }
+    .summary-wrap {
+      position: relative;
+      background: #0d1117;
+      border-radius: 6px;
+    }
+    #result-text {
+      position: relative;
+      z-index: 1;
+      display: block;
+      width: 100%;
+      min-height: 400px;
+      background: transparent;
+      color: #c9d1d9;
+      border-color: #30363d;
       resize: vertical;
+    }
+    #result-tint {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      color: transparent;
+      border-left-width: 3px;
+    }
+    /* Some engines leave bottom padding out of the scroll range; the spacer
+       keeps the tint scrollable at least as far as the textarea. */
+    #result-tint::after {
+      content: "";
+      display: block;
+      height: 1rem;
+    }
+    .summary-wrap:has(#result-text[readonly]) #result-tint {
+      border-left-width: 1px;
+      opacity: 0.5;
+    }
+    .tint-line {
+      position: relative;
+      margin-left: calc(-1rem - 18px);
+      padding-left: calc(1rem + 18px);
+    }
+    .tint-edit, .tint-map, .tint-lock { --icon-size: 13px; }
+    .tint-edit::before, .tint-map::before, .tint-lock::before {
+      content: "";
+      position: absolute;
+      left: 0.75rem;
+      top: 0.3em;
+      width: var(--icon-size);
+      height: var(--icon-size);
+      background: no-repeat center / contain;
+    }
+    .tint-edit { background: rgba(46, 160, 67, 0.15); box-shadow: inset 3px 0 0 #3fb950; }
+    .tint-map  { background: rgba(210, 153, 34, 0.16); box-shadow: inset 3px 0 0 #d29922; }
+    .tint-lock { background: rgba(248, 81, 73, 0.15); box-shadow: inset 3px 0 0 #f85149; }
+    .tint-edit::before,
+    .summary-legend .lg-edit::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233fb950' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h4L18.5 9.5a2.8 2.8 0 0 0-4-4L4 16v4'/%3E%3Cpath d='M13.5 6.5l4 4'/%3E%3C/svg%3E"); }
+    .tint-map::before,
+    .summary-legend .lg-map::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d29922' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='11' r='3'/%3E%3Cpath d='M17.7 16.7l-4.3 4.2a2 2 0 0 1-2.8 0l-4.3-4.2a8 8 0 1 1 11.4 0z'/%3E%3C/svg%3E"); }
+    .tint-lock::before,
+    .summary-legend .lg-lock::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f85149' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E"); }
+    .summary-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem 1.2rem;
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+      color: #aab2c2;
+    }
+    /* The legend shows each line's icon, so the key holds without colour. */
+    .summary-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      margin-right: 0.4rem;
+      vertical-align: -2px;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
     }
 
     /* Editable state — textarea is live until the first dispatch button is clicked. */
@@ -962,7 +1046,15 @@
 
   <div class="card" id="results-card">
     <h2>Step 2 — Review &amp; Correct Extracted Data</h2>
-    <textarea id="result-text" spellcheck="true" aria-label="Extracted incident summary — edit as needed"></textarea>
+    <div class="summary-wrap">
+      <div id="result-tint" aria-hidden="true"></div>
+      <textarea id="result-text" spellcheck="true" aria-label="Extracted incident summary — edit as needed"></textarea>
+    </div>
+    <div class="summary-legend">
+      <span class="lg-edit">Edit freely: your edit goes into the incident record</span>
+      <span class="lg-map">Changes here require manual edit of CalTopo marker location</span>
+      <span class="lg-lock">Do not type: use Address Override</span>
+    </div>
     <div class="result-actions">
       <button id="copy-btn">📋 Copy to Clipboard</button>
       <button id="clear-btn">Clear &amp; Start Over</button>
@@ -4254,6 +4346,73 @@
       picks.querySelectorAll("button").forEach((b) => { b.disabled = !!locked; });
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // ops#715 interim: which summary lines a dispatcher may safely edit (Bill,
+  // 2026-11-19). "edit" = the edit goes into the incident record; "map" = the
+  // text changes but the CalTopo marker does not; "lock" = use Address Override.
+  // Only the "1." inside the recommendations section is locked: the LPB
+  // analysis that follows has its own "1. Subject Category" line.
+  // ---------------------------------------------------------------------------
+  function _summaryLineClasses(text) {
+    const EDIT = /^(?:Event Name|Event #|Agency|Contact|Missing Person|DOB|Last Seen At|Last Seen Wearing|Last Seen With|Request|Dispatcher):/;
+    const QUESTION = /^Q(?:[1-9]|1[0-2]) - /;
+    const MAP = /^(?:Last Known Position|Residence Address):/;
+    const LOCK = /^Staging Area for Resources:/;
+    const RECS = /^Staging (?:Area )?Recommendations(?:\s*\(quality-ranked, top-to-bottom\))?:\s*$/;
+    let inRecs = false;
+    return (text || "").split("\n").map((line) => {
+      if (RECS.test(line)) { inRecs = true; return ""; }
+      if (line.trim() === "---") { inRecs = false; return ""; }
+      if (inRecs && /^1\.\s/.test(line)) return "lock";
+      if (LOCK.test(line)) return "lock";
+      if (MAP.test(line)) return "map";
+      if (EDIT.test(line) || QUESTION.test(line)) return "edit";
+      return "";
+    });
+  }
+
+  function _summaryTintHtml(text) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const classes = _summaryLineClasses(text);
+    return (text || "").split("\n").map((line, i) => {
+      const cls = classes[i] ? ` tint-${classes[i]}` : "";
+      return `<div class="tint-line${cls}">${line ? esc(line) : "​"}</div>`;
+    }).join("");
+  }
+
+  function _summaryTintRepaint() {
+    const ta = document.getElementById("result-text");
+    const tint = document.getElementById("result-tint");
+    if (!ta || !tint) return;
+    tint.innerHTML = _summaryTintHtml(ta.value);
+    tint.scrollTop = ta.scrollTop;
+  }
+
+  // Many code paths assign ta.value directly, which fires no input event, so
+  // the repaint hangs off a value hook on this one element. Reads and writes
+  // go through the native accessor unchanged.
+  function _summaryTintInstall() {
+    const ta = document.getElementById("result-text");
+    if (!ta || ta._tintInstalled) return;
+    ta._tintInstalled = true;
+    const native = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+    Object.defineProperty(ta, "value", {
+      configurable: true,
+      get() { return native.get.call(this); },
+      // A cosmetic layer must never throw into a dispatch-path write.
+      set(v) { native.set.call(this, v); try { _summaryTintRepaint(); } catch (_) {} },
+    });
+    ta.addEventListener("input", _summaryTintRepaint);
+    ta.addEventListener("scroll", () => {
+      const tint = document.getElementById("result-tint");
+      if (tint) tint.scrollTop = ta.scrollTop;
+    });
+    if (typeof ResizeObserver === "function") new ResizeObserver(_summaryTintRepaint).observe(ta);
+    _summaryTintRepaint();
+  }
+
+  _summaryTintInstall();
 
   // ---------------------------------------------------------------------------
   // Parse key fields from the OCR result textarea (dispatcher may have edited it)
