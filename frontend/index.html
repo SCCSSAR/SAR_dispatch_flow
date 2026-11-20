@@ -254,6 +254,8 @@
       white-space: pre-wrap;
       overflow-wrap: break-word;
       scrollbar-gutter: stable;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
       margin: 0;
     }
     .summary-wrap {
@@ -280,6 +282,13 @@
       color: transparent;
       border-left-width: 3px;
     }
+    /* Some engines leave bottom padding out of the scroll range; the spacer
+       keeps the tint scrollable at least as far as the textarea. */
+    #result-tint::after {
+      content: "";
+      display: block;
+      height: 1rem;
+    }
     .summary-wrap:has(#result-text[readonly]) #result-tint {
       border-left-width: 1px;
       opacity: 0.5;
@@ -302,9 +311,12 @@
     .tint-edit { background: rgba(46, 160, 67, 0.15); box-shadow: inset 3px 0 0 #3fb950; }
     .tint-map  { background: rgba(210, 153, 34, 0.16); box-shadow: inset 3px 0 0 #d29922; }
     .tint-lock { background: rgba(248, 81, 73, 0.15); box-shadow: inset 3px 0 0 #f85149; }
-    .tint-edit::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233fb950' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h4L18.5 9.5a2.8 2.8 0 0 0-4-4L4 16v4'/%3E%3Cpath d='M13.5 6.5l4 4'/%3E%3C/svg%3E"); }
-    .tint-map::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d29922' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='11' r='3'/%3E%3Cpath d='M17.7 16.7l-4.3 4.2a2 2 0 0 1-2.8 0l-4.3-4.2a8 8 0 1 1 11.4 0z'/%3E%3C/svg%3E"); }
-    .tint-lock::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f85149' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E"); }
+    .tint-edit::before,
+    .summary-legend .lg-edit::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233fb950' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h4L18.5 9.5a2.8 2.8 0 0 0-4-4L4 16v4'/%3E%3Cpath d='M13.5 6.5l4 4'/%3E%3C/svg%3E"); }
+    .tint-map::before,
+    .summary-legend .lg-map::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d29922' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='11' r='3'/%3E%3Cpath d='M17.7 16.7l-4.3 4.2a2 2 0 0 1-2.8 0l-4.3-4.2a8 8 0 1 1 11.4 0z'/%3E%3C/svg%3E"); }
+    .tint-lock::before,
+    .summary-legend .lg-lock::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f85149' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E"); }
     .summary-legend {
       display: flex;
       flex-wrap: wrap;
@@ -313,18 +325,18 @@
       font-size: 0.8rem;
       color: #aab2c2;
     }
+    /* The legend shows each line's icon, so the key holds without colour. */
     .summary-legend span::before {
       content: "";
       display: inline-block;
-      width: 10px;
-      height: 10px;
+      width: 13px;
+      height: 13px;
       margin-right: 0.4rem;
-      border-radius: 2px;
-      vertical-align: -1px;
+      vertical-align: -2px;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
     }
-    .summary-legend .lg-edit::before { background: #3fb950; }
-    .summary-legend .lg-map::before  { background: #d29922; }
-    .summary-legend .lg-lock::before { background: #f85149; }
 
     /* Editable state — textarea is live until the first dispatch button is clicked. */
     #result-text:not([readonly]) {
@@ -4374,7 +4386,8 @@
     Object.defineProperty(ta, "value", {
       configurable: true,
       get() { return native.get.call(this); },
-      set(v) { native.set.call(this, v); _summaryTintRepaint(); },
+      // A cosmetic layer must never throw into a dispatch-path write.
+      set(v) { native.set.call(this, v); try { _summaryTintRepaint(); } catch (_) {} },
     });
     ta.addEventListener("input", _summaryTintRepaint);
     ta.addEventListener("scroll", () => {

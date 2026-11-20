@@ -1840,6 +1840,106 @@ console.log(JSON.stringify({ afterWrite, readBack, afterTyping, scroll: tint.scr
         assert re.search(r"opacity:\s*0?\.\d+", rule), "locked tints dim"
 
 
+
+class TestSummaryTintHardening:
+    """Final-review fixes for the ops#715 tint layer (2026-11-19): what keeps the
+    tint aligned with its text, legend icons for colour-blind readers, two
+    WebKit guards, and a repaint that can never break a dispatch-path write.
+    """
+
+    W = TestSummaryTintWiring
+
+    def _hook(self, run_js: str, pre_js: str = ""):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        harness = r"""
+class HTMLTextAreaElement {
+  constructor() { this._v = ""; this.scrollTop = 0; this._l = {}; }
+  addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); }
+}
+Object.defineProperty(HTMLTextAreaElement.prototype, "value", {
+  configurable: true, get() { return this._v; }, set(v) { this._v = String(v); },
+});
+const ta = new HTMLTextAreaElement();
+const tint = { innerHTML: "", scrollTop: 0 };
+var document = { getElementById: (id) => id === "result-text" ? ta : id === "result-tint" ? tint : null };
+var ResizeObserver = class { constructor(f) {} observe() {} };
+"""
+        fns = "\n".join(self.W._fn(n) for n in (
+            "_summaryLineClasses", "_summaryTintHtml", "_summaryTintRepaint", "_summaryTintInstall"))
+        out = subprocess.run([node, "-e", harness + fns + pre_js + run_js],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def test_repaint_copies_scroll_position(self):
+        r = self._hook(r"""
+_summaryTintInstall();
+ta.scrollTop = 25;
+ta.value = "Event Name: x\nContact: y";
+console.log(JSON.stringify({ scroll: tint.scrollTop }));
+""")
+        assert r["scroll"] == 25, "a repaint must leave the tint at the textarea's scroll"
+
+    def test_repaint_error_never_breaks_a_write(self):
+        r = self._hook(r"""
+_summaryTintInstall();
+_summaryTintHtml = () => { throw new Error("tint bug"); };
+let threw = false;
+try { ta.value = "Staging Area for Resources: x"; } catch (e) { threw = true; }
+console.log(JSON.stringify({ threw, readBack: ta.value }));
+""")
+        assert r == {"threw": False, "readBack": "Staging Area for Resources: x"}, (
+            "a tint failure must not throw into the override, Event Log or map-URL writes")
+
+    def test_tint_layer_positioning(self):
+        tint = self.W._css_rule(r"(?<!,)\n    #result-tint")
+        for prop in (r"position:\s*absolute", r"inset:\s*0", r"overflow:\s*hidden",
+                     r"pointer-events:\s*none", r"color:\s*transparent"):
+            assert re.search(prop, tint), f"#result-tint lacks {prop}"
+        assert re.search(r"position:\s*relative", self.W._css_rule(r"\n    \.summary-wrap"))
+
+    @staticmethod
+    def _px(rule: str, prop_re: str) -> int:
+        m = re.search(prop_re + r":\s*(\d+)px", rule)
+        assert m, f"{prop_re} not found"
+        return int(m.group(1))
+
+    def test_left_border_matches_textarea_unlocked(self):
+        ta = self.W._css_rule(r"\n    #result-text:not\(\[readonly\]\)")
+        tint = self.W._css_rule(r"(?<!,)\n    #result-tint")
+        assert self._px(ta, "border-left") == self._px(tint, "border-left-width"), (
+            "unlocked, the tint's left border must equal the textarea's or every line shifts")
+
+    def test_left_border_matches_textarea_locked(self):
+        shared = self.W._css_rule(r"\n    #result-text,\s*#result-tint")
+        locked_ta = self.W._css_rule(r"\n    #result-text\[readonly\]")
+        locked_tint = self.W._css_rule(r"\.summary-wrap:has\(#result-text\[readonly\]\) #result-tint")
+        assert "border-left" not in locked_ta and "border-width" not in locked_ta, (
+            "the locked textarea must keep the shared border width")
+        assert self._px(shared, "border") == self._px(locked_tint, "border-left-width")
+
+    def test_legend_entries_carry_the_line_icons(self):
+        src = self.W._src()
+        for kind in ("edit", "map", "lock"):
+            assert re.search(
+                rf"\.tint-{kind}::before,\s*\.summary-legend \.lg-{kind}::before\s*\{{"
+                r'[^}]*background-image:\s*url\("data:image/svg\+xml',
+                src,
+            ), f"the {kind} legend entry must show the same icon as its lines"
+        assert not re.search(r"\.summary-legend \.lg-\w+::before\s*\{\s*background:\s*#", src), (
+            "plain colour squares are back in the legend")
+
+    def test_webkit_guards(self):
+        assert re.search(r"-webkit-text-size-adjust:\s*100%",
+                         self.W._css_rule(r"\n    #result-text,\s*#result-tint")), (
+            "iOS must not inflate one layer's text and not the other's")
+        after = self.W._css_rule(r"\n    #result-tint::after")
+        assert re.search(r"content:\s*\"\"", after) and re.search(r"height:\s*1rem", after), (
+            "a bottom spacer keeps the tint's scroll range at least the textarea's")
+
+
 class TestTruncateOnWord:
     """#721 secondary defect: the Event Log cut the officer's text mid-word."""
 
