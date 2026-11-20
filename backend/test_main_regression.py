@@ -1723,6 +1723,123 @@ class TestSummaryLineClasses:
         assert '<div class="tint-line">​</div>' in html
 
 
+
+class TestSummaryTintWiring:
+    """ops#715 interim: the tint layer behind #result-text. About 15 code paths
+    assign ta.value directly and fire no input event, so the repaint hangs off
+    a value hook on that one element (Review Focus 2). The hook is executed
+    under node against a fake textarea; layout and copy are source pins.
+    """
+
+    LEGEND = (
+        "Edit freely: your edit goes into the incident record",
+        "Changes here require manual edit of CalTopo marker location",
+        "Do not type: use Address Override",
+    )
+
+    @staticmethod
+    def _src() -> str:
+        return (Path(__file__).parent.parent / "frontend" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+    @classmethod
+    def _fn(cls, name: str) -> str:
+        fn = re.search(rf"^  function {name}\(.*?\n  \}}$", cls._src(), re.M | re.S)
+        assert fn, f"{name} not found"
+        return fn.group(0)
+
+    @classmethod
+    def _css_rule(cls, selector_re: str) -> str:
+        m = re.search(selector_re + r"\s*\{([^}]*)\}", cls._src())
+        assert m, f"CSS rule not found: {selector_re}"
+        return m.group(1)
+
+    def test_programmatic_write_repaints(self):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        harness = r"""
+class HTMLTextAreaElement {
+  constructor() { this._v = ""; this.scrollTop = 0; this._l = {}; }
+  addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); }
+}
+Object.defineProperty(HTMLTextAreaElement.prototype, "value", {
+  configurable: true, get() { return this._v; }, set(v) { this._v = String(v); },
+});
+const ta = new HTMLTextAreaElement();
+const tint = { innerHTML: "", scrollTop: 0 };
+var document = { getElementById: (id) => id === "result-text" ? ta : id === "result-tint" ? tint : null };
+var ResizeObserver = class { constructor(f) { this.f = f; } observe() {} };
+"""
+        fns = "\n".join(self._fn(n) for n in (
+            "_summaryLineClasses", "_summaryTintHtml", "_summaryTintRepaint", "_summaryTintInstall"))
+        run = r"""
+_summaryTintInstall();
+ta.value = "Event Name: x\nStaging Area for Resources: y";
+const afterWrite = tint.innerHTML, readBack = ta.value;
+ta._v = "Last Known Position: z";
+(ta._l.input || []).forEach((f) => f());
+const afterTyping = tint.innerHTML;
+ta.scrollTop = 40;
+(ta._l.scroll || []).forEach((f) => f());
+console.log(JSON.stringify({ afterWrite, readBack, afterTyping, scroll: tint.scrollTop }));
+"""
+        out = subprocess.run([node, "-e", harness + fns + run],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        r = json.loads(out.stdout)
+        assert "tint-edit" in r["afterWrite"] and "tint-lock" in r["afterWrite"], (
+            "a plain ta.value assignment must repaint the tint")
+        assert r["readBack"] == "Event Name: x\nStaging Area for Resources: y", (
+            "the hook must not change what reads of ta.value return")
+        assert "tint-map" in r["afterTyping"], "typing (input event) must repaint"
+        assert r["scroll"] == 40, "the tint must follow the textarea's scroll"
+
+    def test_install_observes_resize_and_runs_once(self):
+        body = self._fn("_summaryTintInstall")
+        assert re.search(r"new ResizeObserver\(\s*_summaryTintRepaint\s*\)\.observe\(", body)
+        calls = [l for l in self._src().splitlines()
+                 if re.match(r"\s*_summaryTintInstall\(\);", l.split("//")[0])]
+        assert len(calls) == 1, "_summaryTintInstall() must be called exactly once"
+
+    def test_markup_puts_tint_behind_textarea(self):
+        assert re.search(
+            r'<div class="summary-wrap">\s*<div id="result-tint" aria-hidden="true"></div>'
+            r'\s*<textarea id="result-text"[^>]*></textarea>\s*</div>',
+            self._src(),
+        ), "the tint must sit first inside the wrapper, with the textarea over it"
+
+    def test_legend_copy_exact(self):
+        src = self._src()
+        m = re.search(r'<div class="summary-legend"[^>]*>(.*?)\n    </div>', src, re.S)
+        assert m, "summary legend not found"
+        for text in self.LEGEND:
+            assert src.count(text) == 1 and text in m.group(1), text
+
+    def test_textarea_is_transparent_over_the_wrapper(self):
+        assert re.search(r"background:\s*transparent", self._css_rule(r"\n    #result-text"))
+        assert re.search(r"background:\s*#0d1117", self._css_rule(r"\n    \.summary-wrap"))
+
+    def test_both_layers_share_box_metrics(self):
+        rule = self._css_rule(r"\n    #result-text,\s*#result-tint")
+        for prop in (r"padding:", r"font-family:", r"font-size:", r"line-height:",
+                     r"white-space:\s*pre-wrap", r"overflow-wrap:\s*break-word",
+                     r"scrollbar-gutter:\s*stable", r"border:", r"box-sizing:\s*border-box"):
+            assert re.search(prop, rule), f"shared rule lacks {prop}"
+        # (?<!,) skips the shared rule, whose second selector also starts a line.
+        own = (self._css_rule(r"(?<!,)\n    #result-text")
+               + self._css_rule(r"(?<!,)\n    #result-tint"))
+        for prop in ("padding:", "font-size:", "line-height:", "font-family:"):
+            assert prop not in own, f"{prop} must live only in the shared rule"
+
+    def test_locked_state_moves_the_tint_border_and_dims(self):
+        rule = self._css_rule(r"\.summary-wrap:has\(#result-text\[readonly\]\) #result-tint")
+        assert re.search(r"border-left-width:\s*1px", rule), (
+            "locking narrows the textarea's left border; the tint must follow")
+        assert re.search(r"opacity:\s*0?\.\d+", rule), "locked tints dim"
+
+
 class TestTruncateOnWord:
     """#721 secondary defect: the Event Log cut the officer's text mid-word."""
 
