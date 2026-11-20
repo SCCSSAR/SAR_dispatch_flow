@@ -240,7 +240,7 @@ An hour of EB polling produces ~240 `poll_task[post_discovery] ENQUEUED` lines p
 
 Run these every time, whether or not the dispatcher mentions anything. Each exists because it has failed before, silently, in a way the dispatcher couldn't see.
 
-1. **Geocode sanity — does the LKP coordinate actually land in the requested city?** Logs can no longer answer this (Pull B, #23 redaction), so read the positions off the **CalTopo map** instead (the Step 2.5b snippet works on any map, found or not). Check that the LKP and Residence markers sit where their titles say, and that every staging marker is in the same city as the LKP; the distance column makes a stranded marker obvious. On 2026-09-25 this was the only route available. **This is the check that would have caught the worst finding this project has recorded.** On 2026-07-24 an LKP whose two-word street name had been written as one word returned a coordinate in a **different city ~8 miles away**: the one-word form does not exist in the requested city, and Nominatim matched a same-named street elsewhere while ignoring both the city and the ZIP that were present in the query. `_house_number_consistent()` passed because the wrong city had that house number too, and Google Maps — the spelling-correction fallback — is only consulted on Nominatim *failure*, never on a confident *wrong answer*. Cross-check the staging candidates' city names against the LKP's expected city; a list of addresses in a city nobody mentioned is the tell.
+1. **Geocode sanity — does the LKP coordinate actually land in the requested city?** Logs can no longer answer this (Pull B, #23 redaction), so read the positions off the **CalTopo map** instead (the Step 2.5b snippet works on any map, found or not). Check that the LKP and Residence markers sit where their titles say, and that every staging marker is in the same city as the LKP; the distance column makes a stranded marker obvious. On 2026-09-25 this was the only route available. **This is the check that would have caught the worst finding this project has recorded.** On 2026-07-24 an LKP whose two-word street name had been written as one word returned a coordinate in a **different city ~8 miles away**: the one-word form does not exist in the requested city, and Nominatim matched a same-named street elsewhere while ignoring both the city and the ZIP that were present in the query. `_house_number_consistent()` passed because the wrong city had that house number too, and Google Maps — the spelling-correction fallback — is only consulted on Nominatim *failure*, never on a confident *wrong answer*. Cross-check the staging candidates' city names against the LKP's expected city; a list of addresses in a city nobody mentioned is the tell. **Also read the intake's Residence when the LKP is blank.** A placeholder there (`N/A`, `TBA`, `TBD`, `None`) is geocoded as an address: on a 2026-11-18 mutual-aid callout `N/A, CA` matched a business whose map listing is named "N/A", 193 mi from the search, and anchored all staging, the Slack staging pin and the D4H incident location (ops#703). Reproduce with the bare placeholder plus `, CA`; that query carries no subject data.
 2. **Did the dispatcher have to correct or retract anything after dispatching?** Ask explicitly (Round 3) and look for the signature: repeated `apply-staging-override` lines, a re-edited event name, or an EB/Slack correction. On 2026-07-24 a stale city string survived the dispatcher's manual edits into the Everbridge body and **responders were paged to the wrong city** — the tool logged nothing wrong at all. No log line will ever surface this class; only the question will.
 3. **A responder replied YES but never landed in the Slack channel.** Two distinct causes, don't conflate them:
    - `no_eb_email` — the EB contact has no email, so there was nothing to look up. Handled by design: not invited, ⚠️ posted to the channel, dispatcher adds manually. **Live-validated on a real callout 2026-07-24 and praised by the dispatcher.** The fix is an ops one (add the responder's `@sccssar.org` email to their EB contact), not code.
@@ -302,6 +302,8 @@ Skip for tests, and for searches that ended without a find (record the outcome i
 
 Start from the CalTopo map id in the report header, then **ask whether the field worked on that map or on a copy or a new one.** Plans sometimes copy the Turbo map. Read the map the field actually used.
 
+**On mutual aid the requesting agency owns the map**, and its markers follow its own conventions, not Turbo's. Do not identify the find or the IPP from a title or a symbol there: a marker labelled "subject" can be a sighting, a photo location or the subject's school (2026-11-18). Ask the human whether the find location is known and, if it is, which marker it is. Often our team never learns it; then record "find location not known" and skip distance and bearing.
+
 ### 2.5b Read it (read-only)
 
 One signed GET. CalTopo is **one team across both environments**, so either project's `caltopo-*` secrets work; use whichever environment's gcloud auth is current. The raw response contains the find location, so it is saved into the report directory, never printed.
@@ -355,13 +357,13 @@ if len(finds) == 1 and len(lkps) == 1:   # anything else: ask the human (2.5c)
 EOF
 ```
 
-The FIND pattern matches a marker titled **"Subject Found", "MP Found", "Subject Location" or "MP Location"** (the team labels it either way, and either can mean alive or deceased). Do not ask the team to rename a marker to suit this regex; widen the regex. On 2026-09-25 the dispatcher renamed "Subject Location" to "Subject Found" so the old pattern would match, which hid the gap. Timestamps use `-originally-created-on`, which survives a map copy; the plain `-created-on` resets to the copy time.
+The FIND pattern matches a marker titled **"Subject Found", "MP Found", "Subject Location" or "MP Location"** (the team labels it either way, and either can mean alive or deceased). Do not ask the team to rename a marker to suit this regex; widen the regex, but only for Turbo-created maps, and never to a bare "Subject" (2.5a). On 2026-09-25 the dispatcher renamed "Subject Location" to "Subject Found" so the old pattern would match, which hid the gap. Timestamps use `-originally-created-on`, which survives a map copy; the plain `-created-on` resets to the copy time.
 
 ### 2.5c Confirm with the human
 
 - **Exactly one FIND:** confirm it is the find. **None or several:** show the marker list and ask. Never pick one yourself: a clue, a sighting or a second subject all look like a find to a regex.
 - **Measure from the IPP the incident ended up using, not the one it started with.** You get half the information you want at the start of an incident, and half of that is wrong. Turbo's LKP marker is the intake's location at dispatch, and the scene often learns a better PLS after the search starts (2026-09-10: the PLS turned out to be a restaurant learned on scene, not the intake's mall address). Ask whether Plans moved the IPP or the scene learned a better PLS. If either happened, measure from that point and record which.
-- The snippet prints distance (great-circle) and initial compass bearing from Turbo's LKP marker to the find, **only when there is exactly one of each**. If Plans used a different IPP, recompute from the saved JSON. Report miles first, then km.
+- The snippet prints distance (great-circle) and initial compass bearing from Turbo's LKP marker to the find, **only when there is exactly one of each**. If Plans used a different IPP, or the map is the agency's (it has no Turbo LKP marker), recompute from the saved JSON using the markers the human named. Report miles first, then km.
 
 ### 2.5d The entry sheet (goes in the report)
 
@@ -369,7 +371,7 @@ One line per D4H Lost Behavior field, in D4H's order, with the value and where i
 
 | D4H field | Source |
 |---|---|
-| Initial Planning Point | **Starts as Turbo's dispatch location**, which is the intake's first guess (D4H takes it from the incident location; 6 m apart on #03766). **Move it to the 2.5c IPP whenever that differs.** D4H never updates it on its own: on #03768 it still held the intake address, so D4H reported 4.95 mi against 5.32 mi from the PLS the incident actually used |
+| Initial Planning Point | **Starts as Turbo's dispatch location**, which is the intake's first guess (D4H takes it from the incident location; 6 m apart on #03766). **Move it to the 2.5c IPP whenever that differs.** D4H never updates it on its own: on #03768 it still held the intake address, so D4H reported 4.95 mi against 5.32 mi from the PLS the incident actually used. On a callout with no LKP the incident location is the Residence geocode, and on 2026-11-18 a placeholder Residence put it 193 mi from the search |
 | Incident Type | One of ISRID's 13 Minimum fields. Turbo does not set it, so it exports blank until someone does: in the 2026-11-09 export it was blank on #03799, #03804 and #03806 and read `Search` on #03832. A D4H dropdown: record D4H's own term, and ask |
 | Scenario/Cause | One of ISRID's 13 Minimum fields, and nothing pre-fills it. It describes how the subject came to be missing, so it depends on the find. A D4H dropdown: record D4H's own term, never a guessed one (values seen include `Lost`, `Overdue`, `Despondent`, `Medical`). Propose one from the find report and the intake, say why, and ask |
 | Population Density / Terrain / Eco-Region Domain | **Pre-filled by 2.5f**, then confirmed with the human. Eco-region is **Temperate** for Santa Clara County (Bailey: Mediterranean division = Humid Temperate) |
@@ -431,7 +433,7 @@ class _Client:
     async def get(self, url, params=None):
         def call():
             try:
-                with urllib.request.urlopen(url + "?" + urllib.parse.urlencode(params or {}), timeout=10) as r:
+                with urllib.request.urlopen(url + "?" + urllib.parse.urlencode(params or {}), timeout=60) as r:
                     return _Resp(r.status, r.read())
             except urllib.error.HTTPError as e:
                 return _Resp(e.code, b"{}")
@@ -564,7 +566,7 @@ List these under the paste block, never as placeholders inside it:
 
 ## Step 2.7 — Intake feedback for the SO Ops Deck (every real callout)
 
-The Sheriff's Office Ops Deck dispatchers write the intake form. This step gathers **every intake problem the review found**, OCR misreads included, into one section Bill can lift unchanged into a note to them. Look in Round 1 answers, standing checks 12 and 16, the Event Log's `corrected` and `left blank` lines, fields the dispatcher edited, and the findings table.
+The Sheriff's Office Ops Deck dispatchers write the intake form. **On mutual aid our own dispatcher usually types it** from the agency's request; then the same findings go to the Dispatching class instead (for example, leave a field blank when the value is not known, never `N/A`), and this section says so in one line. This step gathers **every intake problem the review found**, OCR misreads included, into one section Bill can lift unchanged into a note to them. Look in Round 1 answers, standing checks 12 and 16, the Event Log's `corrected` and `left blank` lines, fields the dispatcher edited, and the findings table.
 
 **Sort each problem by what the form shows** (Hard rule 6: look at the form at full resolution, cropping into the scratchpad, rather than inferring from the misread):
 
