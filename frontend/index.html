@@ -1235,10 +1235,10 @@
              map has been created yet — workflow says map should come first
              so its URL flows into the Slack channel as a pinned unfurl). -->
         <div id="eb-map-warning" style="display:none; margin:0.5rem 0 0.6rem; padding:0.5rem 0.7rem; background:#3a2a10; border:1px solid #6b4a1a; border-radius:4px; font-size:0.85rem; color:#ffb84d;">
-          ⚠ <strong>CalTopo map not created yet</strong>. Create map first, referenced in Slack channel.
+          ⚠ <strong>CalTopo map not created yet</strong>. In-county: create the map first, so Slack gets its link.
           <label style="display:inline-flex; align-items:center; gap:0.35rem; margin-top:0.4rem; cursor:pointer; color:#e8ebf2;">
             <input type="checkbox" id="eb-map-override" />
-            Send without creating map? (not recommended)
+            Send without a map. Tick this for mutual aid callout: use agency's map.
           </label>
         </div>
 
@@ -1718,8 +1718,13 @@
     // Template radio change → recompute title + body
     const radios = root.querySelectorAll('input[name="eb-template"]');
     radios.forEach(r => r.addEventListener("change", () => {
+      // ops#776: on mutual aid the requesting agency owns the map, so the
+      // bypass follows the callout type. The dispatcher can still change it.
+      const mapOverride = document.getElementById("eb-map-override");
+      if (mapOverride) mapOverride.checked = _ebMapBypassForTemplate(r.value);
       _ebRecomputeTitle();
       _ebRecomputeBody();
+      _ebUpdateSendButtonState();
     }));
 
     // Title input — track manual edit so auto-recompute stops once dispatcher
@@ -1991,6 +1996,11 @@
     return !!(mapBtn && mapBtn._mapUrl);
   }
 
+  // ops#776: the requesting agency owns the map on mutual aid.
+  function _ebMapBypassForTemplate(tpl) {
+    return tpl === "mutualaid";
+  }
+
   function _ebRefreshMapWarning() {
     const warn = document.getElementById("eb-map-warning");
     if (!warn) return;
@@ -2024,6 +2034,10 @@
     // (live-reported 2026-05-05).
     const mapOverride = document.getElementById("eb-map-override");
     if (mapOverride) mapOverride.checked = false;
+    // ops#776: the bypass follows Notification type, so the type resets too,
+    // or a cleared form would show Mutual aid with the bypass unticked.
+    const inCounty = document.querySelector('input[name="eb-template"][value="incounty"]');
+    if (inCounty) inCounty.checked = true;
 
     // Contact chips — re-render reads from the (now-empty) Map.
     _ebRenderContactChips();
@@ -2146,7 +2160,7 @@
         if (!hasTargets) {
           hint.textContent = "↓ Pick Groups or Contacts below";
         } else if (mapBlocked) {
-          hint.textContent = "Create CalTopo map or check override";
+          hint.textContent = "Create the CalTopo map, or tick Send without a map below";
         }
         hint.style.display = "block";
       } else {
