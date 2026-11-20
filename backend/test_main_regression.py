@@ -1595,6 +1595,134 @@ class TestUnnavigableSubstitutionBehaviour:
         assert self._run(rec, self.LKP) == {"needs": False, "nav": False}
 
 
+
+class TestSummaryLineClasses:
+    """ops#715 interim: the summary textarea is tinted by what a dispatcher
+    may safely edit (Bill, 2026-11-19). Executes the real classifier and
+    renderer from index.html under node.
+
+    Classes: "edit" (green, the edit goes into the incident record), "map"
+    (amber, the text changes but the CalTopo marker does not), "lock" (red,
+    use Address Override), "" (no tint).
+    """
+
+    FIXTURE = "\n".join([
+        "Initial Incident Summary:",
+        "Event Name: 2026-11-18 SJPD Elm",
+        "Event #: 26-322-0412",
+        "Agency: San Jose Police Department",
+        "Contact: SGT. Example 408-555-0100",
+        "Missing Person: Alex Sample; at-risk: Dementia, Alone",
+        "DOB: 1951-03-02 (75 years old)",
+        "Last Seen At: 2026-11-18 14:30",
+        "Last Known Position: 1200 Elm St, San Jose, CA",
+        "Residence Address: 1200 Elm St, San Jose, CA",
+        "Last Seen Wearing: Blue jacket",
+        "Last Seen With: Not recorded",
+        "Request: K9 and ground teams",
+        "Staging Area for Resources: Oak Park, San Jose",
+        "CalTopo Map ID:",
+        "Dispatcher: Burns",
+        "---",
+        "Event Log:",
+        "2026-11-18 14:52 - Request received from SJPD",
+        "2026-11-18 15:01 - v2 Intake form processed; Initial Incident Summary created",
+        "---",
+        "LPB Questionnaire:",
+    ] + [f"Q{n} - No - question {n}" for n in range(1, 13)] + [
+        "Q13 - No - not a real question",
+        "  Request: indented, not a label",
+        "---",
+        "Staging Area Recommendations (quality-ranked, top-to-bottom):",
+        "1. Oak Park, San Jose — City park. 0.3 mi from LKP",
+        "2. 610 Oak Ave, San Jose — Elementary school. 0.4 mi from LKP",
+        "---",
+        "LPB Range Ring Analysis:",
+        "1. Subject Category: Hiker. Key factors: At-risk.",
+        "2. Koester Statistics for this category:",
+    ])
+
+    @staticmethod
+    def _node(call_js: str):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        src = (Path(__file__).parent.parent / "frontend" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        parts = []
+        for name in ("_summaryLineClasses", "_summaryTintHtml"):
+            fn = re.search(rf"^  function {name}\(.*?\n  \}}$", src, re.M | re.S)
+            assert fn, f"{name} not found"
+            parts.append(fn.group(0))
+        program = "\n".join(parts) + f"\nconsole.log(JSON.stringify({call_js}));"
+        out = subprocess.run(
+            [node, "-e", program], capture_output=True, text=True, timeout=30
+        )
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def _pairs(self, text=None):
+        text = self.FIXTURE if text is None else text
+        classes = self._node(f"_summaryLineClasses({json.dumps(text)})")
+        return list(zip(text.split("\n"), classes))
+
+    def _class_of(self, line):
+        hits = [c for l, c in self._pairs() if l == line]
+        assert len(hits) == 1, f"fixture line not unique: {line!r}"
+        return hits[0]
+
+    def test_edit_lines(self):
+        pairs = dict(self._pairs())
+        labels = ("Event Name:", "Event #:", "Agency:", "Contact:", "Missing Person:",
+                  "DOB:", "Last Seen At:", "Last Seen Wearing:", "Last Seen With:",
+                  "Request:", "Dispatcher:")
+        for label in labels:
+            line = next(l for l in pairs if l.startswith(label))
+            assert pairs[line] == "edit", line
+        for n in range(1, 13):
+            assert self._class_of(f"Q{n} - No - question {n}") == "edit", n
+
+    def test_map_lines(self):
+        assert self._class_of("Last Known Position: 1200 Elm St, San Jose, CA") == "map"
+        assert self._class_of("Residence Address: 1200 Elm St, San Jose, CA") == "map"
+
+    def test_lock_lines(self):
+        assert self._class_of("Staging Area for Resources: Oak Park, San Jose") == "lock"
+        assert self._class_of("1. Oak Park, San Jose — City park. 0.3 mi from LKP") == "lock"
+
+    def test_lpb_numbered_line_not_locked(self):
+        # Review Focus 1: only the recommendations section's "1." is locked.
+        assert self._class_of("1. Subject Category: Hiker. Key factors: At-risk.") == ""
+
+    def test_unlisted_lines_plain(self):
+        for line in ("Initial Incident Summary:", "Event Log:", "CalTopo Map ID:",
+                     "2026-11-18 14:52 - Request received from SJPD",
+                     "2. 610 Oak Ave, San Jose — Elementary school. 0.4 mi from LKP",
+                     "Q13 - No - not a real question",
+                     "  Request: indented, not a label",
+                     "Staging Area Recommendations (quality-ranked, top-to-bottom):",
+                     "2. Koester Statistics for this category:"):
+            assert self._class_of(line) == "", line
+        assert all(c == "" for l, c in self._pairs() if l == "---")
+
+    def test_one_class_per_line(self):
+        for text in (self.FIXTURE, "", "Event Name: x\n"):
+            classes = self._node(f"_summaryLineClasses({json.dumps(text)})")
+            assert len(classes) == len(text.split("\n")), repr(text)
+
+    def test_tint_html_escapes(self):
+        html = self._node(
+            '_summaryTintHtml("Contact: <b>A & B</b>\\n\\nStaging Area for Resources: x")'
+        )
+        assert "&lt;b&gt;A &amp; B&lt;/b&gt;" in html
+        assert "<b>" not in html
+        assert html.count('<div class="tint-line') == 3
+        assert '<div class="tint-line tint-edit">' in html
+        assert '<div class="tint-line tint-lock">' in html
+        assert '<div class="tint-line">​</div>' in html
+
+
 class TestTruncateOnWord:
     """#721 secondary defect: the Event Log cut the officer's text mid-word."""
 

@@ -4242,6 +4242,40 @@
   }
 
   // ---------------------------------------------------------------------------
+  // ops#715 interim: which summary lines a dispatcher may safely edit (Bill,
+  // 2026-11-19). "edit" = the edit goes into the incident record; "map" = the
+  // text changes but the CalTopo marker does not; "lock" = use Address Override.
+  // Only the "1." inside the recommendations section is locked: the LPB
+  // analysis that follows has its own "1. Subject Category" line.
+  // ---------------------------------------------------------------------------
+  function _summaryLineClasses(text) {
+    const EDIT = /^(?:Event Name|Event #|Agency|Contact|Missing Person|DOB|Last Seen At|Last Seen Wearing|Last Seen With|Request|Dispatcher):/;
+    const QUESTION = /^Q(?:[1-9]|1[0-2]) - /;
+    const MAP = /^(?:Last Known Position|Residence Address):/;
+    const LOCK = /^Staging Area for Resources:/;
+    const RECS = /^Staging (?:Area )?Recommendations(?:\s*\(quality-ranked, top-to-bottom\))?:\s*$/;
+    let inRecs = false;
+    return (text || "").split("\n").map((line) => {
+      if (RECS.test(line)) { inRecs = true; return ""; }
+      if (line.trim() === "---") { inRecs = false; return ""; }
+      if (inRecs && /^1\.\s/.test(line)) return "lock";
+      if (LOCK.test(line)) return "lock";
+      if (MAP.test(line)) return "map";
+      if (EDIT.test(line) || QUESTION.test(line)) return "edit";
+      return "";
+    });
+  }
+
+  function _summaryTintHtml(text) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const classes = _summaryLineClasses(text);
+    return (text || "").split("\n").map((line, i) => {
+      const cls = classes[i] ? ` tint-${classes[i]}` : "";
+      return `<div class="tint-line${cls}">${line ? esc(line) : "​"}</div>`;
+    }).join("");
+  }
+
+  // ---------------------------------------------------------------------------
   // Parse key fields from the OCR result textarea (dispatcher may have edited it)
   // ---------------------------------------------------------------------------
   function parseOcrResult(text) {
