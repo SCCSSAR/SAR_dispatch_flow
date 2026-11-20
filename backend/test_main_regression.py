@@ -14404,3 +14404,114 @@ class TestVipDmOffCallSkip:
         assert len(rets) == 1 and ast.unparse(rets[0].value) == (
             "_parse_group_member_contacts_response(_fetch_contacts_raw(org_id))"
         )
+
+
+# ---------------------------------------------------------------------------
+# ops#776 — the map bypass follows Notification type
+# ---------------------------------------------------------------------------
+
+def _frontend_index_src() -> str:
+    return (Path(__file__).parent.parent / "frontend" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def _strip_js_line_comments(code: str) -> str:
+    return "\n".join(line.split("//")[0] for line in code.splitlines())
+
+
+class TestMapBypassFollowsCalloutType:
+    """On mutual aid the requesting agency owns the map, so sending without a
+    Turbo map is the right path. Picking Mutual aid callout ticks the bypass;
+    picking In-county unticks it (Bill, 2026-11-19, ops#776). The helper is
+    executed under node; the wiring and copy are source pins.
+    """
+
+    LABEL = "Send without a map. Tick this for mutual aid callout: use agency's map."
+    WARNING = (
+        "<strong>CalTopo map not created yet</strong>. In-county: create the map "
+        "first, so Slack gets its link."
+    )
+    HINT = "Create the CalTopo map, or tick Send without a map below"
+
+    @staticmethod
+    def _run(arg_js: str):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+        fn = re.search(
+            r"^  function _ebMapBypassForTemplate\(.*?\n  \}$",
+            _frontend_index_src(), re.M | re.S,
+        )
+        assert fn, "_ebMapBypassForTemplate not found"
+        program = (
+            fn.group(0)
+            + f"\nconsole.log(JSON.stringify(_ebMapBypassForTemplate({arg_js})));"
+        )
+        out = subprocess.run(
+            [node, "-e", program], capture_output=True, text=True, timeout=30
+        )
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def test_mutual_aid_ticks_bypass(self):
+        assert self._run('"mutualaid"') is True
+
+    def test_in_county_unticks_bypass(self):
+        assert self._run('"incounty"') is False
+
+    def test_unknown_template_unticks(self):
+        assert self._run('""') is False
+        assert self._run("undefined") is False
+
+    @staticmethod
+    def _radio_handler() -> str:
+        m = re.search(
+            r"radios\.forEach\(r => r\.addEventListener\(\"change\", \(\) => \{"
+            r"(.*?)\n    \}\)\);",
+            _frontend_index_src(), re.S,
+        )
+        assert m, "eb-template radio change handler not found"
+        return _strip_js_line_comments(m.group(1))
+
+    def test_radio_change_sets_bypass_from_helper(self):
+        body = self._radio_handler()
+        assert "eb-map-override" in body, "the handler must reach the bypass checkbox"
+        assert re.search(r"\.checked\s*=\s*_ebMapBypassForTemplate\(r\.value\)", body), (
+            "the bypass must be set from the helper with the chosen radio's value"
+        )
+
+    def test_radio_change_refreshes_send_button_after_setting(self):
+        body = self._radio_handler()
+        set_at = re.search(r"\.checked\s*=\s*_ebMapBypassForTemplate\(", body)
+        refresh_at = body.find("_ebUpdateSendButtonState()")
+        assert set_at and refresh_at > set_at.start(), (
+            "the send button must be re-evaluated after the bypass changes, or it "
+            "stays disabled with the box ticked"
+        )
+
+    def test_reset_selects_in_county_and_unticks(self):
+        m = re.search(
+            r"^  function _ebResetForNewIncident\(\) \{.*?\n  \}$",
+            _frontend_index_src(), re.M | re.S,
+        )
+        assert m, "_ebResetForNewIncident not found"
+        body = _strip_js_line_comments(m.group(0))
+        assert re.search(
+            r"input\[name=\"eb-template\"\]\[value=\"incounty\"\]['\"]\)[^;]*\.checked\s*=\s*true",
+            body,
+        ) or re.search(
+            r"(\w+)\s*=\s*document\.querySelector\(['\"]input\[name=\"eb-template\"\]"
+            r"\[value=\"incounty\"\]['\"]\);.*?\1\.checked\s*=\s*true",
+            body, re.S,
+        ), "Clear must reset Notification type to In-county"
+        assert re.search(r"mapOverride\.checked\s*=\s*false", body), (
+            "Clear must still untick the bypass"
+        )
+
+    def test_copy_is_exact(self):
+        src = _frontend_index_src()
+        for text in (self.LABEL, self.WARNING, self.HINT):
+            assert src.count(text) == 1, f"expected exactly one copy of: {text}"
+        assert "(not recommended)" not in src
+        assert "Create CalTopo map or check override" not in src
