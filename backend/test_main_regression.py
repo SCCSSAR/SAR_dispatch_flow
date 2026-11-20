@@ -12982,6 +12982,113 @@ class TestLastSeenWearingWiring:
             assert rule in slack_stanza, f"slack.py stopped rejecting {why}"
 
 
+
+class TestResidenceMarkerWearing:
+    """ops#860 — the Residence marker description carries the clothing line.
+
+    #845 put "Wearing:" on the Slack welcome and in D4H; the CalTopo Residence
+    marker still showed only MP and DOB. Wearing goes on the RESIDENCE marker
+    only (Bill, 2026-11-18): PLS markers are added after arrival on scene, so
+    Residence is the one map feature that reliably carries subject info.
+
+    Executes the PRODUCTION helpers lifted out of main.py (pure text, no GCP
+    dependency) rather than a hand-written mirror.
+    """
+
+    @staticmethod
+    def _main():
+        return (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _code_only(text):
+        return "\n".join(l.split("#")[0] for l in text.splitlines())
+
+    @classmethod
+    def _lines(cls, summary):
+        src = cls._main()
+        start = src.index("_LAST_SEEN_WEARING_RE = re.compile")
+        end = src.index("# Issue #847 — parse the Koester distance lines")
+        ns = {"re": re}
+        exec(src[start:end], ns)          # noqa: S102 - production source, not input
+        return ns["_residence_marker_description_lines"](summary)
+
+    _SUMMARY = (
+        "Missing Person: Jane Doe; at-risk: Dementia, Alone\n"
+        "DOB: 1950-01-15 (76 years old)\n"
+        "Residence Address: 123 Example St, San Jose, CA\n"
+        "Last Seen Wearing: GREEN PARKA & GREY SWEATPANTS\n"
+        "Last Seen At: 2026-01-01 12:00\n"
+    )
+
+    def test_wearing_follows_mp_and_dob(self):
+        assert self._lines(self._SUMMARY) == [
+            "MP: Jane Doe",
+            "DOB: 1950-01-15 (76 years old)",
+            "Wearing: GREEN PARKA & GREY SWEATPANTS",
+            "Subject's residence",
+        ]
+
+    def test_value_is_verbatim(self):
+        s = self._SUMMARY.replace("GREEN PARKA & GREY SWEATPANTS", "BLU JKT/blk pants, NO shoes")
+        assert "Wearing: BLU JKT/blk pants, NO shoes" in self._lines(s)
+
+    @pytest.mark.parametrize("value", [
+        "Not recorded", "UNKNOWN", "N/A", "[not recorded]",
+        '[if present on form, else "Not recorded"]', "",
+    ])
+    def test_blank_or_sentinel_adds_no_line(self, value):
+        s = self._SUMMARY.replace("GREEN PARKA & GREY SWEATPANTS", value)
+        lines = self._lines(s)
+        assert not any(l.startswith("Wearing:") for l in lines), lines
+        assert lines == ["MP: Jane Doe", "DOB: 1950-01-15 (76 years old)",
+                         "Subject's residence"]
+
+    def test_blank_wearing_does_not_capture_the_next_line(self):
+        s = self._SUMMARY.replace(" GREEN PARKA & GREY SWEATPANTS", "")
+        assert not any("Last Seen At" in l for l in self._lines(s))
+
+    def test_sentinel_word_prefix_is_kept(self):
+        """Exact-equality sentinel rule, inherited from the shared helper."""
+        s = self._SUMMARY.replace("GREEN PARKA & GREY SWEATPANTS", "UNKNOWN, WHITE, 5'2, 110 LBS")
+        assert "Wearing: UNKNOWN, WHITE, 5'2, 110 LBS" in self._lines(s)
+
+    def test_missing_line_adds_no_wearing(self):
+        s = "\n".join(l for l in self._SUMMARY.splitlines() if not l.startswith("Last Seen Wearing"))
+        assert self._lines(s) == ["MP: Jane Doe", "DOB: 1950-01-15 (76 years old)",
+                                  "Subject's residence"]
+
+    def test_mp_and_dob_still_omitted_when_absent(self):
+        assert self._lines("Last Seen Wearing: red hat\n") == [
+            "Wearing: red hat", "Subject's residence"]
+
+    # -- wiring: the handler uses the helper on BOTH residence branches ------
+
+    def _slice(self, start_marker, end_marker):
+        """Bounded on real markers in the RAW source, then comment-stripped."""
+        src = self._main()
+        start = src.index(start_marker)
+        end = src.index(end_marker, start)
+        return self._code_only(src[start:end])
+
+    def test_handler_builds_description_from_the_helper(self):
+        block = self._slice("# --- Residence ---", "# --- Staging locations:")
+        assert "res_desc_lines = _residence_marker_description_lines(summary)" in block
+        assert block.count('"description": "\\n".join(res_desc_lines),') == 2, (
+            "both the geocoded and the fallback-to-LKP Residence branches must "
+            "use the helper's lines"
+        )
+
+    def test_wearing_is_residence_only(self):
+        """Bill, 2026-11-18: never on staging/PLS markers. The Residence
+        helper is the only map-side consumer of the clothing value."""
+        assert self._code_only(self._main()).count("_residence_marker_description_lines(") == 2, (
+            "the Residence description helper is defined once and called once"
+        )
+        staging = self._slice("# --- Staging locations:", '"map_data built | lkp=%s')
+        assert "Wearing" not in staging
+        assert "_subject_last_seen_wearing_value" not in staging
+
+
 class TestParseLpbRangeRings:
     """#847 — the missing half of the range-ring feature.
 
