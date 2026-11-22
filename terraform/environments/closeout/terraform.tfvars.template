@@ -1,0 +1,14 @@
+# terraform.tfvars — close-out helper Vertex project TEMPLATE
+#
+# COPY THIS FILE to terraform.tfvars in the same directory, then replace every
+# placeholder below. terraform.tfvars is GITIGNORED — never commit it. Real
+# member emails MUST NOT land in this template.
+
+# Where the CIS 2.4 / 2.5 / 2.6 / 3.7 alerts are sent.
+alert_notification_email = "security-alerts@example.org"
+
+# Who may run the helper. user: or group: principals at sccssar.org only
+# (variables.tf rejects anything else). A group is easier to keep current.
+closeout_users = [
+  "user:search.manager@sccssar.org",
+]
