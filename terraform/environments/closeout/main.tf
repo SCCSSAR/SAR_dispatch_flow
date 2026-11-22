@@ -94,9 +94,10 @@ resource "google_project_iam_member" "aikido_viewer" {
 }
 
 # ---------------------------------------------------------------------------
-# Audit logging: the same two configs as sccssar-dev (Aikido #262, #264).
-# Vertex data-access logs stay off, as on sccssar-dev, so prompts and
-# responses never reach Cloud Logging.
+# Audit logging: the same two configs as sccssar-dev (Aikido #262, #264),
+# plus Vertex AI data access, so every model call names the account that
+# made it and spend can be traced to a person. The recipe checks that these
+# entries carry no prompt text before any real callout runs.
 # ---------------------------------------------------------------------------
 
 resource "google_project_iam_audit_config" "project_ownership" {
@@ -116,6 +117,17 @@ resource "google_project_iam_audit_config" "iam_audit_config" {
   audit_log_config {
     log_type = "ADMIN_READ"
   }
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
+resource "google_project_iam_audit_config" "vertex_audit_config" {
+  project = var.project_id
+  service = "aiplatform.googleapis.com"
   audit_log_config {
     log_type = "DATA_READ"
   }
